@@ -1,0 +1,17 @@
+.vs/
+x64/
+CrimsonWeatherMod/x64/
+CrimsonWeatherMod/CrimsonW.b862c63a/
+CrimsonWeatherMod/CrimsonWeatherMod.vcxproj.user
+
+TEMP/
+*.log
+
+*.obj
+*.pdb
+*.ilk
+*.ipch
+*.tlog
+*.lastbuildstate
+*.recipe
+*.cache
