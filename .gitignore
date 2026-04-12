@@ -1,12 +1,8 @@
 .vs/
 x64/
-CrimsonWeatherMod/x64/
-CrimsonWeatherMod/CrimsonW.b862c63a/
-CrimsonWeatherMod/CrimsonWeatherMod.vcxproj.user
-
 TEMP/
-*.log
 
+*.log
 *.obj
 *.pdb
 *.ilk
@@ -15,3 +11,11 @@ TEMP/
 *.lastbuildstate
 *.recipe
 *.cache
+*.idb
+*.iobj
+*.ipdb
+
+CrimsonWeatherReshade/.vs/
+CrimsonWeatherReshade/x64/
+CrimsonWeatherReshade/CrimsonW.*/
+CrimsonWeatherReshade/*.vcxproj.user

@@ -1,0 +1,57 @@
+#pragma once
+
+struct WeatherPresetData {
+    bool forceClearSky = false;
+    float rain = 0.0f;
+    float dust = 0.0f;
+    float snow = 0.0f;
+    bool visualTimeOverride = false;
+    float timeHour = 12.0f;
+    bool forceCloudsEnabled = false;
+    float forceCloudsPercent = 25.0f;
+    bool cloudHeightEnabled = false;
+    float cloudHeight = 1.0f;
+    bool cloudDensityEnabled = false;
+    float cloudDensity = 1.0f;
+    bool midCloudsEnabled = false;
+    float midClouds = 1.0f;
+    bool highCloudsEnabled = false;
+    float highClouds = 1.0f;
+    bool sunLocationXEnabled = false;
+    float sunLocationX = 0.0f;
+    bool sunLocationYEnabled = false;
+    float sunLocationY = 0.0f;
+    bool moonLocationXEnabled = false;
+    float moonLocationX = 0.0f;
+    bool moonLocationYEnabled = false;
+    float moonLocationY = 0.0f;
+    bool exp2CEnabled = false;
+    float exp2C = 1.0f;
+    bool exp2DEnabled = false;
+    float exp2D = 1.0f;
+    bool nightSkyRotationEnabled = false;
+    float nightSkyRotation = 1.0f;
+    bool fogEnabled = false;
+    float fogPercent = 0.0f;
+    float wind = 1.0f;
+    bool noWind = false;
+    bool puddleScaleEnabled = false;
+    float puddleScale = 0.0f;
+};
+
+void Preset_EnsureInitialized();
+void Preset_Refresh();
+int Preset_GetCount();
+const char* Preset_GetDisplayName(int index);
+int Preset_GetSelectedIndex();
+bool Preset_HasSelection();
+const char* Preset_GetSelectedDisplayName();
+void Preset_SelectNew();
+bool Preset_SelectIndex(int index);
+bool Preset_HasUnsavedChanges();
+bool Preset_CanSaveCurrent();
+void Preset_ArmAutoApplyRemembered();
+void Preset_OnWorldTick(bool worldReady, float dt);
+void Preset_TryAutoApplyRemembered();
+bool Preset_SaveSelected();
+bool Preset_SaveAs(const char* fileName);

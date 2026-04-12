@@ -2,17 +2,7 @@
 
 ASI weather-control mod for `CrimsonDesert.exe`.
 
-Current stable branch focuses on practical runtime weather controls through an in-game DX12 overlay:
-- Rain
-- Dust
-- Snow
-- Visual Time Override
-- Cloud height / density / mid clouds / high clouds
-- Fog
-- Wind / No Wind
-- Detail controls
-- Preset save/load
-
+Current main branch is the ReShade rewrite. The older DXGI/ImGui build is kept on the `legacy` branch.
 
 ## Runtime Files
 
@@ -21,19 +11,28 @@ Current stable branch focuses on practical runtime weather controls through an i
 - `CrimsonWeather.log` when logging is enabled
 - `*.ini` preset files saved in the same mod directory
 
-## Overlay / Input
+## Overlay
 
-The overlay uses ImGui on DX12 and supports:
-- keyboard hotkeys
-- XInput pad navigation
-- GameInput fallback for non-XInput controllers
-- native DualSense raw-input path when a supported Sony HID device is present
+This version uses a ReShade-hosted overlay instead of the older custom DXGI overlay.
 
-Default hotkeys:
-- Toggle GUI: `F9`
-- Toggle weather control: `F10`
-- Controller GUI toggle: `D-pad Down + B`
-- Controller effect toggle: `D-pad Down + X`
+Current controls:
+- Presets
+- Rain
+- Dust
+- Snow
+- Force Clear Sky
+- Visual Time Override
+- Cloud height / density / mid clouds / high clouds
+- Fog
+- Wind / No Wind
+- 2C / 2D / Night Sky Rotation
+- Puddle Scale
+
+## Input
+
+Default effect toggle hotkeys:
+- Keyboard: `F10`
+- Controller: `D-pad Down + A`
 
 ## Config
 
@@ -41,38 +40,34 @@ Default hotkeys:
 
 ```ini
 [General]
-LogEnabled=1
-HotkeyToggleGUI=F9
+LogEnabled=0
 HotkeyToggleEffect=F10
+_HotkeyOptions=F1-F12, INSERT, DELETE, HOME, END, PGUP, PGDN, or single letter A-Z
 
 [Hotkeys]
-ControllerHotkeyToggleGUI=dpad_down+b
-ControllerToggleEffect=dpad_down+x
+ControllerToggleEffect=dpad_down+a
+_ControllerHotkeyOptions=Use dpad_up/down/left/right + a/b/x/y/lb/rb/start/back
 
-[UI]
-Scale=1.00
-ShowOnStartup=1
+[Preset]
+LastPreset=
 ```
 
 Notes:
-- `LogEnabled=1` writes startup and runtime diagnostics to `CrimsonWeather.log`.
-- `Scale` is clamped to the supported UI range.
-- `ShowOnStartup=1` opens the overlay automatically on startup.
-- Preset selection is remembered in the INI and auto-applied when the world is ready.
+- ReShade is required for the in-game UI.
+- Old preset files still load.
+- Saving a preset rewrites it into the current format.
 
 ## Build
 
 Open:
-- `CrimsonWeatherMod/CrimsonWeatherMod.sln`
+- `CrimsonWeather.slnx`
 
 Build:
 - `Release | x64`
 
 Compiler output:
-- `CrimsonWeatherMod/x64/Release/CrimsonWeather.dll`
+- `CrimsonWeatherReshade/x64/Release/CrimsonWeather.asi`
 
-Runtime deployment name:
-- `CrimsonWeather.asi`
+## Download
 
-Current post-build deploy target:
-- `C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert\CrimsonWeather.asi`
+- Nexus Mods: https://www.nexusmods.com/crimsondesert/mods/632

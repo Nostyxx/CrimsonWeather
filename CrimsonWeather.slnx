@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="CrimsonWeatherReshade/CrimsonWeatherReshade.vcxproj" Id="7798ed1d-b230-43ef-acaf-06af6ca7c7c4" />
+</Solution>
