@@ -15,6 +15,33 @@ HMODULE g_overlayModule = nullptr;
 bool g_overlayRegistered = false;
 char g_newPresetName[128] = "NewPreset.ini";
 
+int HourToMinuteOfDay(float hour) {
+    const float normalized = NormalizeHour24(hour);
+    int minutes = static_cast<int>(std::lround(normalized * 60.0f));
+    minutes %= 24 * 60;
+    if (minutes < 0) {
+        minutes += 24 * 60;
+    }
+    return minutes;
+}
+
+float MinuteOfDayToHour(int minuteOfDay) {
+    minuteOfDay %= 24 * 60;
+    if (minuteOfDay < 0) {
+        minuteOfDay += 24 * 60;
+    }
+    return static_cast<float>(minuteOfDay) / 60.0f;
+}
+
+void FormatGameClockFromHour(float hour, char* out, size_t outSize) {
+    const int minuteOfDay = HourToMinuteOfDay(hour);
+    const int rawHour = minuteOfDay / 60;
+    const int minute = minuteOfDay % 60;
+    const int displayHour = rawHour <= 12 ? rawHour : rawHour - 12;
+    const char* meridiem = rawHour > 11 ? "PM" : "AM";
+    sprintf_s(out, outSize, "%d:%02d %s", displayHour, minute, meridiem);
+}
+
 } // namespace
 
 void ApplyUiScale(float scale) {
@@ -131,7 +158,6 @@ void DrawWeatherTab() {
         return;
     }
 
-    const bool enabled = g_modEnabled.load();
     bool forceClear = g_forceClear.load();
     if (!RuntimeFeatureAvailable(RuntimeFeatureId::ForceClear)) {
         ImGui::BeginDisabled();
@@ -194,7 +220,8 @@ void DrawWeatherTab() {
     }
 
     bool visualTimeOverride = g_timeCtrlActive.load() && g_timeFreeze.load();
-    const bool timeEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::TimeControls) && g_timeLayoutReady.load();
+    const bool timeEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::TimeControls) &&
+                             g_timeLayoutReady.load();
     if (!timeEnabled) {
         ImGui::BeginDisabled();
     }
@@ -209,18 +236,21 @@ void DrawWeatherTab() {
         DrawFeatureUnavailable(RuntimeFeatureId::TimeControls);
     }
 
-    float hour = g_timeTargetHour.load();
+    int timeMinutes = HourToMinuteOfDay(g_timeTargetHour.load());
+    char targetClock[32] = {};
+    FormatGameClockFromHour(g_timeTargetHour.load(), targetClock, sizeof(targetClock));
+
     if (!(timeEnabled && visualTimeOverride)) {
         ImGui::BeginDisabled();
     }
-    ImGui::SliderFloat("Time", &hour, 0.0f, 24.0f, "%.2f h");
+    ImGui::SliderInt("Time", &timeMinutes, 0, (24 * 60) - 1, targetClock);
     if (DrawResetButton("R##time")) {
-        g_timeTargetHour.store(NormalizeHour24(g_timeCurrentHour.load()));
+        g_timeTargetHour.store(MinuteOfDayToHour(HourToMinuteOfDay(g_timeCurrentHour.load())));
         g_timeCtrlActive.store(true);
         g_timeFreeze.store(true);
         g_timeApplyRequest.store(true);
     } else if (timeEnabled && visualTimeOverride) {
-        g_timeTargetHour.store(NormalizeHour24(hour));
+        g_timeTargetHour.store(MinuteOfDayToHour(timeMinutes));
         g_timeCtrlActive.store(true);
         g_timeFreeze.store(true);
         g_timeApplyRequest.store(true);
@@ -289,32 +319,54 @@ void DrawAtmosphereTab() {
         fogPct = fogN * 100.0f;
     }
 
-    const bool fogEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::FogControls);
-    if (!fogEnabled) {
+    const bool fogFeatureAvailable = RuntimeFeatureAvailable(RuntimeFeatureId::FogControls);
+    if (!fogFeatureAvailable) {
         ImGui::BeginDisabled();
     }
-    ImGui::SliderFloat("Fog", &fogPct, 0.0f, 100.0f, "%.1f%%");
-    if (DrawResetButton("R##fog")) {
+    ImGui::SliderFloat("Fog [LEGACY]", &fogPct, 0.0f, 100.0f, "%.1f%%");
+    const bool fogReset = DrawResetButton("R##fog_legacy");
+
+    if (fogReset) {
         g_oFog.clear();
-    } else if (fogEnabled) {
+    } else if (fogFeatureAvailable) {
         const float t = fogPct * 0.01f;
         g_oFog.set(t * t * 100.0f);
     }
-    if (!fogEnabled) {
+
+    if (!fogFeatureAvailable) {
         ImGui::EndDisabled();
         DrawFeatureUnavailable(RuntimeFeatureId::FogControls);
     }
 
-    float wind = g_windMul.load();
+    float fogFromWind = g_oWind.active.load() ? g_oWind.value.load() : 0.0f;
     const bool windEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::WindControls);
     if (!windEnabled) {
         ImGui::BeginDisabled();
     }
+    ImGui::SliderFloat("Fog", &fogFromWind, 0.0f, 15.0f, "%.2f");
+    if (DrawResetButton("R##fog_from_wind")) {
+        g_oWind.clear();
+    } else if (windEnabled) {
+        if (fogFromWind > 0.001f) {
+            g_oWind.set(fogFromWind);
+        } else {
+            g_oWind.clear();
+        }
+    }
+    if (!windEnabled) {
+        ImGui::EndDisabled();
+        DrawFeatureUnavailable(RuntimeFeatureId::WindControls);
+    }
+
+    float wind = g_windMul.load();
+    if (!windEnabled) {
+        ImGui::BeginDisabled();
+    }
     ImGui::SliderFloat("Wind", &wind, 0.0f, 15.0f, "x%.2f");
-    if (DrawResetButton("R##wind")) {
+    if (DrawResetButton("R##wind_new")) {
         g_windMul.store(1.0f);
     } else if (windEnabled) {
-        g_windMul.store(wind);
+        g_windMul.store(min(15.0f, max(0.0f, wind)));
     }
     if (!windEnabled) {
         ImGui::EndDisabled();

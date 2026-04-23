@@ -91,12 +91,14 @@ bool InitializeCrimsonWeather(HMODULE module) {
 
 void ShutdownCrimsonWeather() {
     if (!g_initialized.exchange(false)) {
+        RestoreRuntimePatches();
         StopHotkeyService();
         ShutdownOverlayBridge();
         return;
     }
 
     SuspendTimeControl();
+    RestoreRuntimePatches();
     StopHotkeyService();
     ShutdownOverlayBridge();
     MH_Uninitialize();

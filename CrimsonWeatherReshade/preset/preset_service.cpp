@@ -677,7 +677,7 @@ void ApplyPresetData(const WeatherPresetData& data) {
     else g_oSnow.clear();
 
     g_timeTargetHour.store(NormalizeHour24(data.timeHour));
-    if (data.visualTimeOverride) {
+    if (data.visualTimeOverride && g_timeLayoutReady.load()) {
         g_timeCtrlActive.store(true);
         g_timeFreeze.store(true);
         g_timeApplyRequest.store(true);
@@ -685,6 +685,9 @@ void ApplyPresetData(const WeatherPresetData& data) {
         g_timeFreeze.store(false);
         g_timeCtrlActive.store(false);
         g_timeApplyRequest.store(true);
+        if (data.visualTimeOverride && !g_timeLayoutReady.load()) {
+            Log("[W] preset visual time skipped: time layout unresolved\n");
+        }
     }
 
     g_forceCloudsAmount.store(kForceCloudsDefaultAmount);
@@ -727,8 +730,8 @@ void ApplyPresetData(const WeatherPresetData& data) {
         g_oFog.set(fogBoost);
     } else g_oFog.clear();
 
-    g_oWind.clear();
-    g_windMul.store(min(15.0f, max(0.0f, data.wind)));
+    const float wind = min(15.0f, max(0.0f, data.wind));
+    g_windMul.store(wind);
     g_noWind.store(data.noWind);
     if (data.puddleScaleEnabled) g_oCloudThk.set(Clamp01(data.puddleScale));
     else g_oCloudThk.clear();

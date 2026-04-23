@@ -117,8 +117,6 @@ const char* AobTargetLabel(AobTargetId id) {
         return "WeatherFrameUpdate";
     case AobTargetId::AtmosFogBlend:
         return "AtmosFogBlend";
-    case AobTargetId::AtmosphereConstSummary:
-        return "AtmosphereConstSummary";
     case AobTargetId::EnvManagerPtr:
         return "EnvManagerPtr";
     case AobTargetId::NullSentinel:
@@ -380,6 +378,7 @@ void ResetAllSliders() {
     g_oExpNightSkyRot.clear();
     g_oCloudThk.clear();
     g_oWind.clear();
+    g_oWindActual.clear();
     g_oSunDirX.clear();
     g_oSunDirY.clear();
     g_oMoonDirX.clear();
@@ -390,10 +389,19 @@ void ResetAllSliders() {
     g_timeFreeze.store(false);
     g_timeApplyRequest.store(false);
     g_timeTargetHour.store(g_timeCurrentHour.load());
+    g_timeOriginalHour.store(g_timeCurrentHour.load());
+    g_timeOriginalHourValid.store(false);
     g_timeSetHoldTicks.store(0);
     g_timeFrozenRaw.store(-9999.0f);
     g_cloudBaseValid.store(false);
     g_windPackBaseValid.store(false);
+    g_windPackBase11Valid.store(false);
+    g_windPackBase11.store(0.0f);
+    g_windPackBase17Valid.store(false);
+    g_windPackBase17.store(0.0f);
+    g_windNodeBaseValid.store(false);
+    g_windNodeBaseSpeed.store(0.0f);
+    g_windNodeBaseGust.store(0.0f);
     g_resetStopRequested.store(true);
 }
 
@@ -402,6 +410,7 @@ bool AnySliderActive() {
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oExpCloud2C.active.load() || g_oExpCloud2D.active.load() ||
            g_oExpNightSkyRot.active.load() || g_oCloudThk.active.load() || g_oWind.active.load() ||
+           fabsf(g_windMul.load() - 1.0f) > 0.001f ||
            g_oSunDirX.active.load() || g_oSunDirY.active.load() ||
            g_oMoonDirX.active.load() || g_oMoonDirY.active.load();
 }
@@ -409,7 +418,8 @@ bool AnySliderActive() {
 bool AnyCustomWeatherSliderActive() {
     return g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
-           g_oAtmoAlpha.active.load() || g_oCloudThk.active.load() || g_oWind.active.load();
+           g_oAtmoAlpha.active.load() || g_oCloudThk.active.load() || g_oWindActual.active.load() ||
+           fabsf(g_windMul.load() - 1.0f) > 0.001f;
 }
 
 namespace {
@@ -507,29 +517,57 @@ ResolvedEnv ResolveEnv() {
         return r;
     }
 
-    auto* envMgr = reinterpret_cast<void**>(*g_pEnvManager);
-    auto* vtbl = *reinterpret_cast<uintptr_t**>(envMgr);
-    using GetEntityFn = long long(__fastcall*)(void*);
-    r.entity = reinterpret_cast<GetEntityFn>(vtbl[0x40 / 8])(envMgr);
-    if (!r.entity) {
-        return r;
-    }
+    __try {
+        auto* envMgr = reinterpret_cast<void**>(*g_pEnvManager);
+        if (!IsReadablePointer(reinterpret_cast<uintptr_t>(envMgr), sizeof(void*))) {
+            return r;
+        }
 
-    r.weatherState = *reinterpret_cast<long long*>(r.entity + 0xED8);
-    if (!r.weatherState) {
-        return r;
-    }
+        auto* vtbl = *reinterpret_cast<uintptr_t**>(envMgr);
+        if (!IsReadablePointer(reinterpret_cast<uintptr_t>(vtbl), 0x48)) {
+            return r;
+        }
 
-    long long cont = *reinterpret_cast<long long*>(r.weatherState + 0x50);
-    if (!cont) {
-        return r;
-    }
+        using GetEntityFn = long long(__fastcall*)(void*);
+        auto getEntity = reinterpret_cast<GetEntityFn>(vtbl[0x40 / 8]);
+        if (!getEntity || !IsReadablePointer(reinterpret_cast<uintptr_t>(getEntity), 16)) {
+            return r;
+        }
 
-    r.cloudNode = *reinterpret_cast<long long*>(cont + 0x18);
-    r.windNode = *reinterpret_cast<long long*>(cont + 0x20);
-    r.atmosphereNode = ResolveAtmosphereNode(r.windNode);
-    r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE0);
-    r.valid = true;
+        r.entity = getEntity(envMgr);
+        if (!r.entity || !IsReadablePointer(static_cast<uintptr_t>(r.entity), 0xEE8)) {
+            return r;
+        }
+
+        r.weatherState = *reinterpret_cast<long long*>(r.entity + 0xED8);
+        if (!r.weatherState || !IsReadablePointer(static_cast<uintptr_t>(r.weatherState), 0x58)) {
+            return r;
+        }
+
+        long long cont = *reinterpret_cast<long long*>(r.weatherState + 0x50);
+        if (!cont || !IsReadablePointer(static_cast<uintptr_t>(cont), 0x28)) {
+            return r;
+        }
+
+        r.cloudNode = *reinterpret_cast<long long*>(cont + 0x18);
+        r.windNode = *reinterpret_cast<long long*>(cont + 0x20);
+        if (r.cloudNode && !IsReadablePointer(static_cast<uintptr_t>(r.cloudNode), 0x100)) {
+            r.cloudNode = 0;
+        }
+        if (r.windNode && !IsReadablePointer(static_cast<uintptr_t>(r.windNode), 0x100)) {
+            r.windNode = 0;
+        }
+
+        r.atmosphereNode = ResolveAtmosphereNode(r.windNode);
+        r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE0);
+        if (r.particleMgr && !IsReadablePointer(static_cast<uintptr_t>(r.particleMgr), 0x20)) {
+            r.particleMgr = 0;
+        }
+
+        r.valid = r.entity != 0 && r.weatherState != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        r = ResolvedEnv{};
+    }
     return r;
 }
 
@@ -737,6 +775,10 @@ void TickTimeControl() {
 
     const bool active = g_timeCtrlActive.load();
     const bool freeze = g_timeFreeze.load();
+    if (!active && !freeze) {
+        g_timeOriginalHour.store(g_timeCurrentHour.load());
+        g_timeOriginalHourValid.store(true);
+    }
     if (!active && !freeze) {
         if (g_timeFreezeApplied.exchange(false)) {
             RestoreTimeLimitBaseline(entity);
