@@ -17,7 +17,7 @@ using std::max;
 using std::min;
 
 #define MOD_NAME "Crimson Weather"
-#define MOD_VERSION "0.4.0"
+#define MOD_VERSION "0.4.1"
 
 struct Config {
     bool logEnabled = true;

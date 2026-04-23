@@ -89,6 +89,8 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         FloatNearlyEqual(a.nightSkyRotation, b.nightSkyRotation) &&
         a.fogEnabled == b.fogEnabled &&
         FloatNearlyEqual(a.fogPercent, b.fogPercent) &&
+        a.plainFogEnabled == b.plainFogEnabled &&
+        FloatNearlyEqual(a.plainFog, b.plainFog) &&
         FloatNearlyEqual(a.wind, b.wind) &&
         a.noWind == b.noWind &&
         a.puddleScaleEnabled == b.puddleScaleEnabled &&
@@ -384,7 +386,7 @@ bool ParsePresetDocument(const char* path, PresetDocument& outDoc) {
 
 std::vector<PresetWriteEntry> BuildPresetWriteEntries(const WeatherPresetData& data) {
     std::vector<PresetWriteEntry> entries;
-    entries.reserve(20);
+    entries.reserve(26);
 
     const auto push = [&](const char* section,
                           const char* key,
@@ -430,6 +432,8 @@ std::vector<PresetWriteEntry> BuildPresetWriteEntries(const WeatherPresetData& d
 
     push("Atmosphere", "FogEnabled", FormatPresetBool(data.fogEnabled));
     push("Atmosphere", "Fog", FormatPresetFloat(min(100.0f, max(0.0f, data.fogPercent))));
+    push("Atmosphere", "PlainFogEnabled", FormatPresetBool(data.plainFogEnabled));
+    push("Atmosphere", "PlainFog", FormatPresetFloat(min(15.0f, max(0.0f, data.plainFog))));
     push("Atmosphere", "Wind", FormatPresetFloat(min(15.0f, max(0.0f, data.wind))));
     push("Atmosphere", "NoWind", FormatPresetBool(data.noWind));
 
@@ -604,6 +608,8 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetLine(out, "[Atmosphere]");
     AppendPresetKeyValue(out, "FogEnabled", FormatPresetBool(data.fogEnabled));
     AppendPresetKeyValue(out, "Fog", FormatPresetFloat(min(100.0f, max(0.0f, data.fogPercent))));
+    AppendPresetKeyValue(out, "PlainFogEnabled", FormatPresetBool(data.plainFogEnabled));
+    AppendPresetKeyValue(out, "PlainFog", FormatPresetFloat(min(15.0f, max(0.0f, data.plainFog))));
     AppendPresetKeyValue(out, "Wind", FormatPresetFloat(min(15.0f, max(0.0f, data.wind))));
     AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
 
@@ -651,6 +657,8 @@ WeatherPresetData CaptureCurrentPresetData() {
     } else {
         data.fogPercent = 0.0f;
     }
+    data.plainFogEnabled = g_oWind.active.load();
+    data.plainFog = data.plainFogEnabled ? min(15.0f, max(0.0f, g_oWind.value.load())) : 0.0f;
     data.wind = min(15.0f, max(0.0f, g_windMul.load()));
     data.noWind = g_noWind.load();
     data.puddleScaleEnabled = g_oCloudThk.active.load();
@@ -730,6 +738,10 @@ void ApplyPresetData(const WeatherPresetData& data) {
         g_oFog.set(fogBoost);
     } else g_oFog.clear();
 
+    const float plainFog = min(15.0f, max(0.0f, data.plainFog));
+    if (data.plainFogEnabled && plainFog > 0.0001f) g_oWind.set(plainFog);
+    else g_oWind.clear();
+
     const float wind = min(15.0f, max(0.0f, data.wind));
     g_windMul.store(wind);
     g_noWind.store(data.noWind);
@@ -756,6 +768,7 @@ bool LoadPresetFileInternal(const char* path, WeatherPresetData& outData) {
     bool exp2DEnabledSeen = false;
     bool nightSkyRotationEnabledSeen = false;
     bool fogEnabledSeen = false;
+    bool plainFogEnabledSeen = false;
     bool puddleScaleEnabledSeen = false;
     bool sawLegacyAlias = false;
     char line[256] = {};
@@ -890,6 +903,13 @@ bool LoadPresetFileInternal(const char* path, WeatherPresetData& outData) {
             }
         } else if (_stricmp(key.c_str(), "Fog") == 0) {
             if (TryParseFloat(value, floatValue)) data.fogPercent = floatValue;
+        } else if (_stricmp(key.c_str(), "PlainFogEnabled") == 0) {
+            if (TryParseBool(value, boolValue)) {
+                data.plainFogEnabled = boolValue;
+                plainFogEnabledSeen = true;
+            }
+        } else if (_stricmp(key.c_str(), "PlainFog") == 0) {
+            if (TryParseFloat(value, floatValue)) data.plainFog = floatValue;
         } else if (_stricmp(key.c_str(), "Wind") == 0) {
             if (TryParseFloat(value, floatValue)) data.wind = floatValue;
         } else if (_stricmp(key.c_str(), "NoWind") == 0) {
@@ -920,10 +940,12 @@ bool LoadPresetFileInternal(const char* path, WeatherPresetData& outData) {
     if (!exp2DEnabledSeen) data.exp2DEnabled = false;
     if (!nightSkyRotationEnabledSeen) data.nightSkyRotationEnabled = false;
     if (!fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
+    if (!plainFogEnabledSeen) data.plainFogEnabled = !FloatNearlyEqual(data.plainFog, 0.0f);
     if (!puddleScaleEnabledSeen) data.puddleScaleEnabled = !FloatNearlyEqual(data.puddleScale, 0.0f);
     data.exp2C = min(15.0f, max(0.0f, data.exp2C));
     data.exp2D = min(15.0f, max(0.0f, data.exp2D));
     data.nightSkyRotation = min(15.0f, max(-15.0f, data.nightSkyRotation));
+    data.plainFog = min(15.0f, max(0.0f, data.plainFog));
     data.sunLocationX = min(180.0f, max(-180.0f, data.sunLocationX));
     data.sunLocationY = min(180.0f, max(-180.0f, data.sunLocationY));
     data.moonLocationX = min(180.0f, max(-180.0f, data.moonLocationX));
