@@ -32,8 +32,12 @@
 // Size of each memory block. (= page size of VirtualAlloc)
 #define MEMORY_BLOCK_SIZE 0x1000
 
-// Max range for seeking a memory block. (= 1024MB)
-#define MAX_MEMORY_RANGE 0x40000000
+// Max range for seeking a memory block.
+// x64 hooks patch the target with a relative jump to a relay/trampoline page,
+// so the allocation only has to stay inside the signed 32-bit displacement
+// range. ReShade add-ons can be loaded late enough that the old 1GB search
+// window finds no free page near Crimson Desert's 0x140... image.
+#define MAX_MEMORY_RANGE 0x7FF00000
 
 // Memory protection flags to check the executable address.
 #define PAGE_EXECUTE_FLAGS \
@@ -63,6 +67,7 @@ typedef struct _MEMORY_BLOCK
 
 // First element of the memory block list.
 static PMEMORY_BLOCK g_pMemoryBlocks;
+static PMEMORY_SLOT g_pReservedSlot;
 
 //-------------------------------------------------------------------------
 VOID InitializeBuffer(VOID)
@@ -75,6 +80,7 @@ VOID UninitializeBuffer(VOID)
 {
     PMEMORY_BLOCK pBlock = g_pMemoryBlocks;
     g_pMemoryBlocks = NULL;
+    g_pReservedSlot = NULL;
 
     while (pBlock)
     {
@@ -241,6 +247,22 @@ static PMEMORY_BLOCK GetMemoryBlock(LPVOID pOrigin)
     }
 
     return pBlock;
+}
+
+//-------------------------------------------------------------------------
+BOOL ReserveBufferBlock(LPVOID pOrigin)
+{
+    if (g_pReservedSlot != NULL)
+        return TRUE;
+
+    PMEMORY_BLOCK pBlock = GetMemoryBlock(pOrigin);
+    if (pBlock == NULL || pBlock->pFree == NULL)
+        return FALSE;
+
+    g_pReservedSlot = pBlock->pFree;
+    pBlock->pFree = g_pReservedSlot->pNext;
+    pBlock->usedCount++;
+    return TRUE;
 }
 
 //-------------------------------------------------------------------------

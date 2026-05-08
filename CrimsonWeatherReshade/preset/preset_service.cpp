@@ -89,6 +89,8 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         FloatNearlyEqual(a.exp2C, b.exp2C) &&
         a.exp2DEnabled == b.exp2DEnabled &&
         FloatNearlyEqual(a.exp2D, b.exp2D) &&
+        a.cloudVariationEnabled == b.cloudVariationEnabled &&
+        FloatNearlyEqual(a.cloudVariation, b.cloudVariation) &&
         a.nightSkyRotationEnabled == b.nightSkyRotationEnabled &&
         FloatNearlyEqual(a.nightSkyRotation, b.nightSkyRotation) &&
         a.fogEnabled == b.fogEnabled &&
@@ -267,6 +269,7 @@ struct PresetParseState {
     bool moonLocationYEnabledSeen = false;
     bool exp2CEnabledSeen = false;
     bool exp2DEnabledSeen = false;
+    bool cloudVariationEnabledSeen = false;
     bool nightSkyRotationEnabledSeen = false;
     bool fogEnabledSeen = false;
     bool nativeFogEnabledSeen = false;
@@ -377,6 +380,15 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "2D")) {
         if (TryParseFloat(value, floatValue)) data.exp2D = floatValue;
+    } else if (KeyEquals(key, "CloudVariationEnabled") ||
+               KeyEquals(key, "CloudThicknessEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.cloudVariationEnabled = boolValue;
+            state.cloudVariationEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "CloudVariation") ||
+               KeyEquals(key, "CloudThickness")) {
+        if (TryParseFloat(value, floatValue)) data.cloudVariation = floatValue;
     } else if (KeyEquals(key, "NightSkyRotationEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.nightSkyRotationEnabled = boolValue;
@@ -427,6 +439,7 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     if (!state.moonLocationYEnabledSeen) data.moonLocationYEnabled = false;
     if (!state.exp2CEnabledSeen) data.exp2CEnabled = false;
     if (!state.exp2DEnabledSeen) data.exp2DEnabled = false;
+    if (!state.cloudVariationEnabledSeen) data.cloudVariationEnabled = false;
     if (!state.nightSkyRotationEnabledSeen) data.nightSkyRotationEnabled = false;
     if (!state.fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
     if (!state.nativeFogEnabledSeen) data.nativeFogEnabled = !FloatNearlyEqual(data.nativeFog, 0.0f);
@@ -530,6 +543,8 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "2C", FormatPresetFloat(ClampPresetFloat(data.exp2C, 0.0f, 15.0f)));
     AppendPresetKeyValue(out, "2DEnabled", FormatPresetBool(data.exp2DEnabled));
     AppendPresetKeyValue(out, "2D", FormatPresetFloat(ClampPresetFloat(data.exp2D, 0.0f, 15.0f)));
+    AppendPresetKeyValue(out, "CloudVariationEnabled", FormatPresetBool(data.cloudVariationEnabled));
+    AppendPresetKeyValue(out, "CloudVariation", FormatPresetFloat(ClampPresetFloat(data.cloudVariation, 0.0f, 15.0f)));
     AppendPresetKeyValue(out, "NightSkyRotationEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
     AppendPresetKeyValue(out, "NightSkyRotation", FormatPresetFloat(ClampPresetFloat(data.nightSkyRotation, -15.0f, 15.0f)));
     AppendPresetKeyValue(out, "PuddleScaleEnabled", FormatPresetBool(data.puddleScaleEnabled));
@@ -579,6 +594,8 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.exp2C = OverrideValueIf(data.exp2CEnabled, g_oExpCloud2C, 1.0f);
     data.exp2DEnabled = g_oExpCloud2D.active.load();
     data.exp2D = OverrideValueIf(data.exp2DEnabled, g_oExpCloud2D, 1.0f);
+    data.cloudVariationEnabled = g_oCloudVariation.active.load();
+    data.cloudVariation = OverrideValueIf(data.cloudVariationEnabled, g_oCloudVariation, 1.0f);
     data.nightSkyRotationEnabled = g_oExpNightSkyRot.active.load();
     data.nightSkyRotation = OverrideValueIf(data.nightSkyRotationEnabled, g_oExpNightSkyRot, 1.0f);
     data.fogEnabled = g_oFog.active.load();
@@ -638,6 +655,7 @@ void ApplyPresetData(const WeatherPresetData& data) {
     }
     ApplyEnabledOverride(g_oExpCloud2C, data.exp2CEnabled, data.exp2C, 0.0f, 15.0f);
     ApplyEnabledOverride(g_oExpCloud2D, data.exp2DEnabled, data.exp2D, 0.0f, 15.0f);
+    ApplyEnabledOverride(g_oCloudVariation, data.cloudVariationEnabled, data.cloudVariation, 0.0f, 15.0f);
     ApplyEnabledOverride(g_oExpNightSkyRot, data.nightSkyRotationEnabled, data.nightSkyRotation, -15.0f, 15.0f);
 
     const float fogPct = ClampPresetFloat(data.fogPercent, 0.0f, 100.0f);

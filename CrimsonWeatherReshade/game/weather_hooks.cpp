@@ -661,6 +661,10 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         if (!g_oAtmoAlpha.active.load() && std::isfinite(nativeCloudPack.alpha)) {
             g_windPackBase2F.store(nativeCloudPack.alpha);
         }
+        if (!g_oCloudVariation.active.load() && std::isfinite(nativeCloudPack.thickness)) {
+            g_windPackBase32.store(nativeCloudPack.thickness);
+            g_windPackBase32Valid.store(true);
+        }
     }
     if (!g_oExpCloud2C.active.load() && std::isfinite(packedOut[0x2C])) {
         g_windPackBase2C.store(packedOut[0x2C]);
@@ -716,6 +720,11 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
     if (exp0AActive) {
         const float value = min(15.0f, max(-15.0f, g_oExpNightSkyRot.get(1.0f)));
         packedOut[0x0A] = g_windPackBase0A.load() * value;
+    }
+
+    if (g_oCloudVariation.active.load() && g_windPackBase32Valid.load()) {
+        const float mul = min(15.0f, max(0.0f, g_oCloudVariation.get(1.0f)));
+        packedOut[0x32] = g_windPackBase32.load() * mul;
     }
 
     if (g_oNativeFog.active.load()) {

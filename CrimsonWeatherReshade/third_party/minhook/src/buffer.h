@@ -37,6 +37,7 @@
 
 VOID   InitializeBuffer(VOID);
 VOID   UninitializeBuffer(VOID);
+BOOL   ReserveBufferBlock(LPVOID pOrigin);
 LPVOID AllocateBuffer(LPVOID pOrigin);
 VOID   FreeBuffer(LPVOID pBuffer);
 BOOL   IsExecutableAddress(LPVOID pAddress);

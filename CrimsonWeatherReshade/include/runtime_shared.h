@@ -227,6 +227,28 @@ enum class RuntimeHealthState : uint8_t {
     Ready = 2,
 };
 
+enum class AddonStartupState : uint8_t {
+    NotStarted = 0,
+    Starting = 1,
+    Ready = 2,
+    Failed = 3,
+};
+
+enum class StartupStepId : uint8_t {
+    Idle = 0,
+    Config,
+    MinHook,
+    AobScan,
+    Presets,
+    Hotkeys,
+    Ready,
+    Failed,
+    Count
+};
+
+inline constexpr int kStartupLogLineCount = 8;
+inline constexpr int kStartupLogLineLength = 96;
+
 enum class AobTargetId : uint8_t {
     WeatherTick = 0,
     GetRainIntensity,
@@ -297,6 +319,7 @@ RuntimeHealthState GetRuntimeFeatureState(RuntimeFeatureId id);
 bool RuntimeFeatureAvailable(RuntimeFeatureId id);
 bool RuntimeFeatureDegraded(RuntimeFeatureId id);
 const char* RuntimeFeatureNote(RuntimeFeatureId id);
+bool RuntimeStartupHealthy(char* outReason, size_t outReasonSize);
 
 bool InstallHook(void* target, void* detour, void** trampoline, const char* name, bool required = true);
 uintptr_t FindFunctionStartViaUnwind(uintptr_t pc);
@@ -330,6 +353,7 @@ inline SliderOverride g_oHighClouds;
 inline SliderOverride g_oAtmoAlpha;
 inline SliderOverride g_oExpCloud2C;
 inline SliderOverride g_oExpCloud2D;
+inline SliderOverride g_oCloudVariation;
 inline SliderOverride g_oExpNightSkyRot;
 inline SliderOverride g_oCloudThk;
 inline SliderOverride g_oNativeFog;
@@ -346,6 +370,15 @@ inline std::atomic<bool> g_forceClear{ false };
 inline std::atomic<bool> g_noWind{ false };
 inline std::atomic<bool> g_modEnabled{ true };
 inline std::atomic<bool> g_modSuspendRequested{ false };
+inline std::atomic<AddonStartupState> g_addonStartupState{ AddonStartupState::NotStarted };
+inline std::atomic<StartupStepId> g_startupStep{ StartupStepId::Idle };
+inline std::atomic<int> g_startupStepIndex{ 0 };
+inline std::atomic<int> g_startupStepCount{ 6 };
+inline std::atomic<unsigned long long> g_startupStartTick{ 0 };
+inline std::atomic<unsigned long long> g_startupEndTick{ 0 };
+inline std::atomic<unsigned int> g_startupLogSequence{ 0 };
+inline char g_startupDetailText[128] = "Waiting for user";
+inline char g_startupLogLines[kStartupLogLineCount][kStartupLogLineLength] = {};
 inline std::atomic<bool> g_timeCtrlActive{ false };
 inline std::atomic<bool> g_timeFreeze{ false };
 inline std::atomic<bool> g_timeApplyRequest{ false };
@@ -373,6 +406,8 @@ inline std::atomic<float> g_windPackBase23{ 0.0f };
 inline std::atomic<float> g_windPackBase24{ 0.0f };
 inline std::atomic<float> g_windPackBase2F{ 0.0f };
 inline std::atomic<float> g_windPackBase30{ 0.0f };
+inline std::atomic<bool> g_windPackBase32Valid{ false };
+inline std::atomic<float> g_windPackBase32{ 0.0f };
 inline std::atomic<bool> g_windPackBase2CValid{ false };
 inline std::atomic<float> g_windPackBase2C{ 0.0f };
 inline std::atomic<bool> g_windPackBase2DValid{ false };
@@ -427,6 +462,12 @@ void TickTimeControl();
 void SuspendTimeControl();
 void SetModEnabled(bool enabled);
 void ToggleModEnabled();
+const char* AddonStartupStateLabel(AddonStartupState state);
+const char* StartupStepLabel(StartupStepId step);
+void StartupSetStep(StartupStepId step, int index, const char* detail);
+void StartupAppendLog(const char* level, const char* msg);
+void StartupResetProgress();
+void RequestCrimsonWeatherStart();
 void* ResolveNativeToastManager();
 bool NativeToastReady();
 void ShowNativeToast(const char* msg);

@@ -1,12 +1,12 @@
 # CrimsonWeather
 
-ASI weather-control mod for `CrimsonDesert.exe`.
+ReShade add-on weather-control mod for `CrimsonDesert.exe`.
 
-Current main branch is the ReShade rewrite. The older DXGI/ImGui build is kept on the `legacy` branch.
+Current main branch is the ReShade add-on rewrite. The older DXGI/ImGui build is kept on the `legacy` branch.
 
 ## Runtime Files
 
-- `CrimsonWeather.asi`
+- `CrimsonWeather.addon64`
 - `CrimsonWeather.ini`
 - `CrimsonWeather.log` when logging is enabled
 - `*.ini` preset files saved in the same mod directory
@@ -14,6 +14,7 @@ Current main branch is the ReShade rewrite. The older DXGI/ImGui build is kept o
 ## Overlay
 
 This version uses a ReShade-hosted overlay instead of the older custom DXGI overlay.
+Open the Crimson Weather overlay and press `Start Crimson Weather` once per game launch.
 
 Current controls:
 - Presets
@@ -54,6 +55,8 @@ LastPreset=
 
 Notes:
 - ReShade is required for the in-game UI.
+- A ReShade build with add-on support is required.
+- No ASI loader is required.
 - Old preset files still load.
 - Saving a preset rewrites it into the current format.
 
@@ -66,7 +69,7 @@ Build:
 - `Release | x64`
 
 Compiler output:
-- `CrimsonWeatherReshade/x64/Release/CrimsonWeather.asi`
+- `CrimsonWeatherReshade/x64/Release/CrimsonWeather.addon64`
 
 ## Download
 

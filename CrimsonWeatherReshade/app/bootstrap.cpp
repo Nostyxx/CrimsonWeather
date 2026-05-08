@@ -4,9 +4,12 @@
 #include "preset_service.h"
 #include "runtime_shared.h"
 
+extern "C" BOOL ReserveBufferBlock(LPVOID pOrigin);
+
 namespace {
 
 std::atomic<bool> g_initialized{ false };
+std::atomic<bool> g_minHookInitialized{ false };
 
 bool IsTargetProcess() {
     wchar_t path[MAX_PATH] = {};
@@ -27,12 +30,101 @@ void ResolveModuleDirectory(HMODULE module, char* outDir, size_t outDirSize) {
     }
 }
 
-DWORD WINAPI BootstrapThread(void* param) {
-    HMODULE module = static_cast<HMODULE>(param);
-    if (!IsTargetProcess()) {
+void MarkStartupFailed(const char* status) {
+    if (status && status[0]) {
+        GUI_SetStatus(status);
+    }
+    StartupSetStep(StartupStepId::Failed, g_startupStepIndex.load(), status ? status : "Startup failed");
+    g_addonStartupState.store(AddonStartupState::Failed);
+}
+
+void CleanupFailedStart() {
+    RestoreRuntimePatches();
+    StopHotkeyService();
+    if (g_minHookInitialized.load()) {
+        MH_DisableHook(MH_ALL_HOOKS);
+        MH_RemoveHook(MH_ALL_HOOKS);
+    }
+}
+
+void PrimeMinHookRelayBlock() {
+    const MH_STATUS mhStatus = MH_Initialize();
+    if (mhStatus != MH_OK && mhStatus != MH_ERROR_ALREADY_INITIALIZED) {
+        Log("[W] MinHook early init failed: %d\n", static_cast<int>(mhStatus));
+        return;
+    }
+
+    g_minHookInitialized.store(true);
+    void* gameBase = GetModuleHandle(nullptr);
+    const BOOL reserved = ReserveBufferBlock(gameBase);
+    Log(reserved
+        ? "[i] MinHook relay block reserved near game base\n"
+        : "[W] MinHook relay block reserve failed near game base\n");
+}
+
+DWORD WINAPI StartThread(void*) {
+    AddonStartupState expected = AddonStartupState::NotStarted;
+    if (!g_addonStartupState.compare_exchange_strong(expected, AddonStartupState::Starting)) {
+        expected = AddonStartupState::Failed;
+        if (!g_addonStartupState.compare_exchange_strong(expected, AddonStartupState::Starting)) {
+            return 0;
+        }
+    }
+
+    StartupResetProgress();
+    g_startupStartTick.store(GetTickCount64());
+    g_startupEndTick.store(0);
+    StartupSetStep(StartupStepId::Config, 1, "Preparing startup");
+    GUI_SetStatus("Starting Crimson Weather...");
+    Log("[i] Start requested from ReShade overlay\n");
+
+    StartupSetStep(StartupStepId::MinHook, 2, "Initializing hook engine");
+    const MH_STATUS mhStatus = MH_Initialize();
+    if (mhStatus != MH_OK && mhStatus != MH_ERROR_ALREADY_INITIALIZED) {
+        Log("[E] MH_Initialize failed: %d\n", static_cast<int>(mhStatus));
+        MarkStartupFailed("MinHook initialization failed");
+        return 0;
+    }
+    g_minHookInitialized.store(true);
+
+    StartupSetStep(StartupStepId::AobScan, 3, "Scanning game code");
+    if (!RunAOBScan()) {
+        Log("[E] AOB scan failed\n");
+        CleanupFailedStart();
+        MarkStartupFailed("AOB scan failed");
+        return 0;
+    }
+    char startupIssue[192] = {};
+    if (!RuntimeStartupHealthy(startupIssue, sizeof(startupIssue))) {
+        Log("[E] Startup health check failed: %s\n", startupIssue);
+        CleanupFailedStart();
+        MarkStartupFailed(startupIssue[0] ? startupIssue : "Required hooks unavailable");
         return 0;
     }
 
+#if !defined(CW_WIND_ONLY)
+    StartupSetStep(StartupStepId::Presets, 4, "Preparing presets");
+    Preset_ArmAutoApplyRemembered();
+#else
+    StartupSetStep(StartupStepId::Presets, 4, "Wind-only preset step skipped");
+#endif
+    StartupSetStep(StartupStepId::Hotkeys, 5, "Starting hotkeys");
+    if (!StartHotkeyService()) {
+        Log("[E] Hotkey service failed to start\n");
+        CleanupFailedStart();
+        MarkStartupFailed("Hotkey service failed");
+        return 0;
+    }
+
+    g_initialized.store(true);
+    g_addonStartupState.store(AddonStartupState::Ready);
+    StartupSetStep(StartupStepId::Ready, 6, "Crimson Weather ready");
+    GUI_SetStatus("Ready");
+    Log("[+] Ready\n");
+    return 0;
+}
+
+void OpenStartupLog(HMODULE module) {
     char dir[MAX_PATH] = {};
     ResolveModuleDirectory(module, dir, sizeof(dir));
     LoadConfig(dir);
@@ -42,50 +134,49 @@ DWORD WINAPI BootstrapThread(void* param) {
     Log("  " MOD_DISPLAY_NAME " v" MOD_VERSION "\n");
     Log("================================================\n\n");
     Log("[i] base: %p\n", GetModuleHandle(nullptr));
+}
 
-    if (!InitializeOverlayBridge(module)) {
-        Log("[E] ReShade addon registration failed; aborting initialization\n");
-        GUI_SetStatus("ReShade addon registration failed");
+DWORD WINAPI BootstrapThread(void* param) {
+    HMODULE module = static_cast<HMODULE>(param);
+    if (!IsTargetProcess()) {
         return 0;
     }
 
-    if (MH_Initialize() != MH_OK) {
-        Log("[E] MH_Initialize failed\n");
-        GUI_SetStatus("MinHook initialization failed");
-        ShutdownOverlayBridge();
-        return 0;
-    }
-
-    if (!RunAOBScan()) {
-        Log("[E] AOB scan failed\n");
-        GUI_SetStatus("AOB scan failed");
-        MH_Uninitialize();
-        ShutdownOverlayBridge();
-        return 0;
-    }
-
-#if !defined(CW_WIND_ONLY)
-    Preset_ArmAutoApplyRemembered();
-#endif
-    if (!StartHotkeyService()) {
-        Log("[E] Hotkey service failed to start\n");
-        GUI_SetStatus("Hotkey service failed");
-        MH_Uninitialize();
-        ShutdownOverlayBridge();
-        return 0;
-    }
-    g_initialized.store(true);
-    GUI_SetStatus("Ready");
-    Log("[+] Ready\n");
+    OpenStartupLog(module);
+    PrimeMinHookRelayBlock();
+    Log("[i] ReShade addon loaded; waiting for user start\n");
     return 0;
 }
 
 } // namespace
 
+void RequestCrimsonWeatherStart() {
+    HANDLE thread = CreateThread(nullptr, 0, &StartThread, nullptr, 0, nullptr);
+    if (!thread) {
+        MarkStartupFailed("Failed to create startup thread");
+        return;
+    }
+    CloseHandle(thread);
+}
+
 bool InitializeCrimsonWeather(HMODULE module) {
+    if (!IsTargetProcess()) {
+        return true;
+    }
+
+    StartupResetProgress();
+    if (!InitializeOverlayBridge(module)) {
+        MarkStartupFailed("ReShade addon registration failed");
+        return false;
+    }
+    g_addonStartupState.store(AddonStartupState::NotStarted);
+    StartupSetStep(StartupStepId::Idle, 0, "Click Start to initialize");
+    GUI_SetStatus("Click Start to initialize");
+
     HANDLE thread = CreateThread(nullptr, 0, &BootstrapThread, module, 0, nullptr);
     if (!thread) {
-        return false;
+        MarkStartupFailed("Failed to create bootstrap thread");
+        return true;
     }
     CloseHandle(thread);
     return true;
@@ -96,6 +187,9 @@ void ShutdownCrimsonWeather() {
         RestoreRuntimePatches();
         StopHotkeyService();
         ShutdownOverlayBridge();
+        if (g_minHookInitialized.exchange(false)) {
+            MH_Uninitialize();
+        }
         return;
     }
 
@@ -103,7 +197,9 @@ void ShutdownCrimsonWeather() {
     RestoreRuntimePatches();
     StopHotkeyService();
     ShutdownOverlayBridge();
-    MH_Uninitialize();
+    if (g_minHookInitialized.exchange(false)) {
+        MH_Uninitialize();
+    }
     if (g_logFile) {
         fclose(g_logFile);
         g_logFile = nullptr;

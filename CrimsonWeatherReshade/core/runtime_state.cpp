@@ -299,6 +299,49 @@ const char* RuntimeFeatureNote(RuntimeFeatureId id) {
     return g_runtimeFeatureHealth[static_cast<size_t>(id)].note.c_str();
 }
 
+bool RuntimeStartupHealthy(char* outReason, size_t outReasonSize) {
+    if (outReason && outReasonSize > 0) {
+        outReason[0] = '\0';
+    }
+
+#if defined(CW_WIND_ONLY)
+    constexpr RuntimeFeatureId criticalFeatures[] = {
+        RuntimeFeatureId::WindControls
+    };
+#else
+    constexpr RuntimeFeatureId criticalFeatures[] = {
+        RuntimeFeatureId::ForceClear,
+        RuntimeFeatureId::Rain,
+        RuntimeFeatureId::Dust,
+        RuntimeFeatureId::Snow,
+        RuntimeFeatureId::TimeControls,
+        RuntimeFeatureId::CloudControls,
+        RuntimeFeatureId::FogControls,
+        RuntimeFeatureId::WindControls,
+        RuntimeFeatureId::NoWindControls,
+        RuntimeFeatureId::DetailControls,
+        RuntimeFeatureId::ExperimentControls
+    };
+#endif
+
+    for (RuntimeFeatureId feature : criticalFeatures) {
+        const RuntimeHealthEntry& entry = g_runtimeFeatureHealth[static_cast<size_t>(feature)];
+        if (entry.state == RuntimeHealthState::Ready) {
+            continue;
+        }
+        if (outReason && outReasonSize > 0) {
+            const char* note = entry.note.empty() ? "hook missing" : entry.note.c_str();
+            sprintf_s(outReason, outReasonSize, "%s %s: %s",
+                RuntimeFeatureLabel(feature),
+                RuntimeHealthStateLabel(entry.state),
+                note);
+        }
+        return false;
+    }
+
+    return true;
+}
+
 float ClampUiScale(float v) {
     return min(kUiScaleMax, max(kUiScaleMin, v));
 }
@@ -457,6 +500,7 @@ void ResetAllSliders() {
     g_oAtmoAlpha.clear();
     g_oExpCloud2C.clear();
     g_oExpCloud2D.clear();
+    g_oCloudVariation.clear();
     g_oExpNightSkyRot.clear();
     g_oCloudThk.clear();
     g_oNativeFog.clear();
@@ -478,6 +522,8 @@ void ResetAllSliders() {
     g_timeFrozenRaw.store(-9999.0f);
     g_cloudBaseValid.store(false);
     g_windPackBaseValid.store(false);
+    g_windPackBase32Valid.store(false);
+    g_windPackBase32.store(0.0f);
     g_windPackBase11Valid.store(false);
     g_windPackBase11.store(0.0f);
     g_windPackBase17Valid.store(false);
@@ -492,7 +538,8 @@ bool AnySliderActive() {
     return g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oExpCloud2C.active.load() || g_oExpCloud2D.active.load() ||
-           g_oExpNightSkyRot.active.load() || g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
+           g_oCloudVariation.active.load() || g_oExpNightSkyRot.active.load() ||
+           g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
            fabsf(g_windMul.load() - 1.0f) > 0.001f ||
            g_oSunDirX.active.load() || g_oSunDirY.active.load() ||
            g_oMoonDirX.active.load() || g_oMoonDirY.active.load();
@@ -502,6 +549,7 @@ bool AnyCustomWeatherSliderActive() {
     return g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
+           g_oCloudVariation.active.load() ||
            g_oWindActual.active.load() ||
            fabsf(g_windMul.load() - 1.0f) > 0.001f;
 }
@@ -957,6 +1005,74 @@ void SetModEnabled(bool enabled) {
 
 void ToggleModEnabled() {
     SetModEnabled(!g_modEnabled.load());
+}
+
+const char* AddonStartupStateLabel(AddonStartupState state) {
+    switch (state) {
+    case AddonStartupState::Starting:
+        return "Starting";
+    case AddonStartupState::Ready:
+        return "Ready";
+    case AddonStartupState::Failed:
+        return "Failed";
+    default:
+        return "Not started";
+    }
+}
+
+const char* StartupStepLabel(StartupStepId step) {
+    switch (step) {
+    case StartupStepId::Config:
+        return "Config";
+    case StartupStepId::MinHook:
+        return "Hook engine";
+    case StartupStepId::AobScan:
+        return "AOB scan";
+    case StartupStepId::Presets:
+        return "Presets";
+    case StartupStepId::Hotkeys:
+        return "Hotkeys";
+    case StartupStepId::Ready:
+        return "Ready";
+    case StartupStepId::Failed:
+        return "Failed";
+    default:
+        return "Idle";
+    }
+}
+
+void StartupAppendLog(const char* level, const char* msg) {
+    const unsigned int seq = g_startupLogSequence.fetch_add(1);
+    const int slot = static_cast<int>(seq % kStartupLogLineCount);
+    const char* safeLevel = (level && level[0]) ? level : "i";
+    const char* safeMsg = msg ? msg : "";
+    sprintf_s(g_startupLogLines[slot], "[%s] %s", safeLevel, safeMsg);
+}
+
+void StartupSetStep(StartupStepId step, int index, const char* detail) {
+    g_startupStep.store(step);
+    g_startupStepIndex.store(max(0, min(g_startupStepCount.load(), index)));
+    if (detail && detail[0]) {
+        strncpy_s(g_startupDetailText, detail, _TRUNCATE);
+        StartupAppendLog(step == StartupStepId::Failed ? "fail" : "run", detail);
+        GUI_SetStatus(detail);
+    }
+    if (step == StartupStepId::Ready || step == StartupStepId::Failed) {
+        g_startupEndTick.store(GetTickCount64());
+    }
+}
+
+void StartupResetProgress() {
+    g_startupStep.store(StartupStepId::Idle);
+    g_startupStepIndex.store(0);
+    g_startupStepCount.store(6);
+    g_startupStartTick.store(0);
+    g_startupEndTick.store(0);
+    g_startupLogSequence.store(0);
+    strcpy_s(g_startupDetailText, "Waiting for user");
+    for (auto& line : g_startupLogLines) {
+        line[0] = '\0';
+    }
 }
 
 void* ResolveNativeToastManager() {

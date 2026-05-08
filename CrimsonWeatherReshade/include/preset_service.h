@@ -29,6 +29,8 @@ struct WeatherPresetData {
     float exp2C = 1.0f;
     bool exp2DEnabled = false;
     float exp2D = 1.0f;
+    bool cloudVariationEnabled = false;
+    float cloudVariation = 1.0f;
     bool nightSkyRotationEnabled = false;
     float nightSkyRotation = 1.0f;
     bool fogEnabled = false;
