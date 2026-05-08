@@ -16,8 +16,19 @@
 using std::max;
 using std::min;
 
+#if defined(CW_WIND_ONLY)
 #define MOD_NAME "Crimson Weather"
-#define MOD_VERSION "0.4.1"
+#define MOD_DISPLAY_NAME "Crimson Weather (Wind only)"
+#define MOD_CONFIG_FILE "CrimsonWeather.WindOnly.ini"
+#define MOD_LOG_FILE "CrimsonWeather.WindOnly.log"
+#else
+#define MOD_NAME "Crimson Weather"
+#define MOD_DISPLAY_NAME MOD_NAME
+#define MOD_CONFIG_FILE "CrimsonWeather.ini"
+#define MOD_LOG_FILE "CrimsonWeather.log"
+#endif
+
+#define MOD_VERSION "0.4.2"
 
 struct Config {
     bool logEnabled = true;
@@ -43,12 +54,21 @@ WORD ParseControllerCombo(const char* text, WORD fallback);
 bool IsControllerComboPressed(WORD buttons, WORD comboMask);
 void LoadConfig(const char* dir);
 void SaveConfigUIScale();
+void SaveWindOnlyConfig();
 void OpenLogFile(const char* dir);
 void GUI_SetStatus(const char* msg);
 void ApplyUiScale(float scale);
 void ResetAllSliders();
 bool AnySliderActive();
 bool AnyCustomWeatherSliderActive();
+
+constexpr bool IsWindOnlyBuild() {
+#if defined(CW_WIND_ONLY)
+    return true;
+#else
+    return false;
+#endif
+}
 
 namespace WCO {
     constexpr ptrdiff_t WIND_EVENT_A = 0xD0;
@@ -135,8 +155,8 @@ inline constexpr int kEffectCount = 9;
 typedef void(__fastcall* WeatherTick_fn)(long long self, float dt);
 typedef void(__fastcall* ActivateEffect_fn)(long long self, int id, long long* slotA, long long* slotB, float v);
 typedef void(__fastcall* SetIntensity_fn)(long long particleMgr, int handle, float v);
-typedef float(__fastcall* GetWeatherIntensity_fn)(long long weatherState);
-typedef float(__fastcall* GetDustIntensity_fn)(long long weatherState);
+typedef __m128(__fastcall* GetWeatherIntensity_fn)(long long weatherState);
+typedef __m128(__fastcall* GetDustIntensity_fn)(long long weatherState);
 typedef void(__fastcall* PPLayerUpdate_fn)(long long layerMgr, float dt);
 typedef long long(__fastcall* GetLayerMeta_fn)(void* layerEntry);
 typedef void(__fastcall* AtmosFogBlend_fn)(long long ctx, long long outParams);
@@ -312,6 +332,7 @@ inline SliderOverride g_oExpCloud2C;
 inline SliderOverride g_oExpCloud2D;
 inline SliderOverride g_oExpNightSkyRot;
 inline SliderOverride g_oCloudThk;
+inline SliderOverride g_oNativeFog;
 inline SliderOverride g_oWind;
 inline SliderOverride g_oWindActual;
 inline SliderOverride g_oSunDirX;
@@ -414,9 +435,9 @@ void StopHotkeyService();
 
 bool RunAOBScan();
 void RestoreRuntimePatches();
-float __fastcall Hooked_GetRainIntensity(long long ws);
-float __fastcall Hooked_GetSnowIntensity(long long ws);
-float __fastcall Hooked_GetDustIntensity(long long ws);
+__m128 __fastcall Hooked_GetRainIntensity(long long ws);
+__m128 __fastcall Hooked_GetSnowIntensity(long long ws);
+__m128 __fastcall Hooked_GetDustIntensity(long long ws);
 void __fastcall Hooked_PPLayerUpdate(long long layerMgr, float dt);
 void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams);
 void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt);

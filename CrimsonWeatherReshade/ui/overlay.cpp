@@ -64,6 +64,32 @@ bool DrawResetButton(const char* id) {
     return ImGui::Button(id, ImVec2(28.0f, 0.0f));
 }
 
+void DrawWindOnlyOverlay() {
+    ImGui::Text("%s %s", MOD_DISPLAY_NAME, MOD_VERSION);
+    const char* nexusLabel = "nexusmods";
+    const float nexusWidth = ImGui::CalcTextSize(nexusLabel).x;
+    const float cursorY = ImGui::GetCursorPosY() - ImGui::GetTextLineHeightWithSpacing();
+    const float rightEdge = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), rightEdge - nexusWidth));
+    ImGui::SetCursorPosY(cursorY);
+    ImGui::TextLinkOpenURL(nexusLabel, "https://www.nexusmods.com/crimsondesert/mods/632");
+    ImGui::Separator();
+
+    float wind = g_windMul.load();
+    const bool windChanged = ImGui::SliderFloat("Wind", &wind, 0.0f, 15.0f, "x%.2f");
+    if (DrawResetButton("R##wind_only")) {
+        g_windMul.store(1.0f);
+        SaveWindOnlyConfig();
+    } else {
+        const float clamped = min(15.0f, max(0.0f, wind));
+        if (windChanged && fabsf(clamped - g_windMul.load()) > 0.0001f) {
+            g_windMul.store(clamped);
+            SaveWindOnlyConfig();
+        }
+    }
+}
+
 bool DrawDisabledTabBody() {
     if (g_modEnabled.load()) {
         return false;
@@ -196,7 +222,11 @@ void DrawWeatherTab() {
     if (DrawResetButton("R##dust")) {
         g_oDust.clear();
     } else if (dustEnabled) {
-        dust > 0.0001f ? g_oDust.set(dust) : g_oDust.clear();
+        if (dust > 0.0001f) {
+            g_oDust.set(dust);
+        } else {
+            g_oDust.clear();
+        }
     }
     if (!dustEnabled) {
         ImGui::EndDisabled();
@@ -338,19 +368,19 @@ void DrawAtmosphereTab() {
         DrawFeatureUnavailable(RuntimeFeatureId::FogControls);
     }
 
-    float fogFromWind = g_oWind.active.load() ? g_oWind.value.load() : 0.0f;
+    float fogFromWind = g_oNativeFog.active.load() ? g_oNativeFog.value.load() : 0.0f;
     const bool windEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::WindControls);
     if (!windEnabled) {
         ImGui::BeginDisabled();
     }
     ImGui::SliderFloat("Fog", &fogFromWind, 0.0f, 15.0f, "%.2f");
     if (DrawResetButton("R##fog_from_wind")) {
-        g_oWind.clear();
+        g_oNativeFog.clear();
     } else if (windEnabled) {
         if (fogFromWind > 0.001f) {
-            g_oWind.set(fogFromWind);
+            g_oNativeFog.set(fogFromWind);
         } else {
-            g_oWind.clear();
+            g_oNativeFog.clear();
         }
     }
     if (!windEnabled) {
@@ -446,10 +476,15 @@ void DrawExperimentTab() {
 }
 
 void DrawOverlay(reshade::api::effect_runtime*) {
+#if !defined(CW_WIND_ONLY)
     Preset_OnWorldTick(g_pEnvManager && *g_pEnvManager != 0, 0.016f);
+#endif
 
+#if defined(CW_WIND_ONLY)
+    DrawWindOnlyOverlay();
+#else
     ImGui::SetNextWindowSize(ImVec2(620.0f, 420.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Crimson Weather")) {
+    if (!ImGui::Begin(MOD_NAME)) {
         ImGui::End();
         return;
     }
@@ -488,6 +523,7 @@ void DrawOverlay(reshade::api::effect_runtime*) {
     ImGui::Separator();
     ImGui::Text("Unsaved changes: %s", Preset_HasUnsavedChanges() ? "Yes" : "No");
     ImGui::End();
+#endif
 }
 
 } // namespace
@@ -497,7 +533,7 @@ bool InitializeOverlayBridge(HMODULE module) {
         return false;
     }
 
-    reshade::register_overlay("Crimson Weather", &DrawOverlay);
+    reshade::register_overlay(MOD_NAME, &DrawOverlay);
     g_overlayModule = module;
     g_overlayRegistered = true;
     return true;
@@ -508,7 +544,7 @@ void ShutdownOverlayBridge() {
         return;
     }
 
-    reshade::unregister_overlay("Crimson Weather", &DrawOverlay);
+    reshade::unregister_overlay(MOD_NAME, &DrawOverlay);
     reshade::unregister_addon(g_overlayModule);
     g_overlayRegistered = false;
     g_overlayModule = nullptr;

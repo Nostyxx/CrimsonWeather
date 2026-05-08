@@ -32,6 +32,10 @@ constexpr const char* kPresetConfigKeyLastPreset = "LastPreset";
 constexpr int kPresetFormatVersion = 2;
 std::string TrimCopy(const std::string& value);
 
+float ClampPresetFloat(float value, float lo, float hi) {
+    return min(hi, max(lo, value));
+}
+
 bool HasSelectedPresetIndexInternal() {
     return g_selectedPresetIndex >= 0 && g_selectedPresetIndex < static_cast<int>(g_presetItems.size());
 }
@@ -89,8 +93,8 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         FloatNearlyEqual(a.nightSkyRotation, b.nightSkyRotation) &&
         a.fogEnabled == b.fogEnabled &&
         FloatNearlyEqual(a.fogPercent, b.fogPercent) &&
-        a.plainFogEnabled == b.plainFogEnabled &&
-        FloatNearlyEqual(a.plainFog, b.plainFog) &&
+        a.nativeFogEnabled == b.nativeFogEnabled &&
+        FloatNearlyEqual(a.nativeFog, b.nativeFog) &&
         FloatNearlyEqual(a.wind, b.wind) &&
         a.noWind == b.noWind &&
         a.puddleScaleEnabled == b.puddleScaleEnabled &&
@@ -214,34 +218,6 @@ bool IsValidPresetFile(const char* path) {
     return firstLine == kPresetHeader;
 }
 
-enum class PresetDocLineKind {
-    Raw,
-    Header,
-    Section,
-    KeyValue,
-};
-
-struct PresetDocLine {
-    PresetDocLineKind kind = PresetDocLineKind::Raw;
-    std::string text;
-    std::string section;
-    std::string key;
-    std::string value;
-};
-
-struct PresetDocument {
-    std::vector<PresetDocLine> lines;
-    bool headerSeen = false;
-};
-
-struct PresetWriteEntry {
-    std::string section;
-    std::string key;
-    std::string value;
-    std::vector<std::string> aliases;
-    std::vector<std::string> legacySections;
-};
-
 bool RememberedPresetMatches(const PresetListItem& item, const std::string& rememberedRaw) {
     if (rememberedRaw.empty()) return false;
     const std::string trimmed = TrimCopy(rememberedRaw);
@@ -279,9 +255,219 @@ bool TryParseFloat(const std::string& text, float& outValue) {
     return true;
 }
 
-void StripLineEnding(std::string& text) {
-    while (!text.empty() && (text.back() == '\r' || text.back() == '\n')) {
-        text.pop_back();
+struct PresetParseState {
+    WeatherPresetData data{};
+    bool cloudHeightEnabledSeen = false;
+    bool cloudDensityEnabledSeen = false;
+    bool midCloudsEnabledSeen = false;
+    bool highCloudsEnabledSeen = false;
+    bool sunLocationXEnabledSeen = false;
+    bool sunLocationYEnabledSeen = false;
+    bool moonLocationXEnabledSeen = false;
+    bool moonLocationYEnabledSeen = false;
+    bool exp2CEnabledSeen = false;
+    bool exp2DEnabledSeen = false;
+    bool nightSkyRotationEnabledSeen = false;
+    bool fogEnabledSeen = false;
+    bool nativeFogEnabledSeen = false;
+    bool puddleScaleEnabledSeen = false;
+    bool sawLegacyAlias = false;
+};
+
+bool KeyEquals(const std::string& key, const char* expected) {
+    return _stricmp(key.c_str(), expected) == 0;
+}
+
+void ParsePresetKeyValue(const std::string& key, const std::string& value, PresetParseState& state) {
+    bool boolValue = false;
+    float floatValue = 0.0f;
+    WeatherPresetData& data = state.data;
+
+    if (KeyEquals(key, "ForceClearSky")) {
+        if (TryParseBool(value, boolValue)) data.forceClearSky = boolValue;
+    } else if (KeyEquals(key, "Rain")) {
+        if (TryParseFloat(value, floatValue)) data.rain = floatValue;
+    } else if (KeyEquals(key, "Dust")) {
+        if (TryParseFloat(value, floatValue)) data.dust = floatValue;
+    } else if (KeyEquals(key, "Snow")) {
+        if (TryParseFloat(value, floatValue)) data.snow = floatValue;
+    } else if (KeyEquals(key, "VisualTimeOverride")) {
+        if (TryParseBool(value, boolValue)) data.visualTimeOverride = boolValue;
+    } else if (KeyEquals(key, "TimeHour")) {
+        if (TryParseFloat(value, floatValue)) data.timeHour = floatValue;
+    } else if (KeyEquals(key, "ForceCloudsEnabled")) {
+        if (TryParseBool(value, boolValue)) data.forceCloudsEnabled = boolValue;
+    } else if (KeyEquals(key, "ForceClouds")) {
+        if (TryParseFloat(value, floatValue)) data.forceCloudsPercent = floatValue;
+    } else if (KeyEquals(key, "CloudHeightEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.cloudHeightEnabled = boolValue;
+            state.cloudHeightEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "CloudHeight")) {
+        if (TryParseFloat(value, floatValue)) data.cloudHeight = floatValue;
+    } else if (KeyEquals(key, "CloudDensityEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.cloudDensityEnabled = boolValue;
+            state.cloudDensityEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "CloudDensity")) {
+        if (TryParseFloat(value, floatValue)) data.cloudDensity = floatValue;
+    } else if (KeyEquals(key, "MidCloudsEnabled") ||
+               KeyEquals(key, "HighCloudsEnabled") ||
+               KeyEquals(key, "CloudScrollEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.midCloudsEnabled = boolValue;
+            state.midCloudsEnabledSeen = true;
+            if (!KeyEquals(key, "MidCloudsEnabled")) state.sawLegacyAlias = true;
+        }
+    } else if (KeyEquals(key, "MidClouds") ||
+               KeyEquals(key, "HighClouds") ||
+               KeyEquals(key, "CloudScroll")) {
+        if (TryParseFloat(value, floatValue)) {
+            data.midClouds = floatValue;
+            if (!KeyEquals(key, "MidClouds")) state.sawLegacyAlias = true;
+        }
+    } else if (KeyEquals(key, "HighCloudLayerEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.highCloudsEnabled = boolValue;
+            state.highCloudsEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "HighCloudLayer")) {
+        if (TryParseFloat(value, floatValue)) data.highClouds = floatValue;
+    } else if (KeyEquals(key, "SunLocationXEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.sunLocationXEnabled = boolValue;
+            state.sunLocationXEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "SunLocationX")) {
+        if (TryParseFloat(value, floatValue)) data.sunLocationX = floatValue;
+    } else if (KeyEquals(key, "SunLocationYEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.sunLocationYEnabled = boolValue;
+            state.sunLocationYEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "SunLocationY")) {
+        if (TryParseFloat(value, floatValue)) data.sunLocationY = floatValue;
+    } else if (KeyEquals(key, "MoonLocationXEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.moonLocationXEnabled = boolValue;
+            state.moonLocationXEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MoonLocationX")) {
+        if (TryParseFloat(value, floatValue)) data.moonLocationX = floatValue;
+    } else if (KeyEquals(key, "MoonLocationYEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.moonLocationYEnabled = boolValue;
+            state.moonLocationYEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MoonLocationY")) {
+        if (TryParseFloat(value, floatValue)) data.moonLocationY = floatValue;
+    } else if (KeyEquals(key, "2CEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.exp2CEnabled = boolValue;
+            state.exp2CEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "2C")) {
+        if (TryParseFloat(value, floatValue)) data.exp2C = floatValue;
+    } else if (KeyEquals(key, "2DEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.exp2DEnabled = boolValue;
+            state.exp2DEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "2D")) {
+        if (TryParseFloat(value, floatValue)) data.exp2D = floatValue;
+    } else if (KeyEquals(key, "NightSkyRotationEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.nightSkyRotationEnabled = boolValue;
+            state.nightSkyRotationEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "NightSkyRotation")) {
+        if (TryParseFloat(value, floatValue)) data.nightSkyRotation = floatValue;
+    } else if (KeyEquals(key, "FogEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.fogEnabled = boolValue;
+            state.fogEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "Fog")) {
+        if (TryParseFloat(value, floatValue)) data.fogPercent = floatValue;
+    } else if (KeyEquals(key, "NativeFogEnabled") || KeyEquals(key, "PlainFogEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.nativeFogEnabled = boolValue;
+            state.nativeFogEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "NativeFog") || KeyEquals(key, "PlainFog")) {
+        if (TryParseFloat(value, floatValue)) data.nativeFog = floatValue;
+    } else if (KeyEquals(key, "Wind")) {
+        if (TryParseFloat(value, floatValue)) data.wind = floatValue;
+    } else if (KeyEquals(key, "NoWind")) {
+        if (TryParseBool(value, boolValue)) data.noWind = boolValue;
+    } else if (KeyEquals(key, "PuddleScaleEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.puddleScaleEnabled = boolValue;
+            state.puddleScaleEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "PuddleScale")) {
+        if (TryParseFloat(value, floatValue)) data.puddleScale = floatValue;
+    }
+}
+
+void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
+    WeatherPresetData& data = state.data;
+
+    data.forceCloudsPercent = 0.0f;
+    data.forceCloudsEnabled = false;
+    if (!state.cloudHeightEnabledSeen) data.cloudHeightEnabled = !FloatNearlyEqual(data.cloudHeight, 1.0f);
+    if (!state.cloudDensityEnabledSeen) data.cloudDensityEnabled = !FloatNearlyEqual(data.cloudDensity, 1.0f);
+    if (!state.midCloudsEnabledSeen) data.midCloudsEnabled = !FloatNearlyEqual(data.midClouds, 1.0f);
+    if (!state.highCloudsEnabledSeen) data.highCloudsEnabled = !FloatNearlyEqual(data.highClouds, 1.0f);
+    if (!state.sunLocationXEnabledSeen) data.sunLocationXEnabled = false;
+    if (!state.sunLocationYEnabledSeen) data.sunLocationYEnabled = false;
+    if (!state.moonLocationXEnabledSeen) data.moonLocationXEnabled = false;
+    if (!state.moonLocationYEnabledSeen) data.moonLocationYEnabled = false;
+    if (!state.exp2CEnabledSeen) data.exp2CEnabled = false;
+    if (!state.exp2DEnabledSeen) data.exp2DEnabled = false;
+    if (!state.nightSkyRotationEnabledSeen) data.nightSkyRotationEnabled = false;
+    if (!state.fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
+    if (!state.nativeFogEnabledSeen) data.nativeFogEnabled = !FloatNearlyEqual(data.nativeFog, 0.0f);
+    if (!state.puddleScaleEnabledSeen) data.puddleScaleEnabled = !FloatNearlyEqual(data.puddleScale, 0.0f);
+
+    data.exp2C = ClampPresetFloat(data.exp2C, 0.0f, 15.0f);
+    data.exp2D = ClampPresetFloat(data.exp2D, 0.0f, 15.0f);
+    data.nightSkyRotation = ClampPresetFloat(data.nightSkyRotation, -15.0f, 15.0f);
+    data.nativeFog = ClampPresetFloat(data.nativeFog, 0.0f, 15.0f);
+    data.sunLocationX = ClampPresetFloat(data.sunLocationX, -180.0f, 180.0f);
+    data.sunLocationY = ClampPresetFloat(data.sunLocationY, -180.0f, 180.0f);
+    data.moonLocationX = ClampPresetFloat(data.moonLocationX, -180.0f, 180.0f);
+    data.moonLocationY = ClampPresetFloat(data.moonLocationY, -180.0f, 180.0f);
+
+    if (state.sawLegacyAlias) {
+        Log("[preset] loaded legacy cloud aliases from %s\n", path);
+    }
+}
+
+float ActiveOverrideValue(const SliderOverride& overrideValue, float inactiveValue) {
+    return overrideValue.active.load() ? overrideValue.value.load() : inactiveValue;
+}
+
+float OverrideValueIf(bool enabled, const SliderOverride& overrideValue, float inactiveValue) {
+    return enabled ? overrideValue.value.load() : inactiveValue;
+}
+
+void ApplyEnabledOverride(SliderOverride& overrideValue, bool enabled, float value, float lo, float hi) {
+    if (enabled) {
+        overrideValue.set(ClampPresetFloat(value, lo, hi));
+    } else {
+        overrideValue.clear();
+    }
+}
+
+void ApplyPositiveOverride(SliderOverride& overrideValue, float value, float lo, float hi) {
+    const float clamped = ClampPresetFloat(value, lo, hi);
+    if (clamped > 0.0001f) {
+        overrideValue.set(clamped);
+    } else {
+        overrideValue.clear();
     }
 }
 
@@ -307,261 +493,6 @@ void AppendPresetKeyValue(std::string& out, const char* key, const std::string& 
     out += '\n';
 }
 
-PresetDocLine MakeRawPresetLine(const std::string& text) {
-    PresetDocLine line{};
-    line.kind = PresetDocLineKind::Raw;
-    line.text = text;
-    return line;
-}
-
-PresetDocLine MakeHeaderPresetLine() {
-    PresetDocLine line{};
-    line.kind = PresetDocLineKind::Header;
-    line.text = kPresetHeader;
-    return line;
-}
-
-PresetDocLine MakeSectionPresetLine(const std::string& section) {
-    PresetDocLine line{};
-    line.kind = PresetDocLineKind::Section;
-    line.section = section;
-    line.text = "[" + section + "]";
-    return line;
-}
-
-PresetDocLine MakeKeyValuePresetLine(const std::string& section, const std::string& key, const std::string& value) {
-    PresetDocLine line{};
-    line.kind = PresetDocLineKind::KeyValue;
-    line.section = section;
-    line.key = key;
-    line.value = value;
-    line.text = key + "=" + value;
-    return line;
-}
-
-bool ParsePresetDocument(const char* path, PresetDocument& outDoc) {
-    outDoc = {};
-    if (!path || !path[0]) return false;
-
-    FILE* fp = nullptr;
-    if (fopen_s(&fp, path, "rb") != 0 || !fp) return false;
-
-    std::string currentSection;
-    bool firstLine = true;
-    char lineBuf[512] = {};
-    while (fgets(lineBuf, static_cast<int>(sizeof(lineBuf)), fp)) {
-        std::string raw = lineBuf;
-        StripLineEnding(raw);
-        if (firstLine) {
-            StripUtf8Bom(raw);
-            firstLine = false;
-        }
-
-        std::string trimmed = TrimCopy(raw);
-        PresetDocLine line = MakeRawPresetLine(raw);
-        if (trimmed == kPresetHeader) {
-            line.kind = PresetDocLineKind::Header;
-            line.text = kPresetHeader;
-            outDoc.headerSeen = true;
-        } else if (!trimmed.empty() && trimmed.front() == '[' && trimmed.back() == ']') {
-            currentSection = TrimCopy(trimmed.substr(1, trimmed.size() - 2));
-            line.kind = PresetDocLineKind::Section;
-            line.section = currentSection;
-            line.text = raw;
-        } else {
-            const size_t eq = trimmed.find('=');
-            if (eq != std::string::npos) {
-                line.kind = PresetDocLineKind::KeyValue;
-                line.section = currentSection;
-                line.key = TrimCopy(trimmed.substr(0, eq));
-                line.value = TrimCopy(trimmed.substr(eq + 1));
-            }
-        }
-        outDoc.lines.push_back(std::move(line));
-    }
-
-    fclose(fp);
-    return outDoc.headerSeen;
-}
-
-std::vector<PresetWriteEntry> BuildPresetWriteEntries(const WeatherPresetData& data) {
-    std::vector<PresetWriteEntry> entries;
-    entries.reserve(26);
-
-    const auto push = [&](const char* section,
-                          const char* key,
-                          std::string value,
-                          std::vector<std::string> aliases = {},
-                          std::vector<std::string> legacySections = {}) {
-        entries.push_back(PresetWriteEntry{
-            section,
-            key,
-            std::move(value),
-            std::move(aliases),
-            std::move(legacySections)
-        });
-    };
-
-    push("Meta", "FormatVersion", std::to_string(kPresetFormatVersion));
-    push("Weather", "ForceClearSky", FormatPresetBool(data.forceClearSky));
-    push("Weather", "Rain", FormatPresetFloat(Clamp01(data.rain)));
-    push("Weather", "Dust", FormatPresetFloat(min(2.0f, max(0.0f, data.dust))));
-    push("Weather", "Snow", FormatPresetFloat(Clamp01(data.snow)));
-
-    push("Time", "VisualTimeOverride", FormatPresetBool(data.visualTimeOverride));
-    push("Time", "TimeHour", FormatPresetFloat(NormalizeHour24(data.timeHour)));
-
-    push("Cloud", "CloudHeightEnabled", FormatPresetBool(data.cloudHeightEnabled));
-    push("Cloud", "CloudHeight", FormatPresetFloat(min(20.0f, max(-20.0f, data.cloudHeight))));
-    push("Cloud", "CloudDensityEnabled", FormatPresetBool(data.cloudDensityEnabled));
-    push("Cloud", "CloudDensity", FormatPresetFloat(min(10.0f, max(0.0f, data.cloudDensity))));
-    push("Cloud", "MidCloudsEnabled", FormatPresetBool(data.midCloudsEnabled),
-         { "HighCloudsEnabled", "CloudScrollEnabled" });
-    push("Cloud", "MidClouds", FormatPresetFloat(min(15.0f, max(0.0f, data.midClouds))),
-         { "HighClouds", "CloudScroll" });
-    push("Cloud", "HighCloudLayerEnabled", FormatPresetBool(data.highCloudsEnabled));
-    push("Cloud", "HighCloudLayer", FormatPresetFloat(min(15.0f, max(0.0f, data.highClouds))));
-    push("Experiment", "2CEnabled", FormatPresetBool(data.exp2CEnabled));
-    push("Experiment", "2C", FormatPresetFloat(min(15.0f, max(0.0f, data.exp2C))));
-    push("Experiment", "2DEnabled", FormatPresetBool(data.exp2DEnabled));
-    push("Experiment", "2D", FormatPresetFloat(min(15.0f, max(0.0f, data.exp2D))));
-    push("Experiment", "NightSkyRotationEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
-    push("Experiment", "NightSkyRotation", FormatPresetFloat(min(15.0f, max(-15.0f, data.nightSkyRotation))));
-    push("Experiment", "PuddleScaleEnabled", FormatPresetBool(data.puddleScaleEnabled), {}, { "Cloud" });
-    push("Experiment", "PuddleScale", FormatPresetFloat(Clamp01(data.puddleScale)), {}, { "Cloud" });
-
-    push("Atmosphere", "FogEnabled", FormatPresetBool(data.fogEnabled));
-    push("Atmosphere", "Fog", FormatPresetFloat(min(100.0f, max(0.0f, data.fogPercent))));
-    push("Atmosphere", "PlainFogEnabled", FormatPresetBool(data.plainFogEnabled));
-    push("Atmosphere", "PlainFog", FormatPresetFloat(min(15.0f, max(0.0f, data.plainFog))));
-    push("Atmosphere", "Wind", FormatPresetFloat(min(15.0f, max(0.0f, data.wind))));
-    push("Atmosphere", "NoWind", FormatPresetBool(data.noWind));
-
-    return entries;
-}
-
-bool PresetDocKeyMatches(const PresetDocLine& line, const PresetWriteEntry& entry) {
-    if (line.kind != PresetDocLineKind::KeyValue) return false;
-    bool sectionMatch = EqualsNoCase(line.section, entry.section);
-    if (!sectionMatch) {
-        for (const std::string& legacySection : entry.legacySections) {
-            if (EqualsNoCase(line.section, legacySection)) {
-                sectionMatch = true;
-                break;
-            }
-        }
-    }
-    if (!sectionMatch) return false;
-    if (EqualsNoCase(line.key, entry.key)) return true;
-    for (const std::string& alias : entry.aliases) {
-        if (EqualsNoCase(line.key, alias)) return true;
-    }
-    return false;
-}
-
-int FindPresetSectionHeaderIndex(const PresetDocument& doc, const std::string& section) {
-    for (int i = 0; i < static_cast<int>(doc.lines.size()); ++i) {
-        const PresetDocLine& line = doc.lines[i];
-        if (line.kind == PresetDocLineKind::Section && EqualsNoCase(line.section, section)) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-int FindPresetSectionInsertIndex(const PresetDocument& doc, const std::string& section) {
-    const int headerIndex = FindPresetSectionHeaderIndex(doc, section);
-    if (headerIndex < 0) return -1;
-
-    int insertIndex = headerIndex + 1;
-    for (int i = headerIndex + 1; i < static_cast<int>(doc.lines.size()); ++i) {
-        if (doc.lines[i].kind == PresetDocLineKind::Section) break;
-        insertIndex = i + 1;
-    }
-    return insertIndex;
-}
-
-void EnsurePresetSectionExists(PresetDocument& doc, const std::string& section) {
-    if (FindPresetSectionHeaderIndex(doc, section) >= 0) return;
-    if (!doc.lines.empty() && !doc.lines.back().text.empty()) {
-        doc.lines.push_back(MakeRawPresetLine(""));
-    }
-    doc.lines.push_back(MakeSectionPresetLine(section));
-}
-
-void MovePresetSectionBlockToTop(PresetDocument& doc, const std::string& section) {
-    if (doc.lines.empty()) return;
-
-    const int headerIndex = 0;
-    const int sectionIndex = FindPresetSectionHeaderIndex(doc, section);
-    if (sectionIndex < 0 || sectionIndex == headerIndex + 1) return;
-
-    int blockEnd = sectionIndex + 1;
-    while (blockEnd < static_cast<int>(doc.lines.size()) &&
-           doc.lines[blockEnd].kind != PresetDocLineKind::Section) {
-        ++blockEnd;
-    }
-
-    std::vector<PresetDocLine> block(
-        doc.lines.begin() + sectionIndex,
-        doc.lines.begin() + blockEnd);
-
-    doc.lines.erase(doc.lines.begin() + sectionIndex, doc.lines.begin() + blockEnd);
-
-    int insertIndex = min<int>(1, static_cast<int>(doc.lines.size()));
-    doc.lines.insert(doc.lines.begin() + insertIndex, block.begin(), block.end());
-}
-
-void MergePresetDocumentWithData(PresetDocument& doc, const WeatherPresetData& data) {
-    if (doc.lines.empty() || doc.lines.front().kind != PresetDocLineKind::Header) {
-        doc.lines.insert(doc.lines.begin(), MakeHeaderPresetLine());
-    }
-    doc.headerSeen = true;
-
-    const auto entries = BuildPresetWriteEntries(data);
-    for (const PresetWriteEntry& entry : entries) {
-        std::vector<int> matchIndices;
-        for (int i = 0; i < static_cast<int>(doc.lines.size()); ++i) {
-            if (PresetDocKeyMatches(doc.lines[i], entry)) {
-                matchIndices.push_back(i);
-            }
-        }
-
-        if (!matchIndices.empty()) {
-            PresetDocLine& first = doc.lines[matchIndices.front()];
-            first.kind = PresetDocLineKind::KeyValue;
-            first.section = entry.section;
-            first.key = entry.key;
-            first.value = entry.value;
-            first.text = entry.key + "=" + entry.value;
-
-            for (int i = static_cast<int>(matchIndices.size()) - 1; i >= 1; --i) {
-                doc.lines.erase(doc.lines.begin() + matchIndices[i]);
-            }
-            continue;
-        }
-
-        EnsurePresetSectionExists(doc, entry.section);
-        int insertIndex = FindPresetSectionInsertIndex(doc, entry.section);
-        if (insertIndex < 0) {
-            doc.lines.push_back(MakeSectionPresetLine(entry.section));
-            insertIndex = static_cast<int>(doc.lines.size());
-        }
-        doc.lines.insert(doc.lines.begin() + insertIndex, MakeKeyValuePresetLine(entry.section, entry.key, entry.value));
-    }
-
-    MovePresetSectionBlockToTop(doc, "Meta");
-}
-
-std::string SerializePresetDocument(const PresetDocument& doc) {
-    std::string out;
-    for (size_t i = 0; i < doc.lines.size(); ++i) {
-        out += doc.lines[i].text;
-        out += '\n';
-    }
-    return out;
-}
-
 std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     std::string out;
     out.reserve(768);
@@ -574,7 +505,7 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetLine(out, "[Weather]");
     AppendPresetKeyValue(out, "ForceClearSky", FormatPresetBool(data.forceClearSky));
     AppendPresetKeyValue(out, "Rain", FormatPresetFloat(Clamp01(data.rain)));
-    AppendPresetKeyValue(out, "Dust", FormatPresetFloat(min(2.0f, max(0.0f, data.dust))));
+    AppendPresetKeyValue(out, "Dust", FormatPresetFloat(ClampPresetFloat(data.dust, 0.0f, 2.0f)));
     AppendPresetKeyValue(out, "Snow", FormatPresetFloat(Clamp01(data.snow)));
     out += '\n';
 
@@ -585,32 +516,32 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
 
     AppendPresetLine(out, "[Cloud]");
     AppendPresetKeyValue(out, "CloudHeightEnabled", FormatPresetBool(data.cloudHeightEnabled));
-    AppendPresetKeyValue(out, "CloudHeight", FormatPresetFloat(min(20.0f, max(-20.0f, data.cloudHeight))));
+    AppendPresetKeyValue(out, "CloudHeight", FormatPresetFloat(ClampPresetFloat(data.cloudHeight, -20.0f, 20.0f)));
     AppendPresetKeyValue(out, "CloudDensityEnabled", FormatPresetBool(data.cloudDensityEnabled));
-    AppendPresetKeyValue(out, "CloudDensity", FormatPresetFloat(min(10.0f, max(0.0f, data.cloudDensity))));
+    AppendPresetKeyValue(out, "CloudDensity", FormatPresetFloat(ClampPresetFloat(data.cloudDensity, 0.0f, 10.0f)));
     AppendPresetKeyValue(out, "MidCloudsEnabled", FormatPresetBool(data.midCloudsEnabled));
-    AppendPresetKeyValue(out, "MidClouds", FormatPresetFloat(min(15.0f, max(0.0f, data.midClouds))));
+    AppendPresetKeyValue(out, "MidClouds", FormatPresetFloat(ClampPresetFloat(data.midClouds, 0.0f, 15.0f)));
     AppendPresetKeyValue(out, "HighCloudLayerEnabled", FormatPresetBool(data.highCloudsEnabled));
-    AppendPresetKeyValue(out, "HighCloudLayer", FormatPresetFloat(min(15.0f, max(0.0f, data.highClouds))));
+    AppendPresetKeyValue(out, "HighCloudLayer", FormatPresetFloat(ClampPresetFloat(data.highClouds, 0.0f, 15.0f)));
     out += '\n';
 
     AppendPresetLine(out, "[Experiment]");
     AppendPresetKeyValue(out, "2CEnabled", FormatPresetBool(data.exp2CEnabled));
-    AppendPresetKeyValue(out, "2C", FormatPresetFloat(min(15.0f, max(0.0f, data.exp2C))));
+    AppendPresetKeyValue(out, "2C", FormatPresetFloat(ClampPresetFloat(data.exp2C, 0.0f, 15.0f)));
     AppendPresetKeyValue(out, "2DEnabled", FormatPresetBool(data.exp2DEnabled));
-    AppendPresetKeyValue(out, "2D", FormatPresetFloat(min(15.0f, max(0.0f, data.exp2D))));
+    AppendPresetKeyValue(out, "2D", FormatPresetFloat(ClampPresetFloat(data.exp2D, 0.0f, 15.0f)));
     AppendPresetKeyValue(out, "NightSkyRotationEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
-    AppendPresetKeyValue(out, "NightSkyRotation", FormatPresetFloat(min(15.0f, max(-15.0f, data.nightSkyRotation))));
+    AppendPresetKeyValue(out, "NightSkyRotation", FormatPresetFloat(ClampPresetFloat(data.nightSkyRotation, -15.0f, 15.0f)));
     AppendPresetKeyValue(out, "PuddleScaleEnabled", FormatPresetBool(data.puddleScaleEnabled));
     AppendPresetKeyValue(out, "PuddleScale", FormatPresetFloat(Clamp01(data.puddleScale)));
     out += '\n';
 
     AppendPresetLine(out, "[Atmosphere]");
     AppendPresetKeyValue(out, "FogEnabled", FormatPresetBool(data.fogEnabled));
-    AppendPresetKeyValue(out, "Fog", FormatPresetFloat(min(100.0f, max(0.0f, data.fogPercent))));
-    AppendPresetKeyValue(out, "PlainFogEnabled", FormatPresetBool(data.plainFogEnabled));
-    AppendPresetKeyValue(out, "PlainFog", FormatPresetFloat(min(15.0f, max(0.0f, data.plainFog))));
-    AppendPresetKeyValue(out, "Wind", FormatPresetFloat(min(15.0f, max(0.0f, data.wind))));
+    AppendPresetKeyValue(out, "Fog", FormatPresetFloat(ClampPresetFloat(data.fogPercent, 0.0f, 100.0f)));
+    AppendPresetKeyValue(out, "NativeFogEnabled", FormatPresetBool(data.nativeFogEnabled));
+    AppendPresetKeyValue(out, "NativeFog", FormatPresetFloat(ClampPresetFloat(data.nativeFog, 0.0f, 15.0f)));
+    AppendPresetKeyValue(out, "Wind", FormatPresetFloat(ClampPresetFloat(data.wind, 0.0f, 15.0f)));
     AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
 
     return out;
@@ -619,37 +550,37 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
 WeatherPresetData CaptureCurrentPresetData() {
     WeatherPresetData data{};
     data.forceClearSky = g_forceClear.load();
-    data.rain = g_oRain.active.load() ? g_oRain.value.load() : 0.0f;
-    data.dust = g_oDust.active.load() ? g_oDust.value.load() : 0.0f;
-    data.snow = g_oSnow.active.load() ? g_oSnow.value.load() : 0.0f;
+    data.rain = ActiveOverrideValue(g_oRain, 0.0f);
+    data.dust = ActiveOverrideValue(g_oDust, 0.0f);
+    data.snow = ActiveOverrideValue(g_oSnow, 0.0f);
     data.visualTimeOverride = g_timeCtrlActive.load() && g_timeFreeze.load();
     data.timeHour = NormalizeHour24(g_timeTargetHour.load());
     data.forceCloudsEnabled = false;
     data.forceCloudsPercent = 0.0f;
     data.cloudHeightEnabled = g_oCloudSpdX.active.load();
-    data.cloudHeight = data.cloudHeightEnabled ? g_oCloudSpdX.value.load() : 1.0f;
+    data.cloudHeight = OverrideValueIf(data.cloudHeightEnabled, g_oCloudSpdX, 1.0f);
     data.cloudDensityEnabled = g_oCloudSpdY.active.load();
-    data.cloudDensity = data.cloudDensityEnabled ? g_oCloudSpdY.value.load() : 1.0f;
+    data.cloudDensity = OverrideValueIf(data.cloudDensityEnabled, g_oCloudSpdY, 1.0f);
     data.midCloudsEnabled = g_oHighClouds.active.load();
-    data.midClouds = data.midCloudsEnabled ? g_oHighClouds.value.load() : 1.0f;
+    data.midClouds = OverrideValueIf(data.midCloudsEnabled, g_oHighClouds, 1.0f);
     data.highCloudsEnabled = g_oAtmoAlpha.active.load();
-    data.highClouds = data.highCloudsEnabled ? g_oAtmoAlpha.value.load() : 1.0f;
+    data.highClouds = OverrideValueIf(data.highCloudsEnabled, g_oAtmoAlpha, 1.0f);
     if (RuntimeFeatureAvailable(RuntimeFeatureId::CelestialControls)) {
         data.sunLocationXEnabled = g_oSunDirX.active.load();
-        data.sunLocationX = data.sunLocationXEnabled ? g_oSunDirX.value.load() : 0.0f;
+        data.sunLocationX = OverrideValueIf(data.sunLocationXEnabled, g_oSunDirX, 0.0f);
         data.sunLocationYEnabled = g_oSunDirY.active.load();
-        data.sunLocationY = data.sunLocationYEnabled ? g_oSunDirY.value.load() : 0.0f;
+        data.sunLocationY = OverrideValueIf(data.sunLocationYEnabled, g_oSunDirY, 0.0f);
         data.moonLocationXEnabled = g_oMoonDirX.active.load();
-        data.moonLocationX = data.moonLocationXEnabled ? g_oMoonDirX.value.load() : 0.0f;
+        data.moonLocationX = OverrideValueIf(data.moonLocationXEnabled, g_oMoonDirX, 0.0f);
         data.moonLocationYEnabled = g_oMoonDirY.active.load();
-        data.moonLocationY = data.moonLocationYEnabled ? g_oMoonDirY.value.load() : 0.0f;
+        data.moonLocationY = OverrideValueIf(data.moonLocationYEnabled, g_oMoonDirY, 0.0f);
     }
     data.exp2CEnabled = g_oExpCloud2C.active.load();
-    data.exp2C = data.exp2CEnabled ? g_oExpCloud2C.value.load() : 1.0f;
+    data.exp2C = OverrideValueIf(data.exp2CEnabled, g_oExpCloud2C, 1.0f);
     data.exp2DEnabled = g_oExpCloud2D.active.load();
-    data.exp2D = data.exp2DEnabled ? g_oExpCloud2D.value.load() : 1.0f;
+    data.exp2D = OverrideValueIf(data.exp2DEnabled, g_oExpCloud2D, 1.0f);
     data.nightSkyRotationEnabled = g_oExpNightSkyRot.active.load();
-    data.nightSkyRotation = data.nightSkyRotationEnabled ? g_oExpNightSkyRot.value.load() : 1.0f;
+    data.nightSkyRotation = OverrideValueIf(data.nightSkyRotationEnabled, g_oExpNightSkyRot, 1.0f);
     data.fogEnabled = g_oFog.active.load();
     if (data.fogEnabled) {
         const float fogN = sqrtf(min(1.0f, max(0.0f, g_oFog.value.load() / 100.0f)));
@@ -657,32 +588,21 @@ WeatherPresetData CaptureCurrentPresetData() {
     } else {
         data.fogPercent = 0.0f;
     }
-    data.plainFogEnabled = g_oWind.active.load();
-    data.plainFog = data.plainFogEnabled ? min(15.0f, max(0.0f, g_oWind.value.load())) : 0.0f;
-    data.wind = min(15.0f, max(0.0f, g_windMul.load()));
+    data.nativeFogEnabled = g_oNativeFog.active.load();
+    data.nativeFog = data.nativeFogEnabled ? ClampPresetFloat(g_oNativeFog.value.load(), 0.0f, 15.0f) : 0.0f;
+    data.wind = ClampPresetFloat(g_windMul.load(), 0.0f, 15.0f);
     data.noWind = g_noWind.load();
     data.puddleScaleEnabled = g_oCloudThk.active.load();
-    data.puddleScale = data.puddleScaleEnabled ? g_oCloudThk.value.load() : 0.0f;
+    data.puddleScale = OverrideValueIf(data.puddleScaleEnabled, g_oCloudThk, 0.0f);
     return data;
 }
 
 void ApplyPresetData(const WeatherPresetData& data) {
     g_forceClear.store(data.forceClearSky);
 
-    const float rain = Clamp01(data.rain);
-    if (rain > 0.0001f) {
-        g_oRain.set(rain);
-    } else {
-        g_oRain.clear();
-    }
-
-    const float dust = min(2.0f, max(0.0f, data.dust));
-    if (dust > 0.0001f) g_oDust.set(dust);
-    else g_oDust.clear();
-
-    const float snow = Clamp01(data.snow);
-    if (snow > 0.0001f) g_oSnow.set(snow);
-    else g_oSnow.clear();
+    ApplyPositiveOverride(g_oRain, data.rain, 0.0f, 1.0f);
+    ApplyPositiveOverride(g_oDust, data.dust, 0.0f, 2.0f);
+    ApplyPositiveOverride(g_oSnow, data.snow, 0.0f, 1.0f);
 
     g_timeTargetHour.store(NormalizeHour24(data.timeHour));
     if (data.visualTimeOverride && g_timeLayoutReady.load()) {
@@ -701,52 +621,40 @@ void ApplyPresetData(const WeatherPresetData& data) {
     g_forceCloudsAmount.store(kForceCloudsDefaultAmount);
     g_forceCloudsEnabled.store(false);
 
-    if (data.cloudHeightEnabled) g_oCloudSpdX.set(min(20.0f, max(-20.0f, data.cloudHeight)));
-    else g_oCloudSpdX.clear();
-    if (data.cloudDensityEnabled) g_oCloudSpdY.set(min(10.0f, max(0.0f, data.cloudDensity)));
-    else g_oCloudSpdY.clear();
-    if (data.midCloudsEnabled) g_oHighClouds.set(min(15.0f, max(0.0f, data.midClouds)));
-    else g_oHighClouds.clear();
-    if (data.highCloudsEnabled) g_oAtmoAlpha.set(min(15.0f, max(0.0f, data.highClouds)));
-    else g_oAtmoAlpha.clear();
+    ApplyEnabledOverride(g_oCloudSpdX, data.cloudHeightEnabled, data.cloudHeight, -20.0f, 20.0f);
+    ApplyEnabledOverride(g_oCloudSpdY, data.cloudDensityEnabled, data.cloudDensity, 0.0f, 10.0f);
+    ApplyEnabledOverride(g_oHighClouds, data.midCloudsEnabled, data.midClouds, 0.0f, 15.0f);
+    ApplyEnabledOverride(g_oAtmoAlpha, data.highCloudsEnabled, data.highClouds, 0.0f, 15.0f);
     if (RuntimeFeatureAvailable(RuntimeFeatureId::CelestialControls)) {
-        if (data.sunLocationXEnabled) g_oSunDirX.set(min(180.0f, max(-180.0f, data.sunLocationX)));
-        else g_oSunDirX.clear();
-        if (data.sunLocationYEnabled) g_oSunDirY.set(min(180.0f, max(-180.0f, data.sunLocationY)));
-        else g_oSunDirY.clear();
-        if (data.moonLocationXEnabled) g_oMoonDirX.set(min(180.0f, max(-180.0f, data.moonLocationX)));
-        else g_oMoonDirX.clear();
-        if (data.moonLocationYEnabled) g_oMoonDirY.set(min(180.0f, max(-180.0f, data.moonLocationY)));
-        else g_oMoonDirY.clear();
+        ApplyEnabledOverride(g_oSunDirX, data.sunLocationXEnabled, data.sunLocationX, -180.0f, 180.0f);
+        ApplyEnabledOverride(g_oSunDirY, data.sunLocationYEnabled, data.sunLocationY, -180.0f, 180.0f);
+        ApplyEnabledOverride(g_oMoonDirX, data.moonLocationXEnabled, data.moonLocationX, -180.0f, 180.0f);
+        ApplyEnabledOverride(g_oMoonDirY, data.moonLocationYEnabled, data.moonLocationY, -180.0f, 180.0f);
     } else {
         g_oSunDirX.clear();
         g_oSunDirY.clear();
         g_oMoonDirX.clear();
         g_oMoonDirY.clear();
     }
-    if (data.exp2CEnabled) g_oExpCloud2C.set(min(15.0f, max(0.0f, data.exp2C)));
-    else g_oExpCloud2C.clear();
-    if (data.exp2DEnabled) g_oExpCloud2D.set(min(15.0f, max(0.0f, data.exp2D)));
-    else g_oExpCloud2D.clear();
-    if (data.nightSkyRotationEnabled) g_oExpNightSkyRot.set(min(15.0f, max(-15.0f, data.nightSkyRotation)));
-    else g_oExpNightSkyRot.clear();
+    ApplyEnabledOverride(g_oExpCloud2C, data.exp2CEnabled, data.exp2C, 0.0f, 15.0f);
+    ApplyEnabledOverride(g_oExpCloud2D, data.exp2DEnabled, data.exp2D, 0.0f, 15.0f);
+    ApplyEnabledOverride(g_oExpNightSkyRot, data.nightSkyRotationEnabled, data.nightSkyRotation, -15.0f, 15.0f);
 
-    const float fogPct = min(100.0f, max(0.0f, data.fogPercent));
+    const float fogPct = ClampPresetFloat(data.fogPercent, 0.0f, 100.0f);
     if (data.fogEnabled) {
         const float t = fogPct * 0.01f;
         const float fogBoost = t * t * 100.0f;
         g_oFog.set(fogBoost);
     } else g_oFog.clear();
 
-    const float plainFog = min(15.0f, max(0.0f, data.plainFog));
-    if (data.plainFogEnabled && plainFog > 0.0001f) g_oWind.set(plainFog);
-    else g_oWind.clear();
+    const float nativeFog = ClampPresetFloat(data.nativeFog, 0.0f, 15.0f);
+    if (data.nativeFogEnabled && nativeFog > 0.0001f) g_oNativeFog.set(nativeFog);
+    else g_oNativeFog.clear();
 
-    const float wind = min(15.0f, max(0.0f, data.wind));
+    const float wind = ClampPresetFloat(data.wind, 0.0f, 15.0f);
     g_windMul.store(wind);
     g_noWind.store(data.noWind);
-    if (data.puddleScaleEnabled) g_oCloudThk.set(Clamp01(data.puddleScale));
-    else g_oCloudThk.clear();
+    ApplyEnabledOverride(g_oCloudThk, data.puddleScaleEnabled, data.puddleScale, 0.0f, 1.0f);
 }
 
 bool LoadPresetFileInternal(const char* path, WeatherPresetData& outData) {
@@ -754,23 +662,7 @@ bool LoadPresetFileInternal(const char* path, WeatherPresetData& outData) {
     FILE* fp = nullptr;
     if (fopen_s(&fp, path, "rb") != 0 || !fp) return false;
 
-    WeatherPresetData data{};
-    bool forceCloudsEnabledSeen = false;
-    bool cloudHeightEnabledSeen = false;
-    bool cloudDensityEnabledSeen = false;
-    bool midCloudsEnabledSeen = false;
-    bool highCloudsEnabledSeen = false;
-    bool sunLocationXEnabledSeen = false;
-    bool sunLocationYEnabledSeen = false;
-    bool moonLocationXEnabledSeen = false;
-    bool moonLocationYEnabledSeen = false;
-    bool exp2CEnabledSeen = false;
-    bool exp2DEnabledSeen = false;
-    bool nightSkyRotationEnabledSeen = false;
-    bool fogEnabledSeen = false;
-    bool plainFogEnabledSeen = false;
-    bool puddleScaleEnabledSeen = false;
-    bool sawLegacyAlias = false;
+    PresetParseState state{};
     char line[256] = {};
     bool headerSeen = false;
     while (fgets(line, static_cast<int>(sizeof(line)), fp)) {
@@ -789,171 +681,13 @@ bool LoadPresetFileInternal(const char* path, WeatherPresetData& outData) {
 
         const std::string key = TrimCopy(text.substr(0, eq));
         const std::string value = TrimCopy(text.substr(eq + 1));
-        bool boolValue = false;
-        float floatValue = 0.0f;
-
-        if (_stricmp(key.c_str(), "ForceClearSky") == 0) {
-            if (TryParseBool(value, boolValue)) data.forceClearSky = boolValue;
-        } else if (_stricmp(key.c_str(), "Rain") == 0) {
-            if (TryParseFloat(value, floatValue)) data.rain = floatValue;
-        } else if (_stricmp(key.c_str(), "Dust") == 0) {
-            if (TryParseFloat(value, floatValue)) data.dust = floatValue;
-        } else if (_stricmp(key.c_str(), "Snow") == 0) {
-            if (TryParseFloat(value, floatValue)) data.snow = floatValue;
-        } else if (_stricmp(key.c_str(), "VisualTimeOverride") == 0) {
-            if (TryParseBool(value, boolValue)) data.visualTimeOverride = boolValue;
-        } else if (_stricmp(key.c_str(), "TimeHour") == 0) {
-            if (TryParseFloat(value, floatValue)) data.timeHour = floatValue;
-        } else if (_stricmp(key.c_str(), "ForceCloudsEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.forceCloudsEnabled = boolValue;
-                forceCloudsEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "ForceClouds") == 0) {
-            if (TryParseFloat(value, floatValue)) data.forceCloudsPercent = floatValue;
-        } else if (_stricmp(key.c_str(), "CloudHeightEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.cloudHeightEnabled = boolValue;
-                cloudHeightEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "CloudHeight") == 0) {
-            if (TryParseFloat(value, floatValue)) data.cloudHeight = floatValue;
-        } else if (_stricmp(key.c_str(), "CloudDensityEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.cloudDensityEnabled = boolValue;
-                cloudDensityEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "CloudDensity") == 0) {
-            if (TryParseFloat(value, floatValue)) data.cloudDensity = floatValue;
-        } else if (_stricmp(key.c_str(), "MidCloudsEnabled") == 0 ||
-                   _stricmp(key.c_str(), "HighCloudsEnabled") == 0 ||
-                   _stricmp(key.c_str(), "CloudScrollEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.midCloudsEnabled = boolValue;
-                midCloudsEnabledSeen = true;
-                if (_stricmp(key.c_str(), "MidCloudsEnabled") != 0) sawLegacyAlias = true;
-            }
-        } else if (_stricmp(key.c_str(), "MidClouds") == 0 ||
-                   _stricmp(key.c_str(), "HighClouds") == 0 ||
-                   _stricmp(key.c_str(), "CloudScroll") == 0) {
-            if (TryParseFloat(value, floatValue)) {
-                data.midClouds = floatValue;
-                if (_stricmp(key.c_str(), "MidClouds") != 0) sawLegacyAlias = true;
-            }
-        } else if (_stricmp(key.c_str(), "HighCloudLayerEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.highCloudsEnabled = boolValue;
-                highCloudsEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "HighCloudLayer") == 0) {
-            if (TryParseFloat(value, floatValue)) data.highClouds = floatValue;
-        } else if (_stricmp(key.c_str(), "SunLocationXEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.sunLocationXEnabled = boolValue;
-                sunLocationXEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "SunLocationX") == 0) {
-            if (TryParseFloat(value, floatValue)) data.sunLocationX = floatValue;
-        } else if (_stricmp(key.c_str(), "SunLocationYEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.sunLocationYEnabled = boolValue;
-                sunLocationYEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "SunLocationY") == 0) {
-            if (TryParseFloat(value, floatValue)) data.sunLocationY = floatValue;
-        } else if (_stricmp(key.c_str(), "MoonLocationXEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.moonLocationXEnabled = boolValue;
-                moonLocationXEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "MoonLocationX") == 0) {
-            if (TryParseFloat(value, floatValue)) data.moonLocationX = floatValue;
-        } else if (_stricmp(key.c_str(), "MoonLocationYEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.moonLocationYEnabled = boolValue;
-                moonLocationYEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "MoonLocationY") == 0) {
-            if (TryParseFloat(value, floatValue)) data.moonLocationY = floatValue;
-        } else if (_stricmp(key.c_str(), "2CEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.exp2CEnabled = boolValue;
-                exp2CEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "2C") == 0) {
-            if (TryParseFloat(value, floatValue)) data.exp2C = floatValue;
-        } else if (_stricmp(key.c_str(), "2DEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.exp2DEnabled = boolValue;
-                exp2DEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "2D") == 0) {
-            if (TryParseFloat(value, floatValue)) data.exp2D = floatValue;
-        } else if (_stricmp(key.c_str(), "NightSkyRotationEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.nightSkyRotationEnabled = boolValue;
-                nightSkyRotationEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "NightSkyRotation") == 0) {
-            if (TryParseFloat(value, floatValue)) data.nightSkyRotation = floatValue;
-        } else if (_stricmp(key.c_str(), "FogEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.fogEnabled = boolValue;
-                fogEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "Fog") == 0) {
-            if (TryParseFloat(value, floatValue)) data.fogPercent = floatValue;
-        } else if (_stricmp(key.c_str(), "PlainFogEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.plainFogEnabled = boolValue;
-                plainFogEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "PlainFog") == 0) {
-            if (TryParseFloat(value, floatValue)) data.plainFog = floatValue;
-        } else if (_stricmp(key.c_str(), "Wind") == 0) {
-            if (TryParseFloat(value, floatValue)) data.wind = floatValue;
-        } else if (_stricmp(key.c_str(), "NoWind") == 0) {
-            if (TryParseBool(value, boolValue)) data.noWind = boolValue;
-        } else if (_stricmp(key.c_str(), "PuddleScaleEnabled") == 0) {
-            if (TryParseBool(value, boolValue)) {
-                data.puddleScaleEnabled = boolValue;
-                puddleScaleEnabledSeen = true;
-            }
-        } else if (_stricmp(key.c_str(), "PuddleScale") == 0) {
-            if (TryParseFloat(value, floatValue)) data.puddleScale = floatValue;
-        }
+        ParsePresetKeyValue(key, value, state);
     }
 
     fclose(fp);
     if (!headerSeen) return false;
-    data.forceCloudsPercent = 0.0f;
-    data.forceCloudsEnabled = false;
-    if (!cloudHeightEnabledSeen) data.cloudHeightEnabled = !FloatNearlyEqual(data.cloudHeight, 1.0f);
-    if (!cloudDensityEnabledSeen) data.cloudDensityEnabled = !FloatNearlyEqual(data.cloudDensity, 1.0f);
-    if (!midCloudsEnabledSeen) data.midCloudsEnabled = !FloatNearlyEqual(data.midClouds, 1.0f);
-    if (!highCloudsEnabledSeen) data.highCloudsEnabled = !FloatNearlyEqual(data.highClouds, 1.0f);
-    if (!sunLocationXEnabledSeen) data.sunLocationXEnabled = false;
-    if (!sunLocationYEnabledSeen) data.sunLocationYEnabled = false;
-    if (!moonLocationXEnabledSeen) data.moonLocationXEnabled = false;
-    if (!moonLocationYEnabledSeen) data.moonLocationYEnabled = false;
-    if (!exp2CEnabledSeen) data.exp2CEnabled = false;
-    if (!exp2DEnabledSeen) data.exp2DEnabled = false;
-    if (!nightSkyRotationEnabledSeen) data.nightSkyRotationEnabled = false;
-    if (!fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
-    if (!plainFogEnabledSeen) data.plainFogEnabled = !FloatNearlyEqual(data.plainFog, 0.0f);
-    if (!puddleScaleEnabledSeen) data.puddleScaleEnabled = !FloatNearlyEqual(data.puddleScale, 0.0f);
-    data.exp2C = min(15.0f, max(0.0f, data.exp2C));
-    data.exp2D = min(15.0f, max(0.0f, data.exp2D));
-    data.nightSkyRotation = min(15.0f, max(-15.0f, data.nightSkyRotation));
-    data.plainFog = min(15.0f, max(0.0f, data.plainFog));
-    data.sunLocationX = min(180.0f, max(-180.0f, data.sunLocationX));
-    data.sunLocationY = min(180.0f, max(-180.0f, data.sunLocationY));
-    data.moonLocationX = min(180.0f, max(-180.0f, data.moonLocationX));
-    data.moonLocationY = min(180.0f, max(-180.0f, data.moonLocationY));
-    if (sawLegacyAlias) {
-        Log("[preset] loaded legacy cloud aliases from %s\n", path);
-    }
-    outData = data;
+    NormalizeLoadedPreset(state, path);
+    outData = state.data;
     return true;
 }
 

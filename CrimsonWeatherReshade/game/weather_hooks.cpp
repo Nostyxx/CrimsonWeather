@@ -4,16 +4,196 @@
 #include <cstring>
 #include <iterator>
 
-// Intensity hooks feed slider overrides into the engine weather blend inputs.
-float __fastcall Hooked_GetRainIntensity(long long ws) {
-    if (!g_modEnabled.load()) {
-        return g_pOrigGetRainIntensity ? g_pOrigGetRainIntensity(ws) : 0.0f;
-    }
-    if (g_forceClear.load()) return 0.0f;
-    if (g_oRain.active.load())
-        return g_oRain.value.load();
+static float ExtractScalar(__m128 v) {
+    return _mm_cvtss_f32(v);
+}
 
-    float baseRain = g_pOrigGetRainIntensity ? g_pOrigGetRainIntensity(ws) : 0.0f;
+static __m128 PackScalar(float v) {
+    return _mm_set_ss(v);
+}
+
+static float DustSliderToNative(float dust) {
+    float d = max(0.0f, dust);
+    return d * 15.0f;
+}
+
+static float DustSliderToFogB(float dust) {
+    return 0.28f + max(0.0f, dust) * 0.14f;
+}
+
+static float DustSliderToThreshold(float dust) {
+    return -15.0f - max(0.0f, dust) * 7.5f;
+}
+
+static float DustSliderToStorm(float dust) {
+    return 40.0f + DustSliderToNative(dust);
+}
+
+static bool IsReadableTickPtr(uintptr_t addr, size_t bytes) {
+    if (!addr || bytes == 0) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+
+    if (mbi.State != MEM_COMMIT) {
+        return false;
+    }
+
+    const DWORD mask = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+        PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if ((mbi.Protect & mask) == 0 || (mbi.Protect & PAGE_GUARD) != 0) {
+        return false;
+    }
+
+    const auto base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    const auto end = base + mbi.RegionSize;
+    return addr >= base && (addr + bytes) <= end;
+}
+
+static ResolvedEnv ResolveTickEnvCurrentBuild() {
+    ResolvedEnv r{};
+    if (!g_pEnvManager || !*g_pEnvManager) {
+        return r;
+    }
+
+    __try {
+        void* envMgr = reinterpret_cast<void*>(*g_pEnvManager);
+        if (!envMgr || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(envMgr), sizeof(void*))) {
+            return r;
+        }
+
+        auto* vt = *reinterpret_cast<uintptr_t**>(envMgr);
+        if (!vt || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(vt), 0x48)) {
+            return r;
+        }
+
+        auto getEntity = reinterpret_cast<long long(__fastcall*)(void*)>(vt[0x40 / 8]);
+        if (!getEntity || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(getEntity), 16)) {
+            return r;
+        }
+
+        r.entity = getEntity(envMgr);
+        if (!r.entity) {
+            return r;
+        }
+
+        if (!IsReadableTickPtr(static_cast<uintptr_t>(r.entity + 0xEE0), sizeof(long long)) ||
+            !IsReadableTickPtr(static_cast<uintptr_t>(r.entity + 0xEE8), sizeof(long long))) {
+            return r;
+        }
+
+        r.weatherState = *reinterpret_cast<long long*>(r.entity + 0xEE0);
+        r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE8);
+        if (!r.weatherState || !IsReadableTickPtr(static_cast<uintptr_t>(r.weatherState), 0x58)) {
+            return r;
+        }
+        if (r.particleMgr && !IsReadableTickPtr(static_cast<uintptr_t>(r.particleMgr), 0x20)) {
+            r.particleMgr = 0;
+        }
+
+        long long result = *reinterpret_cast<long long*>(r.weatherState + 0x50);
+        if (!result || !IsReadableTickPtr(static_cast<uintptr_t>(result), 0x28)) {
+            return r;
+        }
+
+        r.cloudNode = *reinterpret_cast<long long*>(result + 0x18);
+        r.windNode = *reinterpret_cast<long long*>(result + 0x20);
+        if (r.cloudNode && !IsReadableTickPtr(static_cast<uintptr_t>(r.cloudNode), CN::DUST_ADD + sizeof(float))) {
+            r.cloudNode = 0;
+        }
+        if (r.windNode && !IsReadableTickPtr(static_cast<uintptr_t>(r.windNode), WN::CLOUD_SCROLL_Z + sizeof(float))) {
+            r.windNode = 0;
+        }
+
+        r.atmosphereNode = r.windNode;
+        r.valid = r.entity != 0 && r.weatherState != 0 && r.cloudNode != 0 && r.windNode != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        r = ResolvedEnv{};
+    }
+
+    return r;
+}
+
+static ResolvedEnv ResolveCustomTickEnv() {
+    if (g_oDust.active.load()) {
+        ResolvedEnv dustEnv = ResolveTickEnvCurrentBuild();
+        if (dustEnv.valid) {
+            return dustEnv;
+        }
+    }
+    return ResolveEnv();
+}
+
+static void LogDustProbe(long long self, const ResolvedEnv& env, const char* stage) {
+    static ULONGLONG s_lastDustProbeLog = 0;
+    ULONGLONG now = GetTickCount64();
+    if (now - s_lastDustProbeLog < 1200) return;
+
+    const bool dustActive = g_oDust.active.load();
+    if (!dustActive) return;
+
+    s_lastDustProbeLog = now;
+    if (!env.valid) {
+        Log("[dust-probe] stage=%s slider=%.3f env=invalid\n", stage ? stage : "-", g_oDust.value.load());
+        return;
+    }
+
+    float nativeDust = g_pOrigGetDustIntensity ? ExtractScalar(g_pOrigGetDustIntensity(env.weatherState)) : 0.0f;
+    float nativeRain = g_pOrigGetRainIntensity ? ExtractScalar(g_pOrigGetRainIntensity(env.weatherState)) : 0.0f;
+    float nativeSnow = g_pOrigGetSnowIntensity ? ExtractScalar(g_pOrigGetSnowIntensity(env.weatherState)) : 0.0f;
+
+    const float compact120 = env.cloudNode ? At<float>(env.cloudNode, CN::DUST_BASE) : -9999.0f;
+    const float compact140 = env.cloudNode ? At<float>(env.cloudNode, CN::DUST_WIND_SCALE) : -9999.0f;
+    const float compact180 = env.cloudNode ? At<float>(env.cloudNode, CN::DUST_THRESH) : -9999.0f;
+    const float compact184 = env.cloudNode ? At<float>(env.cloudNode, CN::STORM_THRESH) : -9999.0f;
+    const float compact188 = env.cloudNode ? At<float>(env.cloudNode, CN::FOG_B) : -9999.0f;
+    const float compact18C = env.cloudNode ? At<float>(env.cloudNode, CN::DUST_ADD) : -9999.0f;
+
+    const float profile088 = env.windNode ? At<float>(env.windNode, 0x88) : -9999.0f;
+    const float profile09C = env.windNode ? At<float>(env.windNode, 0x9C) : -9999.0f;
+    const float profile0A8 = env.windNode ? At<float>(env.windNode, 0xA8) : -9999.0f;
+
+    int h6 = At<int>(self, WCO::HANDLE_ARRAY + 6 * 4);
+    int h7 = At<int>(self, WCO::HANDLE_ARRAY + 7 * 4);
+    int h8 = At<int>(self, WCO::HANDLE_ARRAY + 8 * 4);
+
+    Log("[dust-probe] stage=%s slider=%.3f ws=%p compact=%p profile=%p nativeDust=%.3f nativeRain=%.3f nativeSnow=%.3f c120=%.3f c140=%.3f c180=%.3f c184=%.3f c188=%.3f c18c=%.3f p088=%.3f p09c=%.3f p0a8=%.3f h6=%d h7=%d h8=%d\n",
+        stage ? stage : "-",
+        g_oDust.value.load(),
+        (void*)env.weatherState,
+        (void*)env.cloudNode,
+        (void*)env.windNode,
+        nativeDust,
+        nativeRain,
+        nativeSnow,
+        compact120,
+        compact140,
+        compact180,
+        compact184,
+        compact188,
+        compact18C,
+        profile088,
+        profile09C,
+        profile0A8,
+        h6,
+        h7,
+        h8);
+}
+
+// Intensity hooks feed slider overrides into the engine weather blend inputs.
+__m128 __fastcall Hooked_GetRainIntensity(long long ws) {
+    if (!g_modEnabled.load()) {
+        return g_pOrigGetRainIntensity ? g_pOrigGetRainIntensity(ws) : PackScalar(0.0f);
+    }
+    if (g_forceClear.load()) return PackScalar(0.0f);
+    if (g_oRain.active.load())
+        return PackScalar(g_oRain.value.load());
+
+    float baseRain = g_pOrigGetRainIntensity ? ExtractScalar(g_pOrigGetRainIntensity(ws)) : 0.0f;
     if (baseRain > 0.01f) {
         static ULONGLONG s_lastRainBaseLog = 0;
         ULONGLONG now = GetTickCount64();
@@ -22,33 +202,33 @@ float __fastcall Hooked_GetRainIntensity(long long ws) {
             Log("[rain] base weather rain=%.3f (override inactive)\n", baseRain);
         }
     }
-    return baseRain;
+    return PackScalar(baseRain);
 }
 
-float __fastcall Hooked_GetSnowIntensity(long long ws) {
+__m128 __fastcall Hooked_GetSnowIntensity(long long ws) {
     if (!g_modEnabled.load()) {
-        return g_pOrigGetSnowIntensity ? g_pOrigGetSnowIntensity(ws) : 0.0f;
+        return g_pOrigGetSnowIntensity ? g_pOrigGetSnowIntensity(ws) : PackScalar(0.0f);
     }
-    if (g_forceClear.load()) return 0.0f;
+    if (g_forceClear.load()) return PackScalar(0.0f);
     if (g_oSnow.active.load())
-        return g_oSnow.value.load();
-    return g_pOrigGetSnowIntensity ? g_pOrigGetSnowIntensity(ws) : 0.0f;
+        return PackScalar(g_oSnow.value.load());
+    return g_pOrigGetSnowIntensity ? g_pOrigGetSnowIntensity(ws) : PackScalar(0.0f);
 }
 
-float __fastcall Hooked_GetDustIntensity(long long ws) {
+__m128 __fastcall Hooked_GetDustIntensity(long long ws) {
     if (!g_modEnabled.load()) {
-        return g_pOrigGetDustIntensity ? g_pOrigGetDustIntensity(ws) : 0.0f;
+        return g_pOrigGetDustIntensity ? g_pOrigGetDustIntensity(ws) : PackScalar(0.0f);
     }
     if (g_noWind.load())
-        return 0.0f;
+        return PackScalar(0.0f);
     if (g_oDust.active.load()) {
-        return g_oDust.value.load();
+        return PackScalar(DustSliderToNative(g_oDust.value.load()));
     }
-    float v = g_pOrigGetDustIntensity ? g_pOrigGetDustIntensity(ws) : 0.0f;
+    float v = g_pOrigGetDustIntensity ? ExtractScalar(g_pOrigGetDustIntensity(ws)) : 0.0f;
     float mul = g_windMul.load();
     if (mul < 0.0f) mul = 0.0f;
     if (mul > 15.0f) mul = 15.0f;
-    return v * mul;
+    return PackScalar(v * mul);
 }
 
 // Weather postprocess layer update hook.
@@ -494,11 +674,11 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         g_windPackBase0A.store(packedOut[0x0A]);
         g_windPackBase0AValid.store(true);
     }
-    if (!g_oWind.active.load() && std::isfinite(packedOut[0x11])) {
+    if (!g_oNativeFog.active.load() && std::isfinite(packedOut[0x11])) {
         g_windPackBase11.store(packedOut[0x11]);
         g_windPackBase11Valid.store(true);
     }
-    if (!g_oWind.active.load() && std::isfinite(packedOut[0x17])) {
+    if (!g_oNativeFog.active.load() && std::isfinite(packedOut[0x17])) {
         g_windPackBase17.store(packedOut[0x17]);
         g_windPackBase17Valid.store(true);
     }
@@ -538,8 +718,8 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         packedOut[0x0A] = g_windPackBase0A.load() * value;
     }
 
-    if (g_oWind.active.load()) {
-        const float fogBoost = min(15.0f, max(0.0f, g_oWind.value.load()));
+    if (g_oNativeFog.active.load()) {
+        const float fogBoost = min(15.0f, max(0.0f, g_oNativeFog.value.load()));
         const float fogMul = 1.0f + fogBoost;
         if (g_windPackBase11Valid.load()) {
             packedOut[0x11] = g_windPackBase11.load() * fogMul;
@@ -603,6 +783,8 @@ static void ApplyWeatherParams(long long self, const ResolvedEnv& env) {
     if (!env.valid) return;
     if (kEnableDirectNodeWrites && env.cloudNode) {
         float fogTotal = g_oFog.get(0.0f);
+        float dust = g_oDust.active.load() ? g_oDust.value.load() : 0.0f;
+        float nativeDust = DustSliderToNative(dust);
         if (g_oFog.active.load()) {
             float fogHalf = fogTotal * 0.5f;
             At<float>(env.cloudNode, CN::FOG_A) = fogHalf;
@@ -619,6 +801,15 @@ static void ApplyWeatherParams(long long self, const ResolvedEnv& env) {
                 At<float>(env.cloudNode, CN::CLOUD_TOP)   = s_dryPulse ? 0.0005f : 0.0f;
                 At<float>(env.cloudNode, CN::CLOUD_BASE)  = 0.0f;
             }
+        }
+
+        if (g_oDust.active.load()) {
+            At<float>(env.cloudNode, CN::DUST_BASE) = nativeDust;
+            At<float>(env.cloudNode, CN::DUST_ADD) = nativeDust * 0.10f;
+            At<float>(env.cloudNode, CN::DUST_WIND_SCALE) = max(0.30f, dust * 0.60f);
+            At<float>(env.cloudNode, CN::DUST_THRESH) = min(At<float>(env.cloudNode, CN::DUST_THRESH), DustSliderToThreshold(dust));
+            At<float>(env.cloudNode, CN::STORM_THRESH) = max(At<float>(env.cloudNode, CN::STORM_THRESH), DustSliderToStorm(dust));
+            At<float>(env.cloudNode, CN::FOG_B) = max(At<float>(env.cloudNode, CN::FOG_B), DustSliderToFogB(dust));
         }
 
     }
@@ -643,8 +834,7 @@ static uint32_t ComputeCustomEffectMask() {
     if (snow > 0.01f) mask |= 0x004;      // effect 2 (snow flakes)
     if (snow > 0.3f)  mask |= 0x008;      // effect 3 (heavy snow)
     if (wind > 0.5f)  mask |= 0x020;      // effect 5 (wind base)
-    if (dust > 0.1f)  mask |= 0x040;      // effect 6 (desert dust)
-    if (snow > 0.1f && dust > 0.1f) mask |= 0x080; // effect 7 (snow dust)
+    if (dust > 0.1f)  mask |= 0x040;      // effect 6 (sand dust)
 
     return mask;
 }
@@ -769,7 +959,8 @@ static void TickWeatherState(long long self, float dt) {
         return;
     }
 
-    const ResolvedEnv env = ResolveEnv();
+    const ResolvedEnv env = ResolveCustomTickEnv();
+    LogDustProbe(self, env, "tick-state");
     if (!env.valid) return;
     const int nullSent = g_pNullSentinel ? *g_pNullSentinel : 0;
 
@@ -798,7 +989,7 @@ static void TickWeatherState(long long self, float dt) {
                     else if (i == 2 || i == 3) effI = g_oSnow.active.load() ? g_oSnow.value.load() : 0.0f;
                     else if (i == 4) effI = g_oRain.active.load() ? max(0.f, g_oRain.value.load() - 0.5f) * 2.f : 0.0f;
                     else if (i == 5) effI = g_oWindActual.active.load() ? min(1.f, g_oWindActual.value.load() / 10.f) : 0.0f;
-                    else if (i == 6) effI = g_oDust.active.load() ? g_oDust.value.load() : 0.0f;
+                    else if (i == 6) effI = g_oDust.active.load() ? min(1.0f, g_oDust.value.load()) : 0.0f;
                     else if (i == 7) effI = min(
                         g_oSnow.active.load() ? g_oSnow.value.load() : 0.0f,
                         g_oDust.active.load() ? g_oDust.value.load() : 0.0f);
@@ -864,8 +1055,14 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     }
 
     const bool rainOnlyControl = IsRainOnlyControlMode();
-    TickWeatherState(self, dt);
+    const bool dustDriven = g_oDust.active.load();
+    if (!dustDriven) {
+        TickWeatherState(self, dt);
+    }
     g_pOriginalTick(self, dt);
+    if (dustDriven && g_activeWeather == kCustomWeather) {
+        TickWeatherState(self, dt);
+    }
     if (rainOnlyControl && g_activeWeather == kCustomWeather) {
         if (env.valid) {
             const int nullSent = g_pNullSentinel ? *g_pNullSentinel : 0;
@@ -880,6 +1077,7 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
         ApplyCloudOverrides(env);
         ApplyCelestialOverrides(env);
     }
+    LogDustProbe(self, env, "tick-tail");
     if (g_noWind.load()) {
         ApplyNoWindPolicy(self, env);
     }

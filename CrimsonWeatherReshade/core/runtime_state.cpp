@@ -2,7 +2,63 @@
 
 #include "runtime_shared.h"
 
+#include <fstream>
+#include <vector>
+
 namespace {
+
+void RemoveIniSectionByName(const char* path, const char* sectionName) {
+    if (!path || !path[0] || !sectionName || !sectionName[0]) {
+        return;
+    }
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return;
+    }
+
+    std::vector<std::string> lines;
+    std::string line;
+    bool skipping = false;
+    bool removed = false;
+
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+
+        if (!line.empty() && line.front() == '[' && line.back() == ']') {
+            const std::string header = line.substr(1, line.size() - 2);
+            if (_stricmp(header.c_str(), sectionName) == 0) {
+                skipping = true;
+                removed = true;
+                continue;
+            }
+            skipping = false;
+        }
+
+        if (!skipping) {
+            lines.push_back(line);
+        }
+    }
+    in.close();
+
+    if (!removed) {
+        return;
+    }
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return;
+    }
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        out << lines[i];
+        if (i + 1 < lines.size()) {
+            out << "\r\n";
+        }
+    }
+}
 
 void WriteDefaultConfig(const char* path) {
     if (!path || !path[0]) {
@@ -22,7 +78,11 @@ void WriteDefaultConfig(const char* path) {
         "_ControllerHotkeyOptions",
         "Use dpad_up/down/left/right + a/b/x/y/lb/rb/start/back",
         path);
+#if !defined(CW_WIND_ONLY)
     WritePrivateProfileStringA("Preset", "LastPreset", "", path);
+#else
+    WritePrivateProfileStringA("Wind", "Multiplier", "1.0000", path);
+#endif
 }
 
 void PatchMissingConfigKeys(const char* path) {
@@ -51,8 +111,16 @@ void PatchMissingConfigKeys(const char* path) {
             "Use dpad_up/down/left/right + a/b/x/y/lb/rb/start/back",
             path);
     }
+#if defined(CW_WIND_ONLY)
+    WritePrivateProfileStringA("Preset", nullptr, nullptr, path);
+    RemoveIniSectionByName(path, "Preset");
+    if (GetPrivateProfileStringA("Wind", "Multiplier", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("Wind", "Multiplier", "1.0000", path);
+    }
+#else
     GetPrivateProfileStringA("Preset", "LastPreset", "", buf, sizeof(buf), path);
     WritePrivateProfileStringA("Preset", "LastPreset", buf, path);
+#endif
 
     WritePrivateProfileStringA("General", "HotkeyToggleGUI", nullptr, path);
     WritePrivateProfileStringA("Hotkeys", "ControllerHotkeyToggleGUI", nullptr, path);
@@ -240,10 +308,10 @@ void BuildIniPath(char* outPath, size_t outSize) {
         return;
     }
     if (g_pluginDir[0]) {
-        sprintf_s(outPath, outSize, "%s\\CrimsonWeather.ini", g_pluginDir);
+        sprintf_s(outPath, outSize, "%s\\%s", g_pluginDir, MOD_CONFIG_FILE);
         return;
     }
-    strcpy_s(outPath, outSize, "CrimsonWeather.ini");
+    strcpy_s(outPath, outSize, MOD_CONFIG_FILE);
 }
 
 int KeyNameToVK(const char* name) {
@@ -332,9 +400,23 @@ void LoadConfig(const char* dir) {
     g_cfg.controllerEffectToggleMask = ParseControllerCombo(buf, static_cast<WORD>(0x0002 | 0x4000));
     g_cfg.uiScale = 1.0f;
     g_cfg.reshadeDiagnostics = false;
+#if defined(CW_WIND_ONLY)
+    GetPrivateProfileStringA("Wind", "Multiplier", "1.0000", buf, sizeof(buf), path);
+    g_windMul.store(min(15.0f, max(0.0f, static_cast<float>(atof(buf)))));
+#endif
 }
 
 void SaveConfigUIScale() {
+}
+
+void SaveWindOnlyConfig() {
+#if defined(CW_WIND_ONLY)
+    char path[MAX_PATH] = {};
+    BuildIniPath(path, sizeof(path));
+    char value[32] = {};
+    sprintf_s(value, "%.4f", min(15.0f, max(0.0f, g_windMul.load())));
+    WritePrivateProfileStringA("Wind", "Multiplier", value, path);
+#endif
 }
 
 void OpenLogFile(const char* dir) {
@@ -345,9 +427,9 @@ void OpenLogFile(const char* dir) {
 
     char path[MAX_PATH] = {};
     if (dir && dir[0]) {
-        sprintf_s(path, "%s\\CrimsonWeather.log", dir);
+        sprintf_s(path, "%s\\%s", dir, MOD_LOG_FILE);
     } else {
-        strcpy_s(path, "CrimsonWeather.log");
+        strcpy_s(path, MOD_LOG_FILE);
     }
     fopen_s(&g_logFile, path, "w");
     if (!g_logFile) {
@@ -377,6 +459,7 @@ void ResetAllSliders() {
     g_oExpCloud2D.clear();
     g_oExpNightSkyRot.clear();
     g_oCloudThk.clear();
+    g_oNativeFog.clear();
     g_oWind.clear();
     g_oWindActual.clear();
     g_oSunDirX.clear();
@@ -409,7 +492,7 @@ bool AnySliderActive() {
     return g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oExpCloud2C.active.load() || g_oExpCloud2D.active.load() ||
-           g_oExpNightSkyRot.active.load() || g_oCloudThk.active.load() || g_oWind.active.load() ||
+           g_oExpNightSkyRot.active.load() || g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
            fabsf(g_windMul.load() - 1.0f) > 0.001f ||
            g_oSunDirX.active.load() || g_oSunDirY.active.load() ||
            g_oMoonDirX.active.load() || g_oMoonDirY.active.load();
@@ -418,7 +501,8 @@ bool AnySliderActive() {
 bool AnyCustomWeatherSliderActive() {
     return g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
-           g_oAtmoAlpha.active.load() || g_oCloudThk.active.load() || g_oWindActual.active.load() ||
+           g_oAtmoAlpha.active.load() || g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
+           g_oWindActual.active.load() ||
            fabsf(g_windMul.load() - 1.0f) > 0.001f;
 }
 
@@ -535,11 +619,14 @@ ResolvedEnv ResolveEnv() {
         }
 
         r.entity = getEntity(envMgr);
-        if (!r.entity || !IsReadablePointer(static_cast<uintptr_t>(r.entity), 0xEE8)) {
+        if (!r.entity || !IsReadablePointer(static_cast<uintptr_t>(r.entity), 0xEF0)) {
             return r;
         }
 
         r.weatherState = *reinterpret_cast<long long*>(r.entity + 0xED8);
+        if (!r.weatherState || !IsReadablePointer(static_cast<uintptr_t>(r.weatherState), 0x58)) {
+            r.weatherState = *reinterpret_cast<long long*>(r.entity + 0xEE0);
+        }
         if (!r.weatherState || !IsReadablePointer(static_cast<uintptr_t>(r.weatherState), 0x58)) {
             return r;
         }
@@ -560,6 +647,12 @@ ResolvedEnv ResolveEnv() {
 
         r.atmosphereNode = ResolveAtmosphereNode(r.windNode);
         r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE0);
+        if (r.particleMgr && !IsReadablePointer(static_cast<uintptr_t>(r.particleMgr), 0x20)) {
+            r.particleMgr = 0;
+        }
+        if (!r.particleMgr) {
+            r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE8);
+        }
         if (r.particleMgr && !IsReadablePointer(static_cast<uintptr_t>(r.particleMgr), 0x20)) {
             r.particleMgr = 0;
         }

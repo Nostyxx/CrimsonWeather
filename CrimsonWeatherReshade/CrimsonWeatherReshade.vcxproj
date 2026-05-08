@@ -69,8 +69,12 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
-    <TargetName>CrimsonWeather</TargetName>
+    <CWBuildFlavor Condition="'$(CWBuildFlavor)'==''">Full</CWBuildFlavor>
+    <CWFlavorPreprocessorDefinitions Condition="'$(CWBuildFlavor)'=='WindOnly'">CW_WIND_ONLY=1;</CWFlavorPreprocessorDefinitions>
+    <TargetName Condition="'$(CWBuildFlavor)'=='WindOnly'">Crimson Weather (Wind only)</TargetName>
+    <TargetName Condition="'$(CWBuildFlavor)'!='WindOnly'">CrimsonWeather</TargetName>
     <TargetExt>.asi</TargetExt>
+    <IntDir>$(Platform)\$(Configuration)\$(CWBuildFlavor)\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
@@ -80,7 +84,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)third_party\minhook\include;$(ProjectDir)third_party\reshade-sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_WINDOWS;_USRDLL;NOMINMAX;IMGUI_DISABLE_OBSOLETE_FUNCTIONS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_WINDOWS;_USRDLL;NOMINMAX;IMGUI_DISABLE_OBSOLETE_FUNCTIONS;$(CWFlavorPreprocessorDefinitions)%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
     </ClCompile>

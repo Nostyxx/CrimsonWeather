@@ -39,7 +39,7 @@ DWORD WINAPI BootstrapThread(void* param) {
     OpenLogFile(dir);
 
     Log("================================================\n");
-    Log("  " MOD_NAME " v" MOD_VERSION "\n");
+    Log("  " MOD_DISPLAY_NAME " v" MOD_VERSION "\n");
     Log("================================================\n\n");
     Log("[i] base: %p\n", GetModuleHandle(nullptr));
 
@@ -64,7 +64,9 @@ DWORD WINAPI BootstrapThread(void* param) {
         return 0;
     }
 
+#if !defined(CW_WIND_ONLY)
     Preset_ArmAutoApplyRemembered();
+#endif
     if (!StartHotkeyService()) {
         Log("[E] Hotkey service failed to start\n");
         GUI_SetStatus("Hotkey service failed");

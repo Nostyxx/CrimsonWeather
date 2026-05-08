@@ -8,6 +8,16 @@
 #define CW_AOB_VERBOSE_LOG(...) do {} while (0)
 #endif
 
+#if defined(CW_WIND_ONLY)
+static constexpr bool kEnableWeatherTickHook = false;
+static constexpr bool kEnableGameplayHooks = false;
+static constexpr bool kEnableIntensityHooks = true;
+static constexpr bool kEnableWindHooks = false;
+static constexpr bool kEnableProcessWindHook = false;
+static constexpr bool kEnableWindPackHook = false;
+static constexpr bool kEnableCloudHooks = false;
+static constexpr bool kEnableFrameHooks = false;
+#else
 static constexpr bool kEnableWeatherTickHook = true;
 static constexpr bool kEnableGameplayHooks = true;
 static constexpr bool kEnableIntensityHooks = true;
@@ -16,6 +26,7 @@ static constexpr bool kEnableProcessWindHook = true;
 static constexpr bool kEnableWindPackHook = true;
 static constexpr bool kEnableCloudHooks = true;
 static constexpr bool kEnableFrameHooks = true;
+#endif
 
 static bool ParsePattern(const char*pat,uint8_t*bytes,uint8_t*mask,size_t&len){
     len=0;const char*p=pat;
@@ -201,6 +212,66 @@ static RuntimeHealthState AggregateTargetHealth(std::initializer_list<AobTargetI
 static void RecomputeRuntimeHealthSummary() {
     std::string note;
 
+#if defined(CW_WIND_ONLY)
+    SetRuntimeGroupHealth(RuntimeHealthGroup::CoreWeather,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeGroupHealth(RuntimeHealthGroup::CloudExperiment,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeGroupHealth(RuntimeHealthGroup::Fog,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeGroupHealth(RuntimeHealthGroup::Time,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeGroupHealth(RuntimeHealthGroup::Infra,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+
+    SetRuntimeFeatureHealth(RuntimeFeatureId::ForceClear,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::Rain,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::Dust,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::Snow,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::TimeControls,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::CloudControls,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::FogControls,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::WindControls,
+        AggregateTargetHealth({
+            AobTargetId::GetDustIntensity
+        }, note), note);
+    SetRuntimeFeatureHealth(RuntimeFeatureId::NoWindControls,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::DetailControls,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::ExperimentControls,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::CelestialControls,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::NativeToast,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
+    return;
+#endif
+
     SetRuntimeGroupHealth(RuntimeHealthGroup::CoreWeather,
         AggregateTargetHealth({
             AobTargetId::WeatherTick,
@@ -321,7 +392,7 @@ static void RecomputeRuntimeHealthSummary() {
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::CelestialControls,
         RuntimeHealthState::Disabled,
-        "Disabled after game update; sun/moon offsets need re-RE");
+        "Disabled");
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::NativeToast,
         AggregateTargetHealth({
@@ -330,6 +401,30 @@ static void RecomputeRuntimeHealthSummary() {
 }
 
 static void LogRuntimeHealthSummary() {
+#if defined(CW_WIND_ONLY)
+    const RuntimeHealthEntry& dustEntry = g_aobTargetHealth[static_cast<size_t>(AobTargetId::GetDustIntensity)];
+    size_t windOnlyReadyTargets = dustEntry.state == RuntimeHealthState::Ready ? 1 : 0;
+    size_t windOnlyDegradedTargets = dustEntry.state == RuntimeHealthState::Degraded ? 1 : 0;
+    size_t windOnlyDisabledTargets = dustEntry.state == RuntimeHealthState::Disabled ? 1 : 0;
+    if (dustEntry.state != RuntimeHealthState::Ready) {
+        Log("[AOB] target %-22s %-9s addr=%p note=%s\n",
+            AobTargetLabel(AobTargetId::GetDustIntensity),
+            RuntimeHealthStateLabel(dustEntry.state),
+            (void*)dustEntry.addr,
+            dustEntry.note.empty() ? "-" : dustEntry.note.c_str());
+    }
+    const RuntimeHealthEntry& windEntry = g_runtimeFeatureHealth[static_cast<size_t>(RuntimeFeatureId::WindControls)];
+    if (windEntry.state != RuntimeHealthState::Ready) {
+        Log("[AOB] feature %-22s %-9s note=%s\n",
+            RuntimeFeatureLabel(RuntimeFeatureId::WindControls),
+            RuntimeHealthStateLabel(windEntry.state),
+            windEntry.note.empty() ? "-" : windEntry.note.c_str());
+    }
+    Log("[AOB] summary targets ready=%zu degraded=%zu disabled=%zu\n",
+        windOnlyReadyTargets, windOnlyDegradedTargets, windOnlyDisabledTargets);
+    return;
+#endif
+
     size_t readyTargets = 0, degradedTargets = 0, disabledTargets = 0;
     for (size_t i = 0; i < static_cast<size_t>(AobTargetId::Count); ++i) {
         const RuntimeHealthEntry& entry = g_aobTargetHealth[i];
@@ -339,6 +434,9 @@ static void LogRuntimeHealthSummary() {
         }
         if (entry.state == RuntimeHealthState::Degraded) ++degradedTargets;
         else ++disabledTargets;
+#if defined(CW_WIND_ONLY)
+        if (entry.state == RuntimeHealthState::Disabled) continue;
+#endif
         Log("[AOB] target %-22s %-9s addr=%p note=%s\n",
             AobTargetLabel(static_cast<AobTargetId>(i)),
             RuntimeHealthStateLabel(entry.state),
@@ -348,6 +446,9 @@ static void LogRuntimeHealthSummary() {
     for (size_t i = 0; i < static_cast<size_t>(RuntimeHealthGroup::Count); ++i) {
         const RuntimeHealthEntry& entry = g_runtimeGroupHealth[i];
         if (entry.state == RuntimeHealthState::Ready) continue;
+#if defined(CW_WIND_ONLY)
+        if (entry.state == RuntimeHealthState::Disabled) continue;
+#endif
         Log("[AOB] group  %-22s %-9s note=%s\n",
             RuntimeHealthGroupLabel(static_cast<RuntimeHealthGroup>(i)),
             RuntimeHealthStateLabel(entry.state),
@@ -356,6 +457,9 @@ static void LogRuntimeHealthSummary() {
     for (size_t i = 0; i < static_cast<size_t>(RuntimeFeatureId::Count); ++i) {
         const RuntimeHealthEntry& entry = g_runtimeFeatureHealth[i];
         if (entry.state == RuntimeHealthState::Ready) continue;
+#if defined(CW_WIND_ONLY)
+        if (entry.state == RuntimeHealthState::Disabled) continue;
+#endif
         Log("[AOB] feature %-22s %-9s note=%s\n",
             RuntimeFeatureLabel(static_cast<RuntimeFeatureId>(i)),
             RuntimeHealthStateLabel(entry.state),
@@ -628,16 +732,43 @@ static uintptr_t FindTimeDebugHandlerAOB(ptrdiff_t& outEnvGetEntity,
 static bool DiscoverTimeLayoutAOB() {
     bool ok = true;
 
-    uintptr_t lowSite = ScanModule("F3 0F 11 ?? CC 03 00 00");
-    uintptr_t uppSite = ScanModule("F3 0F 11 ?? D0 03 00 00");
+    auto extractStoreDisp = [](uintptr_t site, int32_t& outDisp) {
+        for (int i = 0; i < 0x60; ++i) {
+            uint8_t* p = reinterpret_cast<uint8_t*>(site + i);
+            if (p[0] == 0xF3 && p[1] == 0x0F && p[2] == 0x11 && (p[3] & 0xC0) == 0x80) {
+                outDisp = *reinterpret_cast<int32_t*>(p + 4);
+                return true;
+            }
+            if (p[0] == 0xC5 && p[1] == 0xFA && p[2] == 0x11 && (p[3] & 0xC0) == 0x80) {
+                outDisp = *reinterpret_cast<int32_t*>(p + 4);
+                return true;
+            }
+        }
+        return false;
+    };
+
+    uintptr_t lowSite = ScanModule(
+        "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B D4 03 00 00"
+    );
+    uintptr_t uppSite = ScanModule(
+        "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B D8 03 00 00"
+    );
+    if (!lowSite) lowSite = ScanModule("F3 0F 11 ?? CC 03 00 00");
+    if (!uppSite) uppSite = ScanModule("F3 0F 11 ?? D0 03 00 00");
+    if (!lowSite) lowSite = ScanModule("C5 FA 11 ?? D4 03 00 00");
+    if (!uppSite) uppSite = ScanModule("C5 FA 11 ?? D8 03 00 00");
     if (!lowSite) lowSite = ScanModule("C5 FA 11 ?? CC 03 00 00");
     if (!uppSite) uppSite = ScanModule("C5 FA 11 ?? D0 03 00 00");
     if (!lowSite || !uppSite) {
         Log("[W] TimeAOB: lower/upper limit stores not found\n");
         ok = false;
     } else {
-        int32_t lowOff = *reinterpret_cast<int32_t*>(lowSite + 4);
-        int32_t uppOff = *reinterpret_cast<int32_t*>(uppSite + 4);
+        int32_t lowOff = 0;
+        int32_t uppOff = 0;
+        if (!extractStoreDisp(lowSite, lowOff) || !extractStoreDisp(uppSite, uppOff)) {
+            Log("[W] TimeAOB: failed to extract lower/upper store offsets\n");
+            ok = false;
+        }
         g_tdLowerLimit = static_cast<ptrdiff_t>(lowOff);
         g_tdUpperLimit = static_cast<ptrdiff_t>(uppOff);
         // Current fields are adjacent in current family.
@@ -767,6 +898,29 @@ void RestoreRuntimePatches() {
 bool RunAOBScan(){
     ClearRuntimeHealthState();
 
+#if defined(CW_WIND_ONLY)
+    uintptr_t windOnlyAddrGetDust = ScanModule(
+        "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
+    );
+    if (!windOnlyAddrGetDust) {
+        Log("[E] AOB: GetDustIntensity not found\n");
+        return false;
+    }
+    Log("[AOB] GetDustIntensity(sig) = %p\n", (void*)windOnlyAddrGetDust);
+
+    InstallHook((void*)windOnlyAddrGetDust, (void*)&Hooked_GetDustIntensity,
+                (void**)&g_pOrigGetDustIntensity, "GetDustIntensity", false);
+
+    SetAobTargetHealth(AobTargetId::GetDustIntensity,
+        (windOnlyAddrGetDust && g_pOrigGetDustIntensity) ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
+        windOnlyAddrGetDust,
+        (windOnlyAddrGetDust && g_pOrigGetDustIntensity) ? "hook installed" : "hook unavailable");
+
+    RecomputeRuntimeHealthSummary();
+    LogRuntimeHealthSummary();
+    return windOnlyAddrGetDust && g_pOrigGetDustIntensity;
+#endif
+
     // Anchor 1: WeatherTick
     uintptr_t tick=ScanModule("48 8B C4 53 48 81 EC ?? 00 00 00 C5 F2 58 81 C8 00 00 00");
     if(!tick){
@@ -827,6 +981,11 @@ bool RunAOBScan(){
         addrProcessWind = ScanModule(
             "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 40 48 8B 88 D8 0E 00 00 E8 ?? ?? ?? ?? 8B 8B D0 00 00 00"
         );
+        if (!addrProcessWind) {
+            addrProcessWind = ScanModule(
+                "48 89 5C 24 10 56 48 83 EC 40 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 40 48 8B 88 E0 0E 00 00 E8 ?? ?? ?? ?? 8B 8B D0 00 00 00"
+            );
+        }
         if (addrProcessWind) {
             addrProcessWind = PromoteToFunctionStart(addrProcessWind, "ProcessWindState");
             Log("[AOB] ProcessWindState(sig) = %p\n", (void*)addrProcessWind);
@@ -987,7 +1146,7 @@ bool RunAOBScan(){
                 forcedCand = ReadCall(callSite - 0x6E);
                 uint8_t fp[8] = {};
                 ReadBytesSafe(forcedCand, fp, sizeof(fp));
-                CW_AOB_VERBOSE_LOG("[AOB]   probe fixed d=0x6E call@%p -> %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X looks=%d\n",
+                CW_AOB_VERBOSE_LOG("[AOB] probe fixed d=0x6E call@%p -> %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X looks=%d\n",
                     (void*)(callSite - 0x6E), (void*)forcedCand,
                     fp[0], fp[1], fp[2], fp[3], fp[4], fp[5], fp[6], fp[7],
                     LooksLikeAtmosFogBlend(forcedCand) ? 1 : 0);
@@ -1010,7 +1169,7 @@ bool RunAOBScan(){
                 }
                 uint8_t cp[8] = {};
                 ReadBytesSafe(cand, cp, sizeof(cp));
-                CW_AOB_VERBOSE_LOG("[AOB]   probe d=0x%X call@%p -> %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X looks=%d\n",
+                CW_AOB_VERBOSE_LOG("[AOB] probe d=0x%X call@%p -> %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X looks=%d\n",
                     d, (void*)fogSite, (void*)cand,
                     cp[0], cp[1], cp[2], cp[3], cp[4], cp[5], cp[6], cp[7],
                     LooksLikeAtmosFogBlend(cand) ? 1 : 0);
@@ -1070,6 +1229,11 @@ bool RunAOBScan(){
         uintptr_t envGlobalSite = ScanModule(
             "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 40 48 8B 88 D8 0E 00 00"
         );
+        if(!envGlobalSite){
+            envGlobalSite = ScanModule(
+                "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 40 48 8B 88 E0 0E 00 00"
+            );
+        }
         if(envGlobalSite){
             g_pEnvManager=reinterpret_cast<uintptr_t*>(ReadRIP7(envGlobalSite));
             envManagerValidated = IsReadableAddress(reinterpret_cast<uintptr_t>(g_pEnvManager), sizeof(uintptr_t));
@@ -1121,15 +1285,21 @@ bool RunAOBScan(){
             InstallWeatherTickVtableHook(tick);
         }
     } else {
+#if defined(CW_WIND_ONLY)
+        Log("[AOB] Wind Only build: WeatherTick hook not installed\n");
+#else
         Log("[W] WeatherTick hook disabled for stability\n");
+#endif
     }
 
     if (kEnableGameplayHooks || kEnableIntensityHooks) {
+#if !defined(CW_WIND_ONLY)
         InstallHook((void*)rain,(void*)&Hooked_GetRainIntensity,
                     (void**)&g_pOrigGetRainIntensity,"GetRainIntensity",false);
         if(addrGetSnow)
             InstallHook((void*)addrGetSnow,(void*)&Hooked_GetSnowIntensity,
                         (void**)&g_pOrigGetSnowIntensity,"GetSnowIntensity",false);
+#endif
         if(addrGetDust)
             InstallHook((void*)addrGetDust,(void*)&Hooked_GetDustIntensity,
                         (void**)&g_pOrigGetDustIntensity,"GetDustIntensity",false);

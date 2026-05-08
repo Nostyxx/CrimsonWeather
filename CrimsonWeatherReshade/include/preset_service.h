@@ -33,8 +33,8 @@ struct WeatherPresetData {
     float nightSkyRotation = 1.0f;
     bool fogEnabled = false;
     float fogPercent = 0.0f;
-    bool plainFogEnabled = false;
-    float plainFog = 0.0f;
+    bool nativeFogEnabled = false;
+    float nativeFog = 0.0f;
     float wind = 1.0f;
     bool noWind = false;
     bool puddleScaleEnabled = false;
