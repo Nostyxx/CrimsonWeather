@@ -298,10 +298,6 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         if (TryParseBool(value, boolValue)) data.visualTimeOverride = boolValue;
     } else if (KeyEquals(key, "TimeHour")) {
         if (TryParseFloat(value, floatValue)) data.timeHour = floatValue;
-    } else if (KeyEquals(key, "ForceCloudsEnabled")) {
-        if (TryParseBool(value, boolValue)) data.forceCloudsEnabled = boolValue;
-    } else if (KeyEquals(key, "ForceClouds")) {
-        if (TryParseFloat(value, floatValue)) data.forceCloudsPercent = floatValue;
     } else if (KeyEquals(key, "CloudHeightEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.cloudHeightEnabled = boolValue;
@@ -427,8 +423,6 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
 void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     WeatherPresetData& data = state.data;
 
-    data.forceCloudsPercent = 0.0f;
-    data.forceCloudsEnabled = false;
     if (!state.cloudHeightEnabledSeen) data.cloudHeightEnabled = !FloatNearlyEqual(data.cloudHeight, 1.0f);
     if (!state.cloudDensityEnabledSeen) data.cloudDensityEnabled = !FloatNearlyEqual(data.cloudDensity, 1.0f);
     if (!state.midCloudsEnabledSeen) data.midCloudsEnabled = !FloatNearlyEqual(data.midClouds, 1.0f);
@@ -529,7 +523,7 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
 
     AppendPresetLine(out, "[Cloud]");
     AppendPresetKeyValue(out, "CloudHeightEnabled", FormatPresetBool(data.cloudHeightEnabled));
-    AppendPresetKeyValue(out, "CloudHeight", FormatPresetFloat(ClampPresetFloat(data.cloudHeight, -20.0f, 20.0f)));
+    AppendPresetKeyValue(out, "CloudHeight", FormatPresetFloat(ClampPresetFloat(data.cloudHeight, -15.0f, 15.0f)));
     AppendPresetKeyValue(out, "CloudDensityEnabled", FormatPresetBool(data.cloudDensityEnabled));
     AppendPresetKeyValue(out, "CloudDensity", FormatPresetFloat(ClampPresetFloat(data.cloudDensity, 0.0f, 10.0f)));
     AppendPresetKeyValue(out, "MidCloudsEnabled", FormatPresetBool(data.midCloudsEnabled));
@@ -570,8 +564,6 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.snow = ActiveOverrideValue(g_oSnow, 0.0f);
     data.visualTimeOverride = g_timeCtrlActive.load() && g_timeFreeze.load();
     data.timeHour = NormalizeHour24(g_timeTargetHour.load());
-    data.forceCloudsEnabled = false;
-    data.forceCloudsPercent = 0.0f;
     data.cloudHeightEnabled = g_oCloudSpdX.active.load();
     data.cloudHeight = OverrideValueIf(data.cloudHeightEnabled, g_oCloudSpdX, 1.0f);
     data.cloudDensityEnabled = g_oCloudSpdY.active.load();
@@ -635,10 +627,7 @@ void ApplyPresetData(const WeatherPresetData& data) {
         }
     }
 
-    g_forceCloudsAmount.store(kForceCloudsDefaultAmount);
-    g_forceCloudsEnabled.store(false);
-
-    ApplyEnabledOverride(g_oCloudSpdX, data.cloudHeightEnabled, data.cloudHeight, -20.0f, 20.0f);
+    ApplyEnabledOverride(g_oCloudSpdX, data.cloudHeightEnabled, data.cloudHeight, -15.0f, 15.0f);
     ApplyEnabledOverride(g_oCloudSpdY, data.cloudDensityEnabled, data.cloudDensity, 0.0f, 10.0f);
     ApplyEnabledOverride(g_oHighClouds, data.midCloudsEnabled, data.midClouds, 0.0f, 15.0f);
     ApplyEnabledOverride(g_oAtmoAlpha, data.highCloudsEnabled, data.highClouds, 0.0f, 15.0f);

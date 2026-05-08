@@ -15,7 +15,6 @@ static constexpr bool kEnableIntensityHooks = true;
 static constexpr bool kEnableWindHooks = false;
 static constexpr bool kEnableProcessWindHook = false;
 static constexpr bool kEnableWindPackHook = false;
-static constexpr bool kEnableCloudHooks = false;
 static constexpr bool kEnableFrameHooks = false;
 #else
 static constexpr bool kEnableWeatherTickHook = true;
@@ -24,7 +23,6 @@ static constexpr bool kEnableIntensityHooks = true;
 static constexpr bool kEnableWindHooks = true;
 static constexpr bool kEnableProcessWindHook = true;
 static constexpr bool kEnableWindPackHook = true;
-static constexpr bool kEnableCloudHooks = true;
 static constexpr bool kEnableFrameHooks = true;
 #endif
 
@@ -287,7 +285,6 @@ static void RecomputeRuntimeHealthSummary() {
     SetRuntimeGroupHealth(RuntimeHealthGroup::CloudExperiment,
         AggregateTargetHealth({
             AobTargetId::ProcessWindState,
-            AobTargetId::CloudPack,
             AobTargetId::WindPack,
             AobTargetId::EnvManagerPtr
         }, note), note);
@@ -935,8 +932,6 @@ bool RunAOBScan(){
     Log("[AOB] GetRainIntensity = %p\n",(void*)rain);
 
     bool processWindFallbackUsed = false;
-    bool cloudPackFallbackUsed = false;
-    bool cloudPackValidationMismatch = false;
     bool windPackFallbackUsed = false;
     bool weatherFrameForcedUsed = false;
     bool weatherFramePatternFallbackUsed = false;
@@ -1014,7 +1009,6 @@ bool RunAOBScan(){
     uintptr_t addrWindPack = 0;
     uintptr_t addrCloudPack = ResolveCloudPackByCallPair(rain, addrGetDust);
     if (!addrCloudPack) {
-        cloudPackFallbackUsed = true;
         addrCloudPack = ScanModule(
             "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 20 4D 8B D9 4C 8B C3 48 8B FA 48 8B F1 E8 ?? ?? ?? ?? 48 8B CE F3 0F 11 03 E8"
         );
@@ -1027,7 +1021,6 @@ bool RunAOBScan(){
         uintptr_t cDust = cDustSite ? ReadCall(cDustSite) : 0;
         Log("[AOB] CloudPack = %p\n", (void*)addrCloudPack);
         if (!cRain || cRain != rain || (addrGetDust && (!cDust || cDust != addrGetDust))) {
-            cloudPackValidationMismatch = true;
             Log("[W] CloudPack call validation mismatch rain=%p/%p dust=%p/%p\n",
                 (void*)cRain, (void*)rain, (void*)cDust, (void*)addrGetDust);
         }
@@ -1146,7 +1139,7 @@ bool RunAOBScan(){
                 forcedCand = ReadCall(callSite - 0x6E);
                 uint8_t fp[8] = {};
                 ReadBytesSafe(forcedCand, fp, sizeof(fp));
-                CW_AOB_VERBOSE_LOG("[AOB] probe fixed d=0x6E call@%p -> %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X looks=%d\n",
+                CW_AOB_VERBOSE_LOG("[AOB] candidate fixed d=0x6E call@%p -> %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X looks=%d\n",
                     (void*)(callSite - 0x6E), (void*)forcedCand,
                     fp[0], fp[1], fp[2], fp[3], fp[4], fp[5], fp[6], fp[7],
                     LooksLikeAtmosFogBlend(forcedCand) ? 1 : 0);
@@ -1169,7 +1162,7 @@ bool RunAOBScan(){
                 }
                 uint8_t cp[8] = {};
                 ReadBytesSafe(cand, cp, sizeof(cp));
-                CW_AOB_VERBOSE_LOG("[AOB] probe d=0x%X call@%p -> %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X looks=%d\n",
+                CW_AOB_VERBOSE_LOG("[AOB] candidate d=0x%X call@%p -> %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X looks=%d\n",
                     d, (void*)fogSite, (void*)cand,
                     cp[0], cp[1], cp[2], cp[3], cp[4], cp[5], cp[6], cp[7],
                     LooksLikeAtmosFogBlend(cand) ? 1 : 0);
@@ -1312,11 +1305,6 @@ bool RunAOBScan(){
             InstallHook((void*)addrWindPack,(void*)&Hooked_WindPack,
                         (void**)&g_pOrigWindPack,"WindPack",false);
     }
-    if (kEnableGameplayHooks || kEnableCloudHooks) {
-        if(addrCloudPack)
-            InstallHook((void*)addrCloudPack,(void*)&Hooked_CloudPack,
-                        (void**)&g_pOrigCloudPack,"CloudPack",false);
-    }
     if (kEnableGameplayHooks || kEnableFrameHooks) {
         if(addrPPLayerUpdate)
             InstallHook((void*)addrPPLayerUpdate,(void*)&Hooked_PPLayerUpdate,
@@ -1329,10 +1317,9 @@ bool RunAOBScan(){
                         (void**)&g_pOrigAtmosFogBlend,"AtmosFogBlend",false);
     }
     if (!kEnableGameplayHooks) {
-        Log("[W] Gameplay hooks isolation flags: intensity=%d wind=%d cloud=%d frame=%d\n",
+        Log("[W] Gameplay hooks isolation flags: intensity=%d wind=%d frame=%d\n",
             kEnableIntensityHooks ? 1 : 0,
             kEnableWindHooks ? 1 : 0,
-            kEnableCloudHooks ? 1 : 0,
             kEnableFrameHooks ? 1 : 0);
         Log("[W] Wind hook split: process=%d windpack=%d\n",
             kEnableProcessWindHook ? 1 : 0,
@@ -1393,15 +1380,6 @@ bool RunAOBScan(){
         addrSetIntensity,
         !addrSetIntensity ? "Tick+0x2CC unresolved"
             : "resolved");
-
-    const bool cloudPackInstalled = addrCloudPack && g_pOrigCloudPack;
-    RuntimeHealthState cloudPackState = RuntimeHealthState::Disabled;
-    const char* cloudPackNote = "unresolved or hook failed";
-    if (cloudPackInstalled) {
-        cloudPackState = RuntimeHealthState::Ready;
-        cloudPackNote = "hook installed";
-    }
-    SetAobTargetHealth(AobTargetId::CloudPack, cloudPackState, addrCloudPack, cloudPackNote);
 
     const bool windPackInstalled = addrWindPack && g_pOrigWindPack;
     SetAobTargetHealth(AobTargetId::WindPack,

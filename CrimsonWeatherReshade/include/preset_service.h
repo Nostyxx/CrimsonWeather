@@ -7,8 +7,6 @@ struct WeatherPresetData {
     float snow = 0.0f;
     bool visualTimeOverride = false;
     float timeHour = 12.0f;
-    bool forceCloudsEnabled = false;
-    float forceCloudsPercent = 25.0f;
     bool cloudHeightEnabled = false;
     float cloudHeight = 1.0f;
     bool cloudDensityEnabled = false;

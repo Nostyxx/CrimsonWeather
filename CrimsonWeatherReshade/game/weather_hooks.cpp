@@ -128,62 +128,6 @@ static ResolvedEnv ResolveCustomTickEnv() {
     return ResolveEnv();
 }
 
-static void LogDustProbe(long long self, const ResolvedEnv& env, const char* stage) {
-    static ULONGLONG s_lastDustProbeLog = 0;
-    ULONGLONG now = GetTickCount64();
-    if (now - s_lastDustProbeLog < 1200) return;
-
-    const bool dustActive = g_oDust.active.load();
-    if (!dustActive) return;
-
-    s_lastDustProbeLog = now;
-    if (!env.valid) {
-        Log("[dust-probe] stage=%s slider=%.3f env=invalid\n", stage ? stage : "-", g_oDust.value.load());
-        return;
-    }
-
-    float nativeDust = g_pOrigGetDustIntensity ? ExtractScalar(g_pOrigGetDustIntensity(env.weatherState)) : 0.0f;
-    float nativeRain = g_pOrigGetRainIntensity ? ExtractScalar(g_pOrigGetRainIntensity(env.weatherState)) : 0.0f;
-    float nativeSnow = g_pOrigGetSnowIntensity ? ExtractScalar(g_pOrigGetSnowIntensity(env.weatherState)) : 0.0f;
-
-    const float compact120 = env.cloudNode ? At<float>(env.cloudNode, CN::DUST_BASE) : -9999.0f;
-    const float compact140 = env.cloudNode ? At<float>(env.cloudNode, CN::DUST_WIND_SCALE) : -9999.0f;
-    const float compact180 = env.cloudNode ? At<float>(env.cloudNode, CN::DUST_THRESH) : -9999.0f;
-    const float compact184 = env.cloudNode ? At<float>(env.cloudNode, CN::STORM_THRESH) : -9999.0f;
-    const float compact188 = env.cloudNode ? At<float>(env.cloudNode, CN::FOG_B) : -9999.0f;
-    const float compact18C = env.cloudNode ? At<float>(env.cloudNode, CN::DUST_ADD) : -9999.0f;
-
-    const float profile088 = env.windNode ? At<float>(env.windNode, 0x88) : -9999.0f;
-    const float profile09C = env.windNode ? At<float>(env.windNode, 0x9C) : -9999.0f;
-    const float profile0A8 = env.windNode ? At<float>(env.windNode, 0xA8) : -9999.0f;
-
-    int h6 = At<int>(self, WCO::HANDLE_ARRAY + 6 * 4);
-    int h7 = At<int>(self, WCO::HANDLE_ARRAY + 7 * 4);
-    int h8 = At<int>(self, WCO::HANDLE_ARRAY + 8 * 4);
-
-    Log("[dust-probe] stage=%s slider=%.3f ws=%p compact=%p profile=%p nativeDust=%.3f nativeRain=%.3f nativeSnow=%.3f c120=%.3f c140=%.3f c180=%.3f c184=%.3f c188=%.3f c18c=%.3f p088=%.3f p09c=%.3f p0a8=%.3f h6=%d h7=%d h8=%d\n",
-        stage ? stage : "-",
-        g_oDust.value.load(),
-        (void*)env.weatherState,
-        (void*)env.cloudNode,
-        (void*)env.windNode,
-        nativeDust,
-        nativeRain,
-        nativeSnow,
-        compact120,
-        compact140,
-        compact180,
-        compact184,
-        compact188,
-        compact18C,
-        profile088,
-        profile09C,
-        profile0A8,
-        h6,
-        h7,
-        h8);
-}
-
 // Intensity hooks feed slider overrides into the engine weather blend inputs.
 __m128 __fastcall Hooked_GetRainIntensity(long long ws) {
     if (!g_modEnabled.load()) {
@@ -487,11 +431,6 @@ static bool IsReasonableCloudGeometry(const CloudGeometry& g) {
         g.shapeC <= kCloudGeometryMax;
 }
 
-static bool IsMeaningfulCloudGeometry(const CloudGeometry& g) {
-    return g.top > (g.base + 0.05f) ||
-        max(g.shapeA, g.shapeC) > 0.05f;
-}
-
 static bool ReadCloudGeometry(long long cloudNode, CloudGeometry& out) {
     if (!cloudNode) return false;
     const float top = At<float>(cloudNode, CN::CLOUD_TOP);
@@ -542,7 +481,7 @@ static void ApplyCloudShapeMultipliers(const CloudGeometry& source, float mulX, 
 static void CaptureCloudBaseline(const ResolvedEnv& env) {
     if (!env.valid) return;
     const bool hadBaseline = g_cloudBaseValid.load();
-    const bool cloudShapeOverrideActive = g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load();
+    const bool cloudShapeOverrideActive = g_oCloudSpdY.active.load();
     CloudGeometry live{};
     if (ReadCloudGeometry(env.cloudNode, live)) {
         if (!(cloudShapeOverrideActive && hadBaseline)) {
@@ -561,10 +500,10 @@ static void CaptureCloudBaseline(const ResolvedEnv& env) {
 
 static void ApplyCloudOverrides(const ResolvedEnv& env) {
     if (!env.valid) return;
-    const bool cloudShapeActive = g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load();
+    const bool cloudShapeActive = g_oCloudSpdY.active.load();
     if (!cloudShapeActive) return;
 
-    const float mulX = cloudShapeActive ? CloudXToSafeMul(g_oCloudSpdX.get(1.0f)) : 1.0f;
+    const float mulX = 1.0f;
     const float mulZ = cloudShapeActive ? min(10.0f, max(0.0f, g_oCloudSpdY.get(1.0f))) : 1.0f;
 
     if (cloudShapeActive && env.cloudNode) {
@@ -613,28 +552,25 @@ static bool ReadAtmosphereCloudPack(const float* packedOut, AtmosphereCloudPack&
            std::isfinite(out.nearPlane);
 }
 
-static AtmosphereCloudPack GetAuthoredCloudBasePack() {
-    return { 0.0f, 0.0f, 0.0f, 0.0f, 1.80f, 0.0f, 0.0f, 0.28f, 0.0f };
+static float CloudAmountUiToMultiplier(float ui) {
+    ui = min(15.0f, max(0.0f, ui));
+    if (ui <= 1.0f) {
+        return ui;
+    }
+    return 1.0f + ((ui - 1.0f) * (2.0f / 14.0f));
 }
 
-static void LogForceCloudsAtmosphere(const AtmosphereCloudPack& nativePack,
-                                     const AtmosphereCloudPack& seedPack,
-                                     const AtmosphereCloudPack& finalPack) {
-    if (!g_forceCloudsEnabled.load()) return;
-    static ULONGLONG s_lastForceCloudAtmoLog = 0;
-    const ULONGLONG now = GetTickCount64();
-    if (now - s_lastForceCloudAtmoLog <= 1000) return;
-    s_lastForceCloudAtmoLog = now;
-
-    Log("[cloud-base-atmo] amt=%.2f native=(scale=%.3f vis=%.1f dens=%.3f alpha=%.3f thick=%.3f near=%.3f) "
-        "seed=(alpha=%.3f thick=%.3f) final=(scale=%.3f vis=%.1f dens=%.3f alpha=%.3f thick=%.3f near=%.3f)\n",
-        min(1.0f, max(0.0f, g_forceCloudsAmount.load())),
-        nativePack.baseScale, nativePack.visibleRange, nativePack.density, nativePack.alpha,
-        nativePack.thickness, nativePack.nearPlane,
-        seedPack.alpha, seedPack.thickness,
-        finalPack.baseScale, finalPack.visibleRange, finalPack.density, finalPack.alpha,
-        finalPack.thickness, finalPack.nearPlane);
+static float CloudHeightUiToMultiplier(float ui) {
+    ui = min(15.0f, max(-15.0f, ui));
+    if (ui <= 0.0f) {
+        return ui * (2.0f / 15.0f);
+    }
+    if (ui <= 1.0f) {
+        return ui;
+    }
+    return 1.0f + ((ui - 1.0f) * (9.0f / 14.0f));
 }
+
 void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
     if (g_pOrigWindPack) g_pOrigWindPack(windNodePtr, packedOut);
     if (!g_modEnabled.load()) return;
@@ -686,14 +622,23 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         g_windPackBase17.store(packedOut[0x17]);
         g_windPackBase17Valid.store(true);
     }
+    if (std::isfinite(packedOut[0x1B])) {
+        g_windPackBase1B.store(packedOut[0x1B]);
+        g_windPackBase1BValid.store(true);
+    }
 
     const bool cloudActive = g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load();
     if (cloudActive && g_windPackBaseValid.load()) {
-        float mulX = CloudXToSafeMul(g_oCloudSpdX.get(1.0f));
+        float mulX = CloudHeightUiToMultiplier(g_oCloudSpdX.get(1.0f));
         float mulZ = min(10.0f, max(0.0f, g_oCloudSpdY.get(1.0f)));
 
         packedOut[0x23] = g_windPackBase23.load() * mulX;
         packedOut[0x24] = g_windPackBase24.load() * mulZ;
+    }
+
+    if (g_oCloudAmount.active.load() && g_windPackBase1BValid.load()) {
+        const float mul = CloudAmountUiToMultiplier(g_oCloudAmount.get(1.0f));
+        packedOut[0x1B] = min(3.0f, max(0.0f, g_windPackBase1B.load() * mul));
     }
 
     if (g_oHighClouds.active.load() && g_windPackBaseValid.load()) {
@@ -738,15 +683,6 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         }
     }
 
-}
-
-void __fastcall Hooked_CloudPack(long long self, long long* cloudNodePtr, float* packedOut,
-                                 unsigned long long* p4, unsigned long long* p5, char p6,
-                                 float driftX, float driftZ) {
-    // TODO: CloudPack override not yet implemented. Pass-through only.
-    if (g_pOrigCloudPack) {
-        g_pOrigCloudPack(self, cloudNodePtr, packedOut, p4, p5, p6, driftX, driftZ);
-    }
 }
 
 void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
@@ -969,7 +905,6 @@ static void TickWeatherState(long long self, float dt) {
     }
 
     const ResolvedEnv env = ResolveCustomTickEnv();
-    LogDustProbe(self, env, "tick-state");
     if (!env.valid) return;
     const int nullSent = g_pNullSentinel ? *g_pNullSentinel : 0;
 
@@ -1086,7 +1021,6 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
         ApplyCloudOverrides(env);
         ApplyCelestialOverrides(env);
     }
-    LogDustProbe(self, env, "tick-tail");
     if (g_noWind.load()) {
         ApplyNoWindPolicy(self, env);
     }

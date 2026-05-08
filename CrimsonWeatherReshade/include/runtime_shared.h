@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_VERSION "0.4.2"
+#define MOD_VERSION "0.5.0"
 
 struct Config {
     bool logEnabled = true;
@@ -163,15 +163,6 @@ typedef void(__fastcall* AtmosFogBlend_fn)(long long ctx, long long outParams);
 typedef void(__fastcall* WeatherFrameUpdate_fn)(long long* self, float dt);
 typedef void(__fastcall* ProcessWindState_fn)(long long self);
 typedef void(__fastcall* WindPack_fn)(long long* windNodePtr, float* packedOut);
-typedef void(__fastcall* CloudPack_fn)(
-    long long self,
-    long long* cloudNodePtr,
-    float* packedOut,
-    unsigned long long* p4,
-    unsigned long long* p5,
-    char p6,
-    float driftX,
-    float driftZ);
 typedef long long*(__fastcall* FogReceiverGetter_fn)(long long provider);
 typedef void(__fastcall* FogReceiverSet_fn)(long long* receiver, float value);
 typedef double(__fastcall* EnvGetTimeOfDay_fn)(void* envMgr);
@@ -192,7 +183,6 @@ inline AtmosFogBlend_fn g_pOrigAtmosFogBlend = nullptr;
 inline WeatherFrameUpdate_fn g_pOrigWeatherFrameUpdate = nullptr;
 inline ProcessWindState_fn g_pOrigProcessWindState = nullptr;
 inline WindPack_fn g_pOrigWindPack = nullptr;
-inline CloudPack_fn g_pOrigCloudPack = nullptr;
 inline uintptr_t* g_pEnvManager = nullptr;
 inline int* g_pNullSentinel = nullptr;
 inline void** g_pWeatherTickVtableSlot = nullptr;
@@ -257,7 +247,6 @@ enum class AobTargetId : uint8_t {
     ProcessWindState,
     ActivateEffect,
     SetIntensity,
-    CloudPack,
     WindPack,
     PostProcessLayerUpdate,
     GetLayerMeta,
@@ -347,6 +336,7 @@ inline SliderOverride g_oRain;
 inline SliderOverride g_oSnow;
 inline SliderOverride g_oDust;
 inline SliderOverride g_oFog;
+inline SliderOverride g_oCloudAmount;
 inline SliderOverride g_oCloudSpdX;
 inline SliderOverride g_oCloudSpdY;
 inline SliderOverride g_oHighClouds;
@@ -363,9 +353,6 @@ inline SliderOverride g_oSunDirX;
 inline SliderOverride g_oSunDirY;
 inline SliderOverride g_oMoonDirX;
 inline SliderOverride g_oMoonDirY;
-inline constexpr float kForceCloudsDefaultAmount = 0.25f;
-inline std::atomic<bool> g_forceCloudsEnabled{ false };
-inline std::atomic<float> g_forceCloudsAmount{ kForceCloudsDefaultAmount };
 inline std::atomic<bool> g_forceClear{ false };
 inline std::atomic<bool> g_noWind{ false };
 inline std::atomic<bool> g_modEnabled{ true };
@@ -418,6 +405,8 @@ inline std::atomic<bool> g_windPackBase11Valid{ false };
 inline std::atomic<float> g_windPackBase11{ 0.0f };
 inline std::atomic<bool> g_windPackBase17Valid{ false };
 inline std::atomic<float> g_windPackBase17{ 0.0f };
+inline std::atomic<bool> g_windPackBase1BValid{ false };
+inline std::atomic<float> g_windPackBase1B{ 0.0f };
 inline std::atomic<bool> g_windNodeBaseValid{ false };
 inline std::atomic<float> g_windNodeBaseSpeed{ 0.0f };
 inline std::atomic<float> g_windNodeBaseGust{ 0.0f };
@@ -449,7 +438,6 @@ static T& At(long long base, ptrdiff_t off) {
 }
 
 float Clamp01(float v);
-float CloudXToSafeMul(float ui);
 float NormalizeHour24(float h);
 bool ResolveTimeContext(void*& outEnvMgr, long long& outEntity);
 bool TryReadCurrentTimeRaw(void* envMgr, float& outRaw);
@@ -484,13 +472,4 @@ void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams);
 void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt);
 void __fastcall Hooked_ProcessWindState(long long self);
 void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut);
-void __fastcall Hooked_CloudPack(
-    long long self,
-    long long* cloudNodePtr,
-    float* packedOut,
-    unsigned long long* p4,
-    unsigned long long* p5,
-    char p6,
-    float driftX,
-    float driftZ);
 void __fastcall Hooked_WeatherTick(long long self, float dt);

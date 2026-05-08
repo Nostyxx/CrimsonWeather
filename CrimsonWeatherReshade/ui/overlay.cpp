@@ -721,11 +721,18 @@ void DrawAtmosphereTab() {
         ImGui::BeginDisabled();
     }
 
+    float cloudAmount = g_oCloudAmount.active.load() ? g_oCloudAmount.value.load() : 1.0f;
+    if (DrawSliderFloatRow("Cloud Amount", "cloud_amount", &cloudAmount, 0.0f, 15.0f, "x%.2f")) {
+        g_oCloudAmount.clear();
+    } else if (cloudEnabled) {
+        fabsf(cloudAmount - 1.0f) <= 0.001f ? g_oCloudAmount.clear() : g_oCloudAmount.set(cloudAmount);
+    }
+
     float cloudHeight = g_oCloudSpdX.active.load() ? g_oCloudSpdX.value.load() : 1.0f;
-    if (DrawSliderFloatRow("Cloud Height", "cloud_height", &cloudHeight, -20.0f, 20.0f, "%.2f")) {
+    if (DrawSliderFloatRow("Cloud Height", "cloud_height", &cloudHeight, -15.0f, 15.0f, "x%.2f")) {
         g_oCloudSpdX.clear();
     } else if (cloudEnabled) {
-        g_oCloudSpdX.set(cloudHeight);
+        fabsf(cloudHeight - 1.0f) <= 0.001f ? g_oCloudSpdX.clear() : g_oCloudSpdX.set(cloudHeight);
     }
 
     float cloudDensity = g_oCloudSpdY.active.load() ? g_oCloudSpdY.value.load() : 1.0f;

@@ -173,8 +173,6 @@ const char* AobTargetLabel(AobTargetId id) {
         return "ActivateEffect";
     case AobTargetId::SetIntensity:
         return "SetIntensity";
-    case AobTargetId::CloudPack:
-        return "CloudPack";
     case AobTargetId::WindPack:
         return "WindPack";
     case AobTargetId::PostProcessLayerUpdate:
@@ -492,8 +490,7 @@ void ResetAllSliders() {
     g_oSnow.clear();
     g_oDust.clear();
     g_oFog.clear();
-    g_forceCloudsEnabled.store(false);
-    g_forceCloudsAmount.store(kForceCloudsDefaultAmount);
+    g_oCloudAmount.clear();
     g_oCloudSpdX.clear();
     g_oCloudSpdY.clear();
     g_oHighClouds.clear();
@@ -528,6 +525,8 @@ void ResetAllSliders() {
     g_windPackBase11.store(0.0f);
     g_windPackBase17Valid.store(false);
     g_windPackBase17.store(0.0f);
+    g_windPackBase1BValid.store(false);
+    g_windPackBase1B.store(0.0f);
     g_windNodeBaseValid.store(false);
     g_windNodeBaseSpeed.store(0.0f);
     g_windNodeBaseGust.store(0.0f);
@@ -536,6 +535,7 @@ void ResetAllSliders() {
 
 bool AnySliderActive() {
     return g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
+           g_oCloudAmount.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oExpCloud2C.active.load() || g_oExpCloud2D.active.load() ||
            g_oCloudVariation.active.load() || g_oExpNightSkyRot.active.load() ||
@@ -547,6 +547,7 @@ bool AnySliderActive() {
 
 bool AnyCustomWeatherSliderActive() {
     return g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
+           g_oCloudAmount.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
            g_oCloudVariation.active.load() ||
@@ -689,7 +690,7 @@ ResolvedEnv ResolveEnv() {
         if (r.cloudNode && !IsReadablePointer(static_cast<uintptr_t>(r.cloudNode), 0x100)) {
             r.cloudNode = 0;
         }
-        if (r.windNode && !IsReadablePointer(static_cast<uintptr_t>(r.windNode), 0x100)) {
+        if (r.windNode && !IsReadablePointer(static_cast<uintptr_t>(r.windNode), 0x114)) {
             r.windNode = 0;
         }
 
@@ -714,17 +715,6 @@ ResolvedEnv ResolveEnv() {
 
 float Clamp01(float v) {
     return min(1.0f, max(0.0f, v));
-}
-
-float CloudXToSafeMul(float ui) {
-    ui = min(20.0f, max(-20.0f, ui));
-    if (ui <= 0.0f) {
-        return ((ui + 20.0f) / 20.0f) * 0.25f;
-    }
-    if (ui <= 1.0f) {
-        return 0.25f + 0.75f * ui;
-    }
-    return 1.0f + ((ui - 1.0f) * (0.50f / 19.0f));
 }
 
 float NormalizeHour24(float h) {
