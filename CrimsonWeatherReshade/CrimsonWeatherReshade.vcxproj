@@ -71,7 +71,7 @@
   <PropertyGroup>
     <CWBuildFlavor Condition="'$(CWBuildFlavor)'==''">Full</CWBuildFlavor>
     <CWFlavorPreprocessorDefinitions Condition="'$(CWBuildFlavor)'=='WindOnly'">CW_WIND_ONLY=1;</CWFlavorPreprocessorDefinitions>
-    <TargetName Condition="'$(CWBuildFlavor)'=='WindOnly'">Crimson Weather (Wind only)</TargetName>
+    <TargetName Condition="'$(CWBuildFlavor)'=='WindOnly'">CrimsonWeather.WindOnly</TargetName>
     <TargetName Condition="'$(CWBuildFlavor)'!='WindOnly'">CrimsonWeather</TargetName>
     <TargetExt Condition="'$(Platform)'=='x64'">.addon64</TargetExt>
     <TargetExt Condition="'$(Platform)'!='x64'">.addon</TargetExt>

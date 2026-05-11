@@ -65,3 +65,9 @@ function Invoke-SanitizedMSBuild {
 
 Invoke-SanitizedMSBuild ('"' + $project + '" /t:Rebuild /p:Configuration=Release /p:Platform=x64 /m')
 Invoke-SanitizedMSBuild ('"' + $project + '" /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:CWBuildFlavor=WindOnly /m')
+
+$releaseDir = Join-Path $repoRoot 'CrimsonWeatherReshade\x64\Release'
+$legacyWindOnlyAddon = Join-Path $releaseDir 'Crimson Weather (Wind only).addon64'
+if (Test-Path -LiteralPath $legacyWindOnlyAddon) {
+    Remove-Item -LiteralPath $legacyWindOnlyAddon -Force
+}

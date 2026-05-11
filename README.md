@@ -21,7 +21,7 @@ Main build:
 - Preset `.ini` files saved next to the addon
 
 Wind-only build:
-- `Crimson Weather (Wind only).addon64`
+- `CrimsonWeather.WindOnly.addon64`
 - `CrimsonWeather.WindOnly.ini`
 - `CrimsonWeather.WindOnly.log` when logging is enabled
 
@@ -35,8 +35,10 @@ Set `AutoStart=0` in `CrimsonWeather.ini` if you want to start it manually from 
 
 Open the ReShade overlay and use the `Crimson Weather` addon tab.
 
+The edit scope selector is always visible at the top of the overlay. Use it to edit global preset values or per-region overrides from any tab.
+
 Tabs and controls:
-- **Presets**: load/save presets, edit global settings, edit per-region overrides
+- **Presets**: load/save presets and reset sliders
 - **General**: rain, dust, snow, force clear sky, visual time override, wind, no wind
 - **Atmosphere**: cloud amount, cloud height, cloud density, mid clouds, high clouds, fog, no fog
 - **Celestial**: night sky tilt, night sky phase, sun size, sun yaw/pitch lock, moon size, moon yaw/pitch lock, moon rotation
@@ -92,7 +94,7 @@ Build both release addons:
 
 Compiler output:
 - `CrimsonWeatherReshade/x64/Release/CrimsonWeather.addon64`
-- `CrimsonWeatherReshade/x64/Release/Crimson Weather (Wind only).addon64`
+- `CrimsonWeatherReshade/x64/Release/CrimsonWeather.WindOnly.addon64`
 
 ## Download
 
