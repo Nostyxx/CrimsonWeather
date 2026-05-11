@@ -89,6 +89,7 @@ static uintptr_t ReadRIP6(uintptr_t a){
     return a+6+*reinterpret_cast<int32_t*>(a+2);}
 uintptr_t FindFunctionStartViaUnwind(uintptr_t pc);
 static bool ReadBytesSafe(uintptr_t addr, uint8_t* out, size_t n);
+static bool FindDirectCallToTargetInRange(uintptr_t start, size_t len, uintptr_t target, uintptr_t* outSite = nullptr);
 
 static uintptr_t PromoteToFunctionStart(uintptr_t addr, const char* name) {
     if (!addr) return 0;
@@ -142,6 +143,106 @@ static bool LooksLikeWindPack(uintptr_t f) {
         0x18, 0x4C, 0x0F, 0x44, 0xC1
     };
     return memcmp(wb, newShape, sizeof(newShape)) == 0;
+}
+
+static bool LooksLikeNativeLightningScheduler(uintptr_t f, uintptr_t rain) {
+    if (!f || !rain) return false;
+    uint8_t b[0x1C0] = {};
+    if (!ReadBytesSafe(f, b, sizeof(b))) return false;
+
+    const uint8_t prologue[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x50
+    };
+    if (memcmp(b, prologue, sizeof(prologue)) != 0) return false;
+    if (!FindDirectCallToTargetInRange(f, 0x60, rain, nullptr)) return false;
+
+    bool writesNextDelayReset = false;
+    bool writesElapsedReset = false;
+    for (size_t i = 0; i + 10 <= sizeof(b); ++i) {
+        if (b[i] == 0xC7 && b[i + 1] == 0x83 &&
+            b[i + 2] == 0xE8 && b[i + 3] == 0x00 && b[i + 4] == 0x00 && b[i + 5] == 0x00 &&
+            b[i + 6] == 0x00 && b[i + 7] == 0x00 && b[i + 8] == 0x80 && b[i + 9] == 0xBF) {
+            writesNextDelayReset = true;
+        }
+        if (b[i] == 0xC7 && b[i + 1] == 0x83 &&
+            b[i + 2] == 0xE4 && b[i + 3] == 0x00 && b[i + 4] == 0x00 && b[i + 5] == 0x00 &&
+            b[i + 6] == 0x00 && b[i + 7] == 0x00 && b[i + 8] == 0x00 && b[i + 9] == 0x00) {
+            writesElapsedReset = true;
+        }
+    }
+    return writesNextDelayReset && writesElapsedReset;
+}
+
+static uintptr_t ResolveNativeLightningScheduler(uintptr_t tick, uintptr_t rain) {
+    if (!tick || !rain) return 0;
+    for (uintptr_t a = tick; a + 5 < tick + 0x900; ++a) {
+        if (*reinterpret_cast<uint8_t*>(a) != 0xE8) continue;
+        const uintptr_t t = ReadCall(a);
+        if (LooksLikeNativeLightningScheduler(t, rain)) {
+            return t;
+        }
+    }
+    return 0;
+}
+
+static uint8_t* ResolveWeatherEffectGateByte(uintptr_t tick) {
+    if (!tick) return nullptr;
+    for (uintptr_t a = tick; a + 10 < tick + 0x220; ++a) {
+        uint8_t b[10] = {};
+        if (!ReadBytesSafe(a, b, sizeof(b))) continue;
+        if (b[0] != 0x40 || b[1] != 0x38 || b[2] != 0x35) continue;
+        const uintptr_t target = a + 7 + *reinterpret_cast<int32_t*>(a + 3);
+        if ((b[7] == 0x0F && b[8] == 0x85) || b[7] == 0x75) {
+            return reinterpret_cast<uint8_t*>(target);
+        }
+    }
+    return nullptr;
+}
+
+static uintptr_t ResolveWeatherSoundEventPlayer(uintptr_t processWind) {
+    if (!processWind) return 0;
+    uint8_t b[0x80] = {};
+    if (!ReadBytesSafe(processWind, b, sizeof(b))) return 0;
+    for (size_t i = 0; i + 33 < sizeof(b); ++i) {
+        if (b[i + 0] == 0x39 && b[i + 1] == 0xB3 &&
+            b[i + 2] == 0xDC && b[i + 3] == 0x00 && b[i + 4] == 0x00 && b[i + 5] == 0x00 &&
+            b[i + 6] == 0x75 && b[i + 7] == 0x0D &&
+            b[i + 8] == 0xE8 &&
+            b[i + 13] == 0x89 && b[i + 14] == 0x83 &&
+            b[i + 15] == 0xDC && b[i + 16] == 0x00 && b[i + 17] == 0x00 && b[i + 18] == 0x00) {
+            return ReadCall(processWind + i + 8);
+        }
+    }
+    return 0;
+}
+
+static uintptr_t* ResolveSoundManagerGlobalFromWeatherSoundPlayer(uintptr_t weatherSoundPlayer) {
+    if (!weatherSoundPlayer) return nullptr;
+    for (uintptr_t a = weatherSoundPlayer; a + 12 < weatherSoundPlayer + 0x180; ++a) {
+        uint8_t b[12] = {};
+        if (!ReadBytesSafe(a, b, sizeof(b))) continue;
+        if (b[0] == 0x48 && b[1] == 0x8B && b[2] == 0x0D && b[7] == 0xE8) {
+            return reinterpret_cast<uintptr_t*>(ReadRIP7(a));
+        }
+    }
+    return nullptr;
+}
+
+static uintptr_t ResolveLoadSoundBank() {
+    return ScanModule(
+        "48 89 5C 24 08 48 89 74 24 18 57 48 81 EC 30 01 00 00 "
+        "41 0F B6 F0 48 8B F9 44 8B 0A 45 85 C9 0F 84 ?? ?? ?? ?? "
+        "48 8B 5A 08"
+    );
+}
+
+static uintptr_t ResolveSpawnGameGlobalEffect() {
+    return ScanModule(
+        "48 89 5C 24 08 55 56 57 41 54 41 55 41 56 41 57 "
+        "48 8D AC 24 ?? ?? ?? ?? B8 30 11 00 00 E8 ?? ?? ?? ?? "
+        "48 2B E0 C5 F8 29 B4 24 20 11 00 00 4C 8B F2 48 8B F1 "
+        "45 33 ED 48 8B CA E8"
+    );
 }
 
 static bool LooksLikeSceneFrameUpdate(uintptr_t f) {
@@ -281,6 +382,9 @@ static void RecomputeRuntimeHealthSummary() {
     SetRuntimeFeatureHealth(RuntimeFeatureId::Rain,
         RuntimeHealthState::Disabled,
         "Not included in Wind Only build");
+    SetRuntimeFeatureHealth(RuntimeFeatureId::ThunderControls,
+        RuntimeHealthState::Disabled,
+        "Not included in Wind Only build");
     SetRuntimeFeatureHealth(RuntimeFeatureId::Dust,
         RuntimeHealthState::Disabled,
         "Not included in Wind Only build");
@@ -371,6 +475,11 @@ static void RecomputeRuntimeHealthSummary() {
             AobTargetId::ActivateEffect,
             AobTargetId::SetIntensity
         }, note), note);
+
+    const bool thunderReady = g_pNativeLightningScheduler && g_pWeatherEffectGateByte;
+    SetRuntimeFeatureHealth(RuntimeFeatureId::ThunderControls,
+        thunderReady ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
+        thunderReady ? "native lightning scheduler ready" : "native lightning scheduler unavailable");
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::Dust,
         AggregateTargetHealth({
@@ -540,7 +649,7 @@ static size_t FindCallsitesTo(uintptr_t target, uintptr_t* out, size_t cap){
     return found;
 }
 
-static bool FindDirectCallToTargetInRange(uintptr_t start, size_t len, uintptr_t target, uintptr_t* outSite = nullptr) {
+static bool FindDirectCallToTargetInRange(uintptr_t start, size_t len, uintptr_t target, uintptr_t* outSite) {
     if (!start || !target || len < 5) return false;
     __try {
         const uint8_t* p = reinterpret_cast<const uint8_t*>(start);
@@ -981,6 +1090,21 @@ bool RunAOBScan(){
     if(!rain){Log("[E] AOB: GetRainIntensity not found\n");return false;}
     Log("[AOB] GetRainIntensity = %p\n",(void*)rain);
 
+    uintptr_t addrNativeLightningScheduler = ResolveNativeLightningScheduler(tick, rain);
+    if (addrNativeLightningScheduler) {
+        Log("[AOB] NativeLightningScheduler = %p\n", (void*)addrNativeLightningScheduler);
+    } else {
+        Log("[W] NativeLightningScheduler not found (thunder bridge unavailable)\n");
+    }
+
+    g_pWeatherEffectGateByte = ResolveWeatherEffectGateByte(tick);
+    if (g_pWeatherEffectGateByte) {
+        Log("[AOB] WeatherEffectGateByte = %p\n", g_pWeatherEffectGateByte);
+    } else {
+        Log("[W] WeatherEffectGateByte not found (thunder bridge will stay passive)\n");
+    }
+    g_pNativeLightningScheduler = reinterpret_cast<NativeLightningScheduler_fn>(addrNativeLightningScheduler);
+
     bool processWindFallbackUsed = false;
     bool windPackFallbackUsed = false;
     bool weatherFrameForcedUsed = false;
@@ -1038,6 +1162,42 @@ bool RunAOBScan(){
             Log("[W] ProcessWindState not found (No Wind may be limited)\n");
         }
     }
+    uintptr_t addrPlayWeatherSoundEvent = ResolveWeatherSoundEventPlayer(addrProcessWind);
+    if (addrPlayWeatherSoundEvent) {
+        Log("[AOB] PlayWeatherSoundEvent = %p\n", (void*)addrPlayWeatherSoundEvent);
+    } else {
+        Log("[W] PlayWeatherSoundEvent not found (thunder audio unavailable)\n");
+    }
+    g_pPlayWeatherSoundEvent = reinterpret_cast<PlayWeatherSoundEvent_fn>(addrPlayWeatherSoundEvent);
+
+    uintptr_t addrLoadSoundBank = ResolveLoadSoundBank();
+    if (addrLoadSoundBank) {
+        Log("[AOB] LoadSoundBank = %p\n", (void*)addrLoadSoundBank);
+    } else {
+        Log("[W] LoadSoundBank not found (thunder audio bank preload unavailable)\n");
+    }
+    g_pLoadSoundBank = reinterpret_cast<LoadSoundBank_fn>(addrLoadSoundBank);
+
+    g_pAkLoadBankById = reinterpret_cast<AkLoadBankById_fn>(moduleBase + 0x3B8E630);
+    g_pAkPostEventById = reinterpret_cast<AkPostEventById_fn>(moduleBase + 0x3B8FE10);
+    Log("[AOB] AK::LoadBankById = %p\n", (void*)g_pAkLoadBankById);
+    Log("[AOB] AK::PostEventById = %p\n", (void*)g_pAkPostEventById);
+
+    g_pSoundManager = ResolveSoundManagerGlobalFromWeatherSoundPlayer(addrPlayWeatherSoundEvent);
+    if (g_pSoundManager) {
+        Log("[AOB] SoundManager = %p -> %p\n", (void*)g_pSoundManager, (void*)*g_pSoundManager);
+    } else {
+        Log("[W] SoundManager global not found (thunder audio bank preload unavailable)\n");
+    }
+
+    uintptr_t addrSpawnGameGlobalEffect = ResolveSpawnGameGlobalEffect();
+    if (addrSpawnGameGlobalEffect) {
+        Log("[AOB] SpawnGameGlobalEffect = %p\n", (void*)addrSpawnGameGlobalEffect);
+    } else {
+        Log("[W] SpawnGameGlobalEffect not found (native thunder global-effect bridge unavailable)\n");
+    }
+    g_pSpawnGameGlobalEffect = reinterpret_cast<SpawnGameGlobalEffect_fn>(addrSpawnGameGlobalEffect);
+
     uintptr_t addrActivate     = EC(0x2AA,"ActivateEffect");
     uintptr_t addrSetIntensity = EC(0x2CC,"SetIntensity");
     if (!addrActivate) {

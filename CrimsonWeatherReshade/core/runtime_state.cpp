@@ -225,6 +225,8 @@ const char* RuntimeFeatureLabel(RuntimeFeatureId id) {
         return "ForceClear";
     case RuntimeFeatureId::Rain:
         return "Rain";
+    case RuntimeFeatureId::ThunderControls:
+        return "ThunderControls";
     case RuntimeFeatureId::Dust:
         return "Dust";
     case RuntimeFeatureId::Snow:
@@ -485,6 +487,7 @@ void GUI_SetStatus(const char* msg) {
 
 void ResetAllSliders() {
     g_oRain.clear();
+    g_oThunder.clear();
     g_oSnow.clear();
     g_oDust.clear();
     g_oFog.clear();
@@ -509,6 +512,9 @@ void ResetAllSliders() {
     g_oMoonRoll.clear();
     g_oSunSize.clear();
     g_oMoonSize.clear();
+    g_noRain.store(false);
+    g_noDust.store(false);
+    g_noSnow.store(false);
     g_noWind.store(false);
     g_noFog.store(false);
     g_windMul.store(1.0f);
@@ -545,12 +551,13 @@ void ResetAllSliders() {
 }
 
 bool AnySliderActive() {
-    return g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
+    return g_oRain.active.load() || g_oThunder.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
            g_oCloudAmount.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oExpCloud2C.active.load() || g_oExpCloud2D.active.load() ||
            g_oCloudVariation.active.load() || g_oExpNightSkyRot.active.load() || g_oNightSkyYaw.active.load() ||
            g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
+           g_noRain.load() || g_noDust.load() || g_noSnow.load() ||
            g_noFog.load() ||
            fabsf(g_windMul.load() - 1.0f) > 0.001f ||
            g_oSunDirX.active.load() || g_oSunDirY.active.load() ||

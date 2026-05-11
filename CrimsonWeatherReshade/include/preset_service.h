@@ -2,8 +2,12 @@
 
 struct WeatherPresetData {
     bool forceClearSky = false;
+    bool noRain = false;
     float rain = 0.0f;
+    float thunder = 0.0f;
+    bool noDust = false;
     float dust = 0.0f;
+    bool noSnow = false;
     float snow = 0.0f;
     bool visualTimeOverride = false;
     float timeHour = 12.0f;
@@ -44,7 +48,7 @@ struct WeatherPresetData {
     bool fogEnabled = false;
     float fogPercent = 0.0f;
     bool nativeFogEnabled = false;
-    float nativeFog = 0.0f;
+    float nativeFog = 1.0f;
     bool noFog = false;
     float wind = 1.0f;
     bool noWind = false;
@@ -63,8 +67,12 @@ constexpr int kPresetRegionCount = 7;
 
 struct WeatherPresetSourceMask {
     bool forceClearSky = false;
+    bool noRain = false;
     bool rain = false;
+    bool thunder = false;
+    bool noDust = false;
     bool dust = false;
+    bool noSnow = false;
     bool snow = false;
     bool time = false;
     bool cloudAmount = false;

@@ -193,7 +193,8 @@ bool DrawSliderFloatRow(
     const char* format,
     bool* outValueChanged = nullptr,
     bool* overrideEnabled = nullptr,
-    bool* outOverrideChanged = nullptr) {
+    bool* outOverrideChanged = nullptr,
+    bool nativeDisplay = false) {
     ImGui::PushID(id);
     const bool overrideChanged = DrawOverrideToggle(overrideEnabled);
     const bool regionOverride = !overrideEnabled || *overrideEnabled;
@@ -222,8 +223,11 @@ bool DrawSliderFloatRow(
     ImGui::SetNextItemWidth(-1.0f);
     char inheritedFormat[64] = {};
     const char* displayFormat = format;
+    if (nativeDisplay) {
+        displayFormat = "NATIVE";
+    }
     if (sliderDisabled) {
-        sprintf_s(inheritedFormat, sizeof(inheritedFormat), "G: %s", format);
+        sprintf_s(inheritedFormat, sizeof(inheritedFormat), "G: %s", nativeDisplay ? "NATIVE" : format);
         displayFormat = inheritedFormat;
         ImGui::BeginDisabled();
     }
@@ -687,13 +691,30 @@ void DrawStatusTab() {
         DrawStatusRowBool(snapshot, "Force Clear Sky", snapshot.effective.forceClearSky, snapshot.regionSource.forceClearSky, "Crimson Weather currently forces clear skies.");
         if (snapshot.effective.forceClearSky) {
             DrawStatusRowBlocked(snapshot, "Rain", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so rain is not applied.");
+            DrawStatusRowBlocked(snapshot, "Thunder", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so thunder is not applied.");
             DrawStatusRowBlocked(snapshot, "Dust", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so dust is not applied.");
             DrawStatusRowBlocked(snapshot, "Snow", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so snow is not applied.");
         } else {
-            DrawStatusRowNativeFloat(snapshot, "Rain", snapshot.effective.rain, 0.0f, "%.3f", snapshot.regionSource.rain, "Crimson Weather currently forces rain to %s.");
-            DrawStatusRowNativeFloat(snapshot, "Dust", snapshot.effective.dust, 0.0f, "%.3f", snapshot.regionSource.dust, "Crimson Weather currently forces dust to %s.");
-            DrawStatusRowNativeFloat(snapshot, "Snow", snapshot.effective.snow, 0.0f, "%.3f", snapshot.regionSource.snow, "Crimson Weather currently forces snow to %s.");
+            if (snapshot.effective.noRain) {
+                DrawStatusRowBlocked(snapshot, "Rain", snapshot.regionSource.noRain, "No Rain is active, so Crimson Weather forces rain to zero.");
+            } else {
+                DrawStatusRowNativeFloat(snapshot, "Rain", snapshot.effective.rain, 0.0f, "%.3f", snapshot.regionSource.rain, "Crimson Weather currently forces rain to %s.");
+            }
+            DrawStatusRowNativeFloat(snapshot, "Thunder", snapshot.effective.thunder, 0.0f, "%.3f", snapshot.regionSource.thunder, "Crimson Weather currently drives visual lightning and thunder SFX frequency at %s.");
+            if (snapshot.effective.noDust) {
+                DrawStatusRowBlocked(snapshot, "Dust", snapshot.regionSource.noDust, "No Dust is active, so Crimson Weather forces dust to zero.");
+            } else {
+                DrawStatusRowNativeFloat(snapshot, "Dust", snapshot.effective.dust, 0.0f, "%.3f", snapshot.regionSource.dust, "Crimson Weather currently forces dust to %s.");
+            }
+            if (snapshot.effective.noSnow) {
+                DrawStatusRowBlocked(snapshot, "Snow", snapshot.regionSource.noSnow, "No Snow is active, so Crimson Weather forces snow to zero.");
+            } else {
+                DrawStatusRowNativeFloat(snapshot, "Snow", snapshot.effective.snow, 0.0f, "%.3f", snapshot.regionSource.snow, "Crimson Weather currently forces snow to %s.");
+            }
         }
+        DrawStatusRowBool(snapshot, "No Rain", snapshot.effective.noRain, snapshot.regionSource.noRain, "Crimson Weather currently disables rain.");
+        DrawStatusRowBool(snapshot, "No Dust", snapshot.effective.noDust, snapshot.regionSource.noDust, "Crimson Weather currently disables dust.");
+        DrawStatusRowBool(snapshot, "No Snow", snapshot.effective.noSnow, snapshot.regionSource.noSnow, "Crimson Weather currently disables snow.");
 
         DrawStatusRowBool(snapshot, "Visual Time Override", snapshot.effective.visualTimeOverride, snapshot.regionSource.time, "Crimson Weather currently freezes visual time.");
         DrawStatusRowActiveFloat(snapshot, "Time Hour", snapshot.effective.visualTimeOverride, NormalizeHour24(snapshot.effective.timeHour), "%.2f", snapshot.regionSource.time, "Crimson Weather currently forces time to %s.");
@@ -907,14 +928,19 @@ void DrawGeneralTab() {
         DrawFeatureUnavailable(RuntimeFeatureId::ForceClear);
     }
 
+    bool noRain = detachedEdit ? editData.noRain : g_noRain.load();
+    bool noDust = detachedEdit ? editData.noDust : g_noDust.load();
+    bool noSnow = detachedEdit ? editData.noSnow : g_noSnow.load();
+
     float rain = detachedEdit ? editData.rain : (g_oRain.active.load() ? g_oRain.value.load() : 0.0f);
-    const bool rainEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Rain);
+    const bool rainNative = rain <= 0.0001f;
+    const bool rainEnabled = !forceClear && !noRain && RuntimeFeatureAvailable(RuntimeFeatureId::Rain);
     if (!rainEnabled) {
         ImGui::BeginDisabled();
     }
     bool rainChanged = false;
     bool rainOverrideChanged = false;
-    if (DrawSliderFloatRow("Rain", "rain", &rain, 0.0f, 1.0f, "%.3f", &rainChanged, regionScoped ? &overrideMask.rain : nullptr, &rainOverrideChanged)) {
+    if (DrawSliderFloatRow("Rain", "rain", &rain, 0.0f, 1.0f, "%.3f", &rainChanged, regionScoped ? &overrideMask.rain : nullptr, &rainOverrideChanged, rainNative)) {
         if (detachedEdit) {
             editData.rain = 0.0f;
             if (regionScoped) overrideMask.rain = true;
@@ -935,17 +961,52 @@ void DrawGeneralTab() {
     }
     if (!rainEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::Rain);
+        if (!forceClear && !noRain) {
+            DrawFeatureUnavailable(RuntimeFeatureId::Rain);
+        }
+    }
+
+    float thunder = detachedEdit ? editData.thunder : (g_oThunder.active.load() ? g_oThunder.value.load() : 0.0f);
+    const bool thunderNative = thunder <= 0.0001f;
+    const bool thunderEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::ThunderControls);
+    if (!thunderEnabled) {
+        ImGui::BeginDisabled();
+    }
+    bool thunderChanged = false;
+    bool thunderOverrideChanged = false;
+    if (DrawSliderFloatRow("Thunder", "thunder", &thunder, 0.0f, 1.0f, "%.3f", &thunderChanged, regionScoped ? &overrideMask.thunder : nullptr, &thunderOverrideChanged, thunderNative)) {
+        if (detachedEdit) {
+            editData.thunder = 0.0f;
+            if (regionScoped) overrideMask.thunder = true;
+            editChanged = true;
+        } else {
+            g_oThunder.clear();
+        }
+    } else if (thunderOverrideChanged) {
+        editChanged = true;
+    } else if (thunderEnabled && thunderChanged) {
+        if (detachedEdit) {
+            editData.thunder = min(1.0f, max(0.0f, thunder));
+            if (regionScoped) overrideMask.thunder = true;
+            editChanged = true;
+        } else {
+            thunder > 0.0001f ? g_oThunder.set(thunder) : g_oThunder.clear();
+        }
+    }
+    if (!thunderEnabled) {
+        ImGui::EndDisabled();
+        DrawFeatureUnavailable(RuntimeFeatureId::ThunderControls);
     }
 
     float dust = detachedEdit ? editData.dust : (g_oDust.active.load() ? g_oDust.value.load() : 0.0f);
-    const bool dustEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Dust);
+    const bool dustNative = dust <= 0.0001f;
+    const bool dustEnabled = !forceClear && !noDust && RuntimeFeatureAvailable(RuntimeFeatureId::Dust);
     if (!dustEnabled) {
         ImGui::BeginDisabled();
     }
     bool dustChanged = false;
     bool dustOverrideChanged = false;
-    if (DrawSliderFloatRow("Dust", "dust", &dust, 0.0f, 2.0f, "%.3f", &dustChanged, regionScoped ? &overrideMask.dust : nullptr, &dustOverrideChanged)) {
+    if (DrawSliderFloatRow("Dust", "dust", &dust, 0.0f, 2.0f, "%.3f", &dustChanged, regionScoped ? &overrideMask.dust : nullptr, &dustOverrideChanged, dustNative)) {
         if (detachedEdit) {
             editData.dust = 0.0f;
             if (regionScoped) overrideMask.dust = true;
@@ -970,17 +1031,20 @@ void DrawGeneralTab() {
     }
     if (!dustEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::Dust);
+        if (!forceClear && !noDust) {
+            DrawFeatureUnavailable(RuntimeFeatureId::Dust);
+        }
     }
 
     float snow = detachedEdit ? editData.snow : (g_oSnow.active.load() ? g_oSnow.value.load() : 0.0f);
-    const bool snowEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Snow);
+    const bool snowNative = snow <= 0.0001f;
+    const bool snowEnabled = !forceClear && !noSnow && RuntimeFeatureAvailable(RuntimeFeatureId::Snow);
     if (!snowEnabled) {
         ImGui::BeginDisabled();
     }
     bool snowChanged = false;
     bool snowOverrideChanged = false;
-    if (DrawSliderFloatRow("Snow", "snow", &snow, 0.0f, 1.0f, "%.3f", &snowChanged, regionScoped ? &overrideMask.snow : nullptr, &snowOverrideChanged)) {
+    if (DrawSliderFloatRow("Snow", "snow", &snow, 0.0f, 1.0f, "%.3f", &snowChanged, regionScoped ? &overrideMask.snow : nullptr, &snowOverrideChanged, snowNative)) {
         if (detachedEdit) {
             editData.snow = 0.0f;
             if (regionScoped) overrideMask.snow = true;
@@ -1001,7 +1065,86 @@ void DrawGeneralTab() {
     }
     if (!snowEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::Snow);
+        if (!forceClear && !noSnow) {
+            DrawFeatureUnavailable(RuntimeFeatureId::Snow);
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Disable Native Weather");
+    const bool noRainEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Rain);
+    if (!noRainEnabled) {
+        ImGui::BeginDisabled();
+    }
+    bool noRainOverrideChanged = false;
+    const bool noRainChanged = regionScoped
+        ? DrawOverrideCheckboxRow("No Rain", "no_rain", &noRain, &overrideMask.noRain, &noRainOverrideChanged)
+        : ImGui::Checkbox("No Rain", &noRain);
+    if (noRainOverrideChanged) {
+        editChanged = true;
+    }
+    if (noRainChanged) {
+        if (detachedEdit) {
+            editData.noRain = noRain;
+            if (regionScoped) overrideMask.noRain = true;
+            editChanged = true;
+        } else {
+            g_noRain.store(noRain);
+        }
+        GUI_SetStatus(noRain ? "No Rain enabled" : "No Rain disabled");
+    }
+    if (!noRainEnabled) {
+        ImGui::EndDisabled();
+    }
+
+    const bool noDustEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Dust);
+    if (!noDustEnabled) {
+        ImGui::BeginDisabled();
+    }
+    bool noDustOverrideChanged = false;
+    const bool noDustChanged = regionScoped
+        ? DrawOverrideCheckboxRow("No Dust", "no_dust", &noDust, &overrideMask.noDust, &noDustOverrideChanged)
+        : ImGui::Checkbox("No Dust", &noDust);
+    if (noDustOverrideChanged) {
+        editChanged = true;
+    }
+    if (noDustChanged) {
+        if (detachedEdit) {
+            editData.noDust = noDust;
+            if (regionScoped) overrideMask.noDust = true;
+            editChanged = true;
+        } else {
+            g_noDust.store(noDust);
+        }
+        GUI_SetStatus(noDust ? "No Dust enabled" : "No Dust disabled");
+    }
+    if (!noDustEnabled) {
+        ImGui::EndDisabled();
+    }
+
+    const bool noSnowEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Snow);
+    if (!noSnowEnabled) {
+        ImGui::BeginDisabled();
+    }
+    bool noSnowOverrideChanged = false;
+    const bool noSnowChanged = regionScoped
+        ? DrawOverrideCheckboxRow("No Snow", "no_snow", &noSnow, &overrideMask.noSnow, &noSnowOverrideChanged)
+        : ImGui::Checkbox("No Snow", &noSnow);
+    if (noSnowOverrideChanged) {
+        editChanged = true;
+    }
+    if (noSnowChanged) {
+        if (detachedEdit) {
+            editData.noSnow = noSnow;
+            if (regionScoped) overrideMask.noSnow = true;
+            editChanged = true;
+        } else {
+            g_noSnow.store(noSnow);
+        }
+        GUI_SetStatus(noSnow ? "No Snow enabled" : "No Snow disabled");
+    }
+    if (!noSnowEnabled) {
+        ImGui::EndDisabled();
     }
 
     ImGui::Spacing();
@@ -1169,14 +1312,16 @@ void DrawGeneralTab() {
 
     ImGui::Spacing();
     ImGui::SeparatorText("Wind");
-    const bool windEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::WindControls);
+    bool noWind = detachedEdit ? editData.noWind : g_noWind.load();
+    const bool windEnabled = !noWind && RuntimeFeatureAvailable(RuntimeFeatureId::WindControls);
     float wind = detachedEdit ? editData.wind : g_windMul.load();
+    const bool windNative = fabsf(wind - 1.0f) <= 0.001f;
     if (!windEnabled) {
         ImGui::BeginDisabled();
     }
     bool windChanged = false;
     bool windOverrideChanged = false;
-    if (DrawSliderFloatRow("Wind", "wind_general", &wind, 0.0f, 15.0f, "x%.2f", &windChanged, regionScoped ? &overrideMask.wind : nullptr, &windOverrideChanged)) {
+    if (DrawSliderFloatRow("Wind", "wind_general", &wind, 0.0f, 15.0f, "x%.2f", &windChanged, regionScoped ? &overrideMask.wind : nullptr, &windOverrideChanged, windNative)) {
         if (detachedEdit) {
             editData.wind = 1.0f;
             if (regionScoped) overrideMask.wind = true;
@@ -1197,10 +1342,11 @@ void DrawGeneralTab() {
     }
     if (!windEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::WindControls);
+        if (!noWind) {
+            DrawFeatureUnavailable(RuntimeFeatureId::WindControls);
+        }
     }
 
-    bool noWind = detachedEdit ? editData.noWind : g_noWind.load();
     const bool noWindEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::NoWindControls);
     if (!noWindEnabled) {
         ImGui::BeginDisabled();
@@ -1254,9 +1400,10 @@ void DrawAtmosphereTab() {
     }
 
     float cloudAmount = detachedEdit ? editData.cloudAmount : (g_oCloudAmount.active.load() ? g_oCloudAmount.value.load() : 1.0f);
+    const bool cloudAmountNative = detachedEdit ? !editData.cloudAmountEnabled : !g_oCloudAmount.active.load();
     bool cloudAmountChanged = false;
     bool cloudAmountOverrideChanged = false;
-    if (DrawSliderFloatRow("Cloud Amount", "cloud_amount", &cloudAmount, 0.0f, 15.0f, "x%.2f", &cloudAmountChanged, regionScoped ? &overrideMask.cloudAmount : nullptr, &cloudAmountOverrideChanged)) {
+    if (DrawSliderFloatRow("Cloud Amount", "cloud_amount", &cloudAmount, 0.0f, 15.0f, "x%.2f", &cloudAmountChanged, regionScoped ? &overrideMask.cloudAmount : nullptr, &cloudAmountOverrideChanged, cloudAmountNative)) {
         if (detachedEdit) {
             editData.cloudAmountEnabled = false;
             editData.cloudAmount = 1.0f;
@@ -1279,9 +1426,10 @@ void DrawAtmosphereTab() {
     }
 
     float cloudHeight = detachedEdit ? editData.cloudHeight : (g_oCloudSpdX.active.load() ? g_oCloudSpdX.value.load() : 1.0f);
+    const bool cloudHeightNative = detachedEdit ? !editData.cloudHeightEnabled : !g_oCloudSpdX.active.load();
     bool cloudHeightChanged = false;
     bool cloudHeightOverrideChanged = false;
-    if (DrawSliderFloatRow("Cloud Height", "cloud_height", &cloudHeight, -15.0f, 15.0f, "x%.2f", &cloudHeightChanged, regionScoped ? &overrideMask.cloudHeight : nullptr, &cloudHeightOverrideChanged)) {
+    if (DrawSliderFloatRow("Cloud Height", "cloud_height", &cloudHeight, -15.0f, 15.0f, "x%.2f", &cloudHeightChanged, regionScoped ? &overrideMask.cloudHeight : nullptr, &cloudHeightOverrideChanged, cloudHeightNative)) {
         if (detachedEdit) {
             editData.cloudHeightEnabled = false;
             editData.cloudHeight = 1.0f;
@@ -1304,9 +1452,10 @@ void DrawAtmosphereTab() {
     }
 
     float cloudDensity = detachedEdit ? editData.cloudDensity : (g_oCloudSpdY.active.load() ? g_oCloudSpdY.value.load() : 1.0f);
+    const bool cloudDensityNative = detachedEdit ? !editData.cloudDensityEnabled : !g_oCloudSpdY.active.load();
     bool cloudDensityChanged = false;
     bool cloudDensityOverrideChanged = false;
-    if (DrawSliderFloatRow("Cloud Density", "cloud_density", &cloudDensity, 0.0f, 10.0f, "x%.2f", &cloudDensityChanged, regionScoped ? &overrideMask.cloudDensity : nullptr, &cloudDensityOverrideChanged)) {
+    if (DrawSliderFloatRow("Cloud Density", "cloud_density", &cloudDensity, 0.0f, 10.0f, "x%.2f", &cloudDensityChanged, regionScoped ? &overrideMask.cloudDensity : nullptr, &cloudDensityOverrideChanged, cloudDensityNative)) {
         if (detachedEdit) {
             editData.cloudDensityEnabled = false;
             editData.cloudDensity = 1.0f;
@@ -1329,9 +1478,10 @@ void DrawAtmosphereTab() {
     }
 
     float midClouds = detachedEdit ? editData.midClouds : (g_oHighClouds.active.load() ? g_oHighClouds.value.load() : 1.0f);
+    const bool midCloudsNative = detachedEdit ? !editData.midCloudsEnabled : !g_oHighClouds.active.load();
     bool midCloudsChanged = false;
     bool midCloudsOverrideChanged = false;
-    if (DrawSliderFloatRow("Mid Clouds", "mid_clouds", &midClouds, 0.0f, 15.0f, "x%.2f", &midCloudsChanged, regionScoped ? &overrideMask.midClouds : nullptr, &midCloudsOverrideChanged)) {
+    if (DrawSliderFloatRow("Mid Clouds", "mid_clouds", &midClouds, 0.0f, 15.0f, "x%.2f", &midCloudsChanged, regionScoped ? &overrideMask.midClouds : nullptr, &midCloudsOverrideChanged, midCloudsNative)) {
         if (detachedEdit) {
             editData.midCloudsEnabled = false;
             editData.midClouds = 1.0f;
@@ -1354,9 +1504,10 @@ void DrawAtmosphereTab() {
     }
 
     float highClouds = detachedEdit ? editData.highClouds : (g_oAtmoAlpha.active.load() ? g_oAtmoAlpha.value.load() : 1.0f);
+    const bool highCloudsNative = detachedEdit ? !editData.highCloudsEnabled : !g_oAtmoAlpha.active.load();
     bool highCloudsChanged = false;
     bool highCloudsOverrideChanged = false;
-    if (DrawSliderFloatRow("High Clouds", "high_clouds", &highClouds, 0.0f, 15.0f, "x%.2f", &highCloudsChanged, regionScoped ? &overrideMask.highClouds : nullptr, &highCloudsOverrideChanged)) {
+    if (DrawSliderFloatRow("High Clouds", "high_clouds", &highClouds, 0.0f, 15.0f, "x%.2f", &highCloudsChanged, regionScoped ? &overrideMask.highClouds : nullptr, &highCloudsOverrideChanged, highCloudsNative)) {
         if (detachedEdit) {
             editData.highCloudsEnabled = false;
             editData.highClouds = 1.0f;
@@ -1386,7 +1537,8 @@ void DrawAtmosphereTab() {
     ImGui::Spacing();
     ImGui::SeparatorText("Atmosphere");
 
-    float fogFromWind = detachedEdit ? editData.nativeFog : (g_oNativeFog.active.load() ? g_oNativeFog.value.load() : 0.0f);
+    float fogFromWind = detachedEdit ? editData.nativeFog : (g_oNativeFog.active.load() ? g_oNativeFog.value.load() : 1.0f);
+    const bool fogFromWindNative = detachedEdit ? !editData.nativeFogEnabled : !g_oNativeFog.active.load();
     const bool fogBlocked = detachedEdit ? (editData.forceClearSky || editData.noFog) : (g_forceClear.load() || g_noFog.load());
     const bool windEnabled = !fogBlocked && RuntimeFeatureAvailable(RuntimeFeatureId::WindControls);
     if (!windEnabled) {
@@ -1394,10 +1546,10 @@ void DrawAtmosphereTab() {
     }
     bool fogFromWindChanged = false;
     bool fogFromWindOverrideChanged = false;
-    if (DrawSliderFloatRow("Fog", "fog_from_wind", &fogFromWind, 0.0f, 15.0f, "%.2f", &fogFromWindChanged, regionScoped ? &overrideMask.nativeFog : nullptr, &fogFromWindOverrideChanged)) {
+    if (DrawSliderFloatRow("Fog", "fog_from_wind", &fogFromWind, 0.0f, 15.0f, "%.2f", &fogFromWindChanged, regionScoped ? &overrideMask.nativeFog : nullptr, &fogFromWindOverrideChanged, fogFromWindNative)) {
         if (detachedEdit) {
             editData.nativeFogEnabled = false;
-            editData.nativeFog = 0.0f;
+            editData.nativeFog = 1.0f;
             if (regionScoped) overrideMask.nativeFog = true;
             editChanged = true;
         } else {
@@ -1408,11 +1560,11 @@ void DrawAtmosphereTab() {
     } else if (windEnabled && fogFromWindChanged) {
         if (detachedEdit) {
             editData.nativeFog = min(15.0f, max(0.0f, fogFromWind));
-            editData.nativeFogEnabled = editData.nativeFog > 0.001f;
+            editData.nativeFogEnabled = fabsf(editData.nativeFog - 1.0f) > 0.001f;
             if (regionScoped) overrideMask.nativeFog = true;
             editChanged = true;
         } else {
-            if (fogFromWind > 0.001f) {
+            if (fabsf(fogFromWind - 1.0f) > 0.001f) {
                 g_oNativeFog.set(fogFromWind);
             } else {
                 g_oNativeFog.clear();
@@ -1472,9 +1624,10 @@ void DrawExperimentTab() {
     }
 
     float value2C = detachedEdit ? editData.exp2C : (g_oExpCloud2C.active.load() ? g_oExpCloud2C.value.load() : 1.0f);
+    const bool value2CNative = detachedEdit ? !editData.exp2CEnabled : !g_oExpCloud2C.active.load();
     bool value2CChanged = false;
     bool value2COverrideChanged = false;
-    if (DrawSliderFloatRow("2C", "2c", &value2C, 0.0f, 15.0f, "x%.2f", &value2CChanged, regionScoped ? &overrideMask.exp2C : nullptr, &value2COverrideChanged)) {
+    if (DrawSliderFloatRow("2C", "2c", &value2C, 0.0f, 15.0f, "x%.2f", &value2CChanged, regionScoped ? &overrideMask.exp2C : nullptr, &value2COverrideChanged, value2CNative)) {
         if (detachedEdit) {
             editData.exp2CEnabled = false;
             editData.exp2C = 1.0f;
@@ -1497,9 +1650,10 @@ void DrawExperimentTab() {
     }
 
     float value2D = detachedEdit ? editData.exp2D : (g_oExpCloud2D.active.load() ? g_oExpCloud2D.value.load() : 1.0f);
+    const bool value2DNative = detachedEdit ? !editData.exp2DEnabled : !g_oExpCloud2D.active.load();
     bool value2DChanged = false;
     bool value2DOverrideChanged = false;
-    if (DrawSliderFloatRow("2D", "2d", &value2D, 0.0f, 15.0f, "x%.2f", &value2DChanged, regionScoped ? &overrideMask.exp2D : nullptr, &value2DOverrideChanged)) {
+    if (DrawSliderFloatRow("2D", "2d", &value2D, 0.0f, 15.0f, "x%.2f", &value2DChanged, regionScoped ? &overrideMask.exp2D : nullptr, &value2DOverrideChanged, value2DNative)) {
         if (detachedEdit) {
             editData.exp2DEnabled = false;
             editData.exp2D = 1.0f;
@@ -1522,9 +1676,10 @@ void DrawExperimentTab() {
     }
 
     float cloudVariation = detachedEdit ? editData.cloudVariation : (g_oCloudVariation.active.load() ? g_oCloudVariation.value.load() : 1.0f);
+    const bool cloudVariationNative = detachedEdit ? !editData.cloudVariationEnabled : !g_oCloudVariation.active.load();
     bool cloudVariationChanged = false;
     bool cloudVariationOverrideChanged = false;
-    if (DrawSliderFloatRow("Cloud Variation [32]", "cloud_variation", &cloudVariation, 0.0f, 15.0f, "x%.2f", &cloudVariationChanged, regionScoped ? &overrideMask.cloudVariation : nullptr, &cloudVariationOverrideChanged)) {
+    if (DrawSliderFloatRow("Cloud Variation [32]", "cloud_variation", &cloudVariation, 0.0f, 15.0f, "x%.2f", &cloudVariationChanged, regionScoped ? &overrideMask.cloudVariation : nullptr, &cloudVariationOverrideChanged, cloudVariationNative)) {
         if (detachedEdit) {
             editData.cloudVariationEnabled = false;
             editData.cloudVariation = 1.0f;
@@ -1564,9 +1719,10 @@ void DrawExperimentTab() {
     if (!fogFeatureAvailable) {
         ImGui::BeginDisabled();
     }
+    const bool fogNative = detachedEdit ? !editData.fogEnabled : !g_oFog.active.load();
     bool fogChanged = false;
     bool fogOverrideChanged = false;
-    const bool fogReset = DrawSliderFloatRow("Fog [LEGACY]", "fog_legacy", &fogPct, 0.0f, 100.0f, "%.1f%%", &fogChanged, regionScoped ? &overrideMask.fog : nullptr, &fogOverrideChanged);
+    const bool fogReset = DrawSliderFloatRow("Fog [LEGACY]", "fog_legacy", &fogPct, 0.0f, 100.0f, "%.1f%%", &fogChanged, regionScoped ? &overrideMask.fog : nullptr, &fogOverrideChanged, fogNative);
 
     if (fogReset) {
         if (detachedEdit) {
@@ -1601,13 +1757,14 @@ void DrawExperimentTab() {
     ImGui::Spacing();
     ImGui::SeparatorText("Details");
     float puddleScale = detachedEdit ? editData.puddleScale : (g_oCloudThk.active.load() ? g_oCloudThk.value.load() : 0.0f);
+    const bool puddleScaleNative = detachedEdit ? !editData.puddleScaleEnabled : !g_oCloudThk.active.load();
     const bool detailEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::DetailControls);
     if (!detailEnabled) {
         ImGui::BeginDisabled();
     }
     bool puddleScaleChanged = false;
     bool puddleScaleOverrideChanged = false;
-    if (DrawSliderFloatRow("Puddle Scale", "puddle", &puddleScale, 0.0f, 1.0f, "%.3f", &puddleScaleChanged, regionScoped ? &overrideMask.puddleScale : nullptr, &puddleScaleOverrideChanged)) {
+    if (DrawSliderFloatRow("Puddle Scale", "puddle", &puddleScale, 0.0f, 1.0f, "%.3f", &puddleScaleChanged, regionScoped ? &overrideMask.puddleScale : nullptr, &puddleScaleOverrideChanged, puddleScaleNative)) {
         if (detachedEdit) {
             editData.puddleScaleEnabled = false;
             editData.puddleScale = 0.0f;
@@ -1674,9 +1831,10 @@ void DrawCelestialTab() {
     float nightSkyPitch = detachedEdit
         ? (editData.nightSkyRotationEnabled ? editData.nightSkyRotation : nativeNightSkyPitch)
         : (g_oExpNightSkyRot.active.load() ? g_oExpNightSkyRot.value.load() : nativeNightSkyPitch);
+    const bool nightSkyPitchNative = detachedEdit ? !editData.nightSkyRotationEnabled : !g_oExpNightSkyRot.active.load();
     bool nightSkyPitchChanged = false;
     bool nightSkyPitchOverrideChanged = false;
-    if (DrawSliderFloatRow("Night Sky Tilt", "night_sky_tilt", &nightSkyPitch, -89.0f, 89.0f, "%.2f", &nightSkyPitchChanged, regionScoped ? &overrideMask.nightSkyRotation : nullptr, &nightSkyPitchOverrideChanged)) {
+    if (DrawSliderFloatRow("Night Sky Tilt", "night_sky_tilt", &nightSkyPitch, -89.0f, 89.0f, "%.2f", &nightSkyPitchChanged, regionScoped ? &overrideMask.nightSkyRotation : nullptr, &nightSkyPitchOverrideChanged, nightSkyPitchNative)) {
         if (detachedEdit) {
             editData.nightSkyRotationEnabled = false;
             editData.nightSkyRotation = nativeNightSkyPitch;
@@ -1702,9 +1860,10 @@ void DrawCelestialTab() {
     float nightSkyYaw = detachedEdit
         ? (editData.nightSkyYawEnabled ? editData.nightSkyYaw : nativeNightSkyYaw)
         : (g_oNightSkyYaw.active.load() ? g_oNightSkyYaw.value.load() : nativeNightSkyYaw);
+    const bool nightSkyYawNative = detachedEdit ? !editData.nightSkyYawEnabled : !g_oNightSkyYaw.active.load();
     bool nightSkyYawChanged = false;
     bool nightSkyYawOverrideChanged = false;
-    if (DrawSliderFloatRow("Night Sky Phase", "night_sky_phase", &nightSkyYaw, -180.0f, 180.0f, "%.2f", &nightSkyYawChanged, regionScoped ? &overrideMask.nightSkyYaw : nullptr, &nightSkyYawOverrideChanged)) {
+    if (DrawSliderFloatRow("Night Sky Phase", "night_sky_phase", &nightSkyYaw, -180.0f, 180.0f, "%.2f", &nightSkyYawChanged, regionScoped ? &overrideMask.nightSkyYaw : nullptr, &nightSkyYawOverrideChanged, nightSkyYawNative)) {
         if (detachedEdit) {
             editData.nightSkyYawEnabled = false;
             editData.nightSkyYaw = nativeNightSkyYaw;
@@ -1733,9 +1892,10 @@ void DrawCelestialTab() {
     float sunSize = detachedEdit
         ? (editData.sunSizeEnabled ? editData.sunSize : nativeSunSize)
         : (g_oSunSize.active.load() ? g_oSunSize.value.load() : nativeSunSize);
+    const bool sunSizeNative = detachedEdit ? !editData.sunSizeEnabled : !g_oSunSize.active.load();
     bool sunSizeChanged = false;
     bool sunSizeOverrideChanged = false;
-    if (DrawSliderFloatRow("Sun Size", "sun_size", &sunSize, 0.01f, 10.0f, "%.3f", &sunSizeChanged, regionScoped ? &overrideMask.sunSize : nullptr, &sunSizeOverrideChanged)) {
+    if (DrawSliderFloatRow("Sun Size", "sun_size", &sunSize, 0.01f, 10.0f, "%.3f", &sunSizeChanged, regionScoped ? &overrideMask.sunSize : nullptr, &sunSizeOverrideChanged, sunSizeNative)) {
         if (detachedEdit) {
             editData.sunSizeEnabled = false;
             editData.sunSize = nativeSunSize;
@@ -1761,9 +1921,10 @@ void DrawCelestialTab() {
     float sunYaw = detachedEdit
         ? (editData.sunYawEnabled ? editData.sunYaw : nativeSunYaw)
         : (g_oSunDirX.active.load() ? g_oSunDirX.value.load() : nativeSunYaw);
+    const bool sunYawNative = detachedEdit ? !editData.sunYawEnabled : !g_oSunDirX.active.load();
     bool sunYawChanged = false;
     bool sunYawOverrideChanged = false;
-    if (DrawSliderFloatRow("Sun Yaw Lock", "sun_yaw", &sunYaw, -180.0f, 180.0f, "%.2f", &sunYawChanged, regionScoped ? &overrideMask.sunYaw : nullptr, &sunYawOverrideChanged)) {
+    if (DrawSliderFloatRow("Sun Yaw Lock", "sun_yaw", &sunYaw, -180.0f, 180.0f, "%.2f", &sunYawChanged, regionScoped ? &overrideMask.sunYaw : nullptr, &sunYawOverrideChanged, sunYawNative)) {
         if (detachedEdit) {
             editData.sunYawEnabled = false;
             editData.sunYaw = nativeSunYaw;
@@ -1789,9 +1950,10 @@ void DrawCelestialTab() {
     float sunPitch = detachedEdit
         ? (editData.sunPitchEnabled ? editData.sunPitch : nativeSunPitch)
         : (g_oSunDirY.active.load() ? g_oSunDirY.value.load() : nativeSunPitch);
+    const bool sunPitchNative = detachedEdit ? !editData.sunPitchEnabled : !g_oSunDirY.active.load();
     bool sunPitchChanged = false;
     bool sunPitchOverrideChanged = false;
-    if (DrawSliderFloatRow("Sun Pitch Lock", "sun_pitch", &sunPitch, -89.0f, 89.0f, "%.2f", &sunPitchChanged, regionScoped ? &overrideMask.sunPitch : nullptr, &sunPitchOverrideChanged)) {
+    if (DrawSliderFloatRow("Sun Pitch Lock", "sun_pitch", &sunPitch, -89.0f, 89.0f, "%.2f", &sunPitchChanged, regionScoped ? &overrideMask.sunPitch : nullptr, &sunPitchOverrideChanged, sunPitchNative)) {
         if (detachedEdit) {
             editData.sunPitchEnabled = false;
             editData.sunPitch = nativeSunPitch;
@@ -1820,9 +1982,10 @@ void DrawCelestialTab() {
     float moonSize = detachedEdit
         ? (editData.moonSizeEnabled ? editData.moonSize : nativeMoonSize)
         : (g_oMoonSize.active.load() ? g_oMoonSize.value.load() : nativeMoonSize);
+    const bool moonSizeNative = detachedEdit ? !editData.moonSizeEnabled : !g_oMoonSize.active.load();
     bool moonSizeChanged = false;
     bool moonSizeOverrideChanged = false;
-    if (DrawSliderFloatRow("Moon Size", "moon_size", &moonSize, 0.020f, 20.0f, "%.3f", &moonSizeChanged, regionScoped ? &overrideMask.moonSize : nullptr, &moonSizeOverrideChanged)) {
+    if (DrawSliderFloatRow("Moon Size", "moon_size", &moonSize, 0.020f, 20.0f, "%.3f", &moonSizeChanged, regionScoped ? &overrideMask.moonSize : nullptr, &moonSizeOverrideChanged, moonSizeNative)) {
         if (detachedEdit) {
             editData.moonSizeEnabled = false;
             editData.moonSize = nativeMoonSize;
@@ -1848,9 +2011,10 @@ void DrawCelestialTab() {
     float moonYaw = detachedEdit
         ? (editData.moonYawEnabled ? editData.moonYaw : nativeMoonYaw)
         : (g_oMoonDirX.active.load() ? g_oMoonDirX.value.load() : nativeMoonYaw);
+    const bool moonYawNative = detachedEdit ? !editData.moonYawEnabled : !g_oMoonDirX.active.load();
     bool moonYawChanged = false;
     bool moonYawOverrideChanged = false;
-    if (DrawSliderFloatRow("Moon Yaw Lock", "moon_yaw", &moonYaw, -180.0f, 180.0f, "%.2f", &moonYawChanged, regionScoped ? &overrideMask.moonYaw : nullptr, &moonYawOverrideChanged)) {
+    if (DrawSliderFloatRow("Moon Yaw Lock", "moon_yaw", &moonYaw, -180.0f, 180.0f, "%.2f", &moonYawChanged, regionScoped ? &overrideMask.moonYaw : nullptr, &moonYawOverrideChanged, moonYawNative)) {
         if (detachedEdit) {
             editData.moonYawEnabled = false;
             editData.moonYaw = nativeMoonYaw;
@@ -1876,9 +2040,10 @@ void DrawCelestialTab() {
     float moonPitch = detachedEdit
         ? (editData.moonPitchEnabled ? editData.moonPitch : nativeMoonPitch)
         : (g_oMoonDirY.active.load() ? g_oMoonDirY.value.load() : nativeMoonPitch);
+    const bool moonPitchNative = detachedEdit ? !editData.moonPitchEnabled : !g_oMoonDirY.active.load();
     bool moonPitchChanged = false;
     bool moonPitchOverrideChanged = false;
-    if (DrawSliderFloatRow("Moon Pitch Lock", "moon_pitch", &moonPitch, -89.0f, 89.0f, "%.2f", &moonPitchChanged, regionScoped ? &overrideMask.moonPitch : nullptr, &moonPitchOverrideChanged)) {
+    if (DrawSliderFloatRow("Moon Pitch Lock", "moon_pitch", &moonPitch, -89.0f, 89.0f, "%.2f", &moonPitchChanged, regionScoped ? &overrideMask.moonPitch : nullptr, &moonPitchOverrideChanged, moonPitchNative)) {
         if (detachedEdit) {
             editData.moonPitchEnabled = false;
             editData.moonPitch = nativeMoonPitch;
@@ -1904,9 +2069,10 @@ void DrawCelestialTab() {
     float moonRoll = detachedEdit
         ? (editData.moonRollEnabled ? editData.moonRoll : nativeMoonRoll)
         : (g_oMoonRoll.active.load() ? g_oMoonRoll.value.load() : nativeMoonRoll);
+    const bool moonRollNative = detachedEdit ? !editData.moonRollEnabled : !g_oMoonRoll.active.load();
     bool moonRollChanged = false;
     bool moonRollOverrideChanged = false;
-    if (DrawSliderFloatRow("Moon Rotation", "moon_roll", &moonRoll, -180.0f, 180.0f, "%.2f", &moonRollChanged, regionScoped ? &overrideMask.moonRoll : nullptr, &moonRollOverrideChanged)) {
+    if (DrawSliderFloatRow("Moon Rotation", "moon_roll", &moonRoll, -180.0f, 180.0f, "%.2f", &moonRollChanged, regionScoped ? &overrideMask.moonRoll : nullptr, &moonRollOverrideChanged, moonRollNative)) {
         if (detachedEdit) {
             editData.moonRollEnabled = false;
             editData.moonRoll = nativeMoonRoll;

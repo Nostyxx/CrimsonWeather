@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_VERSION "0.5.2"
+#define MOD_VERSION "0.5.3"
 
 struct Config {
     bool logEnabled = true;
@@ -157,6 +157,25 @@ typedef void(__fastcall* WeatherFrameUpdate_fn)(long long* self, float dt);
 typedef void(__fastcall* ProcessWindState_fn)(long long self);
 typedef void(__fastcall* WindPack_fn)(long long* windNodePtr, float* packedOut);
 typedef void*(__fastcall* SceneFrameUpdate_fn)(long long self, long long context);
+typedef void(__fastcall* NativeLightningScheduler_fn)(long long self);
+typedef int(__fastcall* PlayWeatherSoundEvent_fn)(uint32_t eventId);
+struct NativeSoundResourceRef {
+    uint32_t id = 0;
+    uint32_t pad = 0;
+    uint64_t metadata = 0;
+};
+typedef char(__fastcall* LoadSoundBank_fn)(long long soundManager, NativeSoundResourceRef* bank, char immediate);
+typedef int(__fastcall* AkLoadBankById_fn)(uint32_t bankId, uint32_t memoryPoolId);
+typedef uint32_t(__fastcall* AkPostEventById_fn)(
+    uint32_t eventId,
+    uint64_t gameObjectId,
+    uint32_t flags,
+    void* callback,
+    void* cookie,
+    uint32_t externalSourceCount,
+    void* externalSources,
+    uint32_t playingId);
+typedef long long(__fastcall* SpawnGameGlobalEffect_fn)(long long manager, unsigned short* effectId);
 typedef long long(__fastcall* MinimapRegionLabels_fn)(long long self, unsigned short areaId, unsigned short subAreaId);
 typedef long long*(__fastcall* FogReceiverGetter_fn)(long long provider);
 typedef void(__fastcall* FogReceiverSet_fn)(long long* receiver, float value);
@@ -177,8 +196,16 @@ inline WeatherFrameUpdate_fn g_pOrigWeatherFrameUpdate = nullptr;
 inline ProcessWindState_fn g_pOrigProcessWindState = nullptr;
 inline WindPack_fn g_pOrigWindPack = nullptr;
 inline SceneFrameUpdate_fn g_pOrigSceneFrameUpdate = nullptr;
+inline NativeLightningScheduler_fn g_pNativeLightningScheduler = nullptr;
+inline PlayWeatherSoundEvent_fn g_pPlayWeatherSoundEvent = nullptr;
+inline LoadSoundBank_fn g_pLoadSoundBank = nullptr;
+inline AkLoadBankById_fn g_pAkLoadBankById = nullptr;
+inline AkPostEventById_fn g_pAkPostEventById = nullptr;
+inline SpawnGameGlobalEffect_fn g_pSpawnGameGlobalEffect = nullptr;
 inline MinimapRegionLabels_fn g_pOrigMinimapRegionLabels = nullptr;
 inline uintptr_t* g_pEnvManager = nullptr;
+inline uintptr_t* g_pSoundManager = nullptr;
+inline uint8_t* g_pWeatherEffectGateByte = nullptr;
 inline int* g_pNullSentinel = nullptr;
 inline void** g_pWeatherTickVtableSlot = nullptr;
 inline FogReceiverSet_fn g_pOrigFogSet[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
@@ -267,6 +294,7 @@ enum class RuntimeHealthGroup : uint8_t {
 enum class RuntimeFeatureId : uint8_t {
     ForceClear = 0,
     Rain,
+    ThunderControls,
     Dust,
     Snow,
     TimeControls,
@@ -328,6 +356,7 @@ struct SliderOverride {
 };
 
 inline SliderOverride g_oRain;
+inline SliderOverride g_oThunder;
 inline SliderOverride g_oSnow;
 inline SliderOverride g_oDust;
 inline SliderOverride g_oFog;
@@ -352,7 +381,12 @@ inline SliderOverride g_oMoonDirY;
 inline SliderOverride g_oMoonRoll;
 inline SliderOverride g_oSunSize;
 inline SliderOverride g_oMoonSize;
+inline std::atomic<float> g_thunderSchedulerRainBias{ 0.0f };
+inline std::atomic<uintptr_t> g_lastGameGlobalEffectManager{ 0 };
 inline std::atomic<bool> g_forceClear{ false };
+inline std::atomic<bool> g_noRain{ false };
+inline std::atomic<bool> g_noDust{ false };
+inline std::atomic<bool> g_noSnow{ false };
 inline std::atomic<bool> g_noWind{ false };
 inline std::atomic<bool> g_noFog{ false };
 inline std::atomic<bool> g_modEnabled{ true };

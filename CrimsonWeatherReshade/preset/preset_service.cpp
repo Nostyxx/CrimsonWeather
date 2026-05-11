@@ -22,8 +22,12 @@ struct PresetListItem {
 
 struct WeatherPresetMask {
     bool forceClearSky = false;
+    bool noRain = false;
     bool rain = false;
+    bool thunder = false;
+    bool noDust = false;
     bool dust = false;
+    bool noSnow = false;
     bool snow = false;
     bool time = false;
     bool cloudAmount = false;
@@ -130,8 +134,12 @@ bool HourNearlyEqual(float a, float b, float epsilon = kPresetFloatEpsilon) {
 
 bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
     return a.forceClearSky == b.forceClearSky &&
+        a.noRain == b.noRain &&
         FloatNearlyEqual(a.rain, b.rain) &&
+        FloatNearlyEqual(a.thunder, b.thunder) &&
+        a.noDust == b.noDust &&
         FloatNearlyEqual(a.dust, b.dust) &&
+        a.noSnow == b.noSnow &&
         FloatNearlyEqual(a.snow, b.snow) &&
         a.visualTimeOverride == b.visualTimeOverride &&
         HourNearlyEqual(a.timeHour, b.timeHour) &&
@@ -181,7 +189,7 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
 }
 
 bool PresetMaskAny(const WeatherPresetMask& mask) {
-    return mask.forceClearSky || mask.rain || mask.dust || mask.snow || mask.time ||
+    return mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow || mask.time ||
         mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds ||
         mask.highClouds || mask.exp2C || mask.exp2D || mask.cloudVariation ||
         mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunYaw || mask.sunPitch ||
@@ -193,8 +201,12 @@ bool PresetMaskAny(const WeatherPresetMask& mask) {
 WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     WeatherPresetSourceMask out{};
     out.forceClearSky = mask.forceClearSky;
+    out.noRain = mask.noRain;
     out.rain = mask.rain;
+    out.thunder = mask.thunder;
+    out.noDust = mask.noDust;
     out.dust = mask.dust;
+    out.noSnow = mask.noSnow;
     out.snow = mask.snow;
     out.time = mask.time;
     out.cloudAmount = mask.cloudAmount;
@@ -226,8 +238,12 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
 WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     WeatherPresetMask mask{};
     mask.forceClearSky = source.forceClearSky;
+    mask.noRain = source.noRain;
     mask.rain = source.rain;
+    mask.thunder = source.thunder;
+    mask.noDust = source.noDust;
     mask.dust = source.dust;
+    mask.noSnow = source.noSnow;
     mask.snow = source.snow;
     mask.time = source.time;
     mask.cloudAmount = source.cloudAmount;
@@ -258,8 +274,12 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
 
 bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
     return a.forceClearSky == b.forceClearSky &&
+        a.noRain == b.noRain &&
         a.rain == b.rain &&
+        a.thunder == b.thunder &&
+        a.noDust == b.noDust &&
         a.dust == b.dust &&
+        a.noSnow == b.noSnow &&
         a.snow == b.snow &&
         a.time == b.time &&
         a.cloudAmount == b.cloudAmount &&
@@ -290,8 +310,12 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
 WeatherPresetMask BuildFullPresetMask() {
     WeatherPresetMask mask{};
     mask.forceClearSky = true;
+    mask.noRain = true;
     mask.rain = true;
+    mask.thunder = true;
+    mask.noDust = true;
     mask.dust = true;
+    mask.noSnow = true;
     mask.snow = true;
     mask.time = true;
     mask.cloudAmount = true;
@@ -323,8 +347,12 @@ WeatherPresetMask BuildFullPresetMask() {
 WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const WeatherPresetData& value) {
     WeatherPresetMask mask{};
     mask.forceClearSky = base.forceClearSky != value.forceClearSky;
+    mask.noRain = base.noRain != value.noRain;
     mask.rain = !FloatNearlyEqual(base.rain, value.rain);
+    mask.thunder = !FloatNearlyEqual(base.thunder, value.thunder);
+    mask.noDust = base.noDust != value.noDust;
     mask.dust = !FloatNearlyEqual(base.dust, value.dust);
+    mask.noSnow = base.noSnow != value.noSnow;
     mask.snow = !FloatNearlyEqual(base.snow, value.snow);
     mask.time = base.visualTimeOverride != value.visualTimeOverride || !HourNearlyEqual(base.timeHour, value.timeHour);
     mask.cloudAmount = base.cloudAmountEnabled != value.cloudAmountEnabled || !FloatNearlyEqual(base.cloudAmount, value.cloudAmount);
@@ -355,8 +383,12 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
 
 void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source, const WeatherPresetMask& mask) {
     if (mask.forceClearSky) target.forceClearSky = source.forceClearSky;
+    if (mask.noRain) target.noRain = source.noRain;
     if (mask.rain) target.rain = source.rain;
+    if (mask.thunder) target.thunder = source.thunder;
+    if (mask.noDust) target.noDust = source.noDust;
     if (mask.dust) target.dust = source.dust;
+    if (mask.noSnow) target.noSnow = source.noSnow;
     if (mask.snow) target.snow = source.snow;
     if (mask.time) {
         target.visualTimeOverride = source.visualTimeOverride;
@@ -482,8 +514,12 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
 
     WeatherPresetData out{};
     out.forceClearSky = ChoosePresetBool(a.forceClearSky, b.forceClearSky, t);
+    out.noRain = ChoosePresetBool(a.noRain, b.noRain, t);
     out.rain = LerpPresetFloat(a.rain, b.rain, t);
+    out.thunder = LerpPresetFloat(a.thunder, b.thunder, t);
+    out.noDust = ChoosePresetBool(a.noDust, b.noDust, t);
     out.dust = LerpPresetFloat(a.dust, b.dust, t);
+    out.noSnow = ChoosePresetBool(a.noSnow, b.noSnow, t);
     out.snow = LerpPresetFloat(a.snow, b.snow, t);
     out.visualTimeOverride = ChoosePresetBool(a.visualTimeOverride, b.visualTimeOverride, t);
     out.timeHour = (a.visualTimeOverride && b.visualTimeOverride)
@@ -595,8 +631,12 @@ void AppendMaskField(std::string& out, bool enabled, const char* name) {
 std::string PresetMaskSummary(const WeatherPresetMask& mask) {
     std::string out;
     AppendMaskField(out, mask.forceClearSky, "clear");
+    AppendMaskField(out, mask.noRain, "noRain");
     AppendMaskField(out, mask.rain, "rain");
+    AppendMaskField(out, mask.thunder, "thunder");
+    AppendMaskField(out, mask.noDust, "noDust");
     AppendMaskField(out, mask.dust, "dust");
+    AppendMaskField(out, mask.noSnow, "noSnow");
     AppendMaskField(out, mask.snow, "snow");
     AppendMaskField(out, mask.time, "time");
     AppendMaskField(out, mask.cloudAmount, "cloudAmt");
@@ -627,12 +667,16 @@ std::string PresetMaskSummary(const WeatherPresetMask& mask) {
 
 void LogPresetDataSummary(const char* tag, int regionId, const WeatherPresetData& data) {
     if (!kPresetVerboseTestLog) return;
-    Log("[preset-test] %s region=%s clear=%d rain=%.3f dust=%.3f snow=%.3f time=%d@%.2f wind=%.3f noWind=%d fog=%d/%.1f nativeFog=%d/%.2f noFog=%d cloudAmt=%d/%.2f cloudH=%d/%.2f cloudD=%d/%.2f puddle=%d/%.3f\n",
+    Log("[preset-test] %s region=%s clear=%d noRain=%d rain=%.3f thunder=%.3f noDust=%d dust=%.3f noSnow=%d snow=%.3f time=%d@%.2f wind=%.3f noWind=%d fog=%d/%.1f nativeFog=%d/%.2f noFog=%d cloudAmt=%d/%.2f cloudH=%d/%.2f cloudD=%d/%.2f puddle=%d/%.3f\n",
         tag ? tag : "data",
         RegionDisplayName(regionId),
         data.forceClearSky ? 1 : 0,
+        data.noRain ? 1 : 0,
         data.rain,
+        data.thunder,
+        data.noDust ? 1 : 0,
         data.dust,
+        data.noSnow ? 1 : 0,
         data.snow,
         data.visualTimeOverride ? 1 : 0,
         NormalizeHour24(data.timeHour),
@@ -933,8 +977,12 @@ bool KeyEquals(const std::string& key, const char* expected) {
 
 void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     if (KeyEquals(key, "ForceClearSky")) mask.forceClearSky = true;
+    else if (KeyEquals(key, "NoRain")) mask.noRain = true;
     else if (KeyEquals(key, "Rain")) mask.rain = true;
+    else if (KeyEquals(key, "Thunder")) mask.thunder = true;
+    else if (KeyEquals(key, "NoDust")) mask.noDust = true;
     else if (KeyEquals(key, "Dust")) mask.dust = true;
+    else if (KeyEquals(key, "NoSnow")) mask.noSnow = true;
     else if (KeyEquals(key, "Snow")) mask.snow = true;
     else if (KeyEquals(key, "VisualTimeOverride") || KeyEquals(key, "TimeHour")) mask.time = true;
     else if (KeyEquals(key, "CloudAmountEnabled") || KeyEquals(key, "CloudAmount")) mask.cloudAmount = true;
@@ -974,10 +1022,18 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
 
     if (KeyEquals(key, "ForceClearSky")) {
         if (TryParseBool(value, boolValue)) data.forceClearSky = boolValue;
+    } else if (KeyEquals(key, "NoRain")) {
+        if (TryParseBool(value, boolValue)) data.noRain = boolValue;
     } else if (KeyEquals(key, "Rain")) {
         if (TryParseFloat(value, floatValue)) data.rain = floatValue;
+    } else if (KeyEquals(key, "Thunder")) {
+        if (TryParseFloat(value, floatValue)) data.thunder = floatValue;
+    } else if (KeyEquals(key, "NoDust")) {
+        if (TryParseBool(value, boolValue)) data.noDust = boolValue;
     } else if (KeyEquals(key, "Dust")) {
         if (TryParseFloat(value, floatValue)) data.dust = floatValue;
+    } else if (KeyEquals(key, "NoSnow")) {
+        if (TryParseBool(value, boolValue)) data.noSnow = boolValue;
     } else if (KeyEquals(key, "Snow")) {
         if (TryParseFloat(value, floatValue)) data.snow = floatValue;
     } else if (KeyEquals(key, "VisualTimeOverride")) {
@@ -1164,9 +1220,14 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     if (!state.moonPitchEnabledSeen) data.moonPitchEnabled = false;
     if (!state.moonRollEnabledSeen) data.moonRollEnabled = false;
     if (!state.fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
-    if (!state.nativeFogEnabledSeen) data.nativeFogEnabled = !FloatNearlyEqual(data.nativeFog, 0.0f);
     if (!state.puddleScaleEnabledSeen) data.puddleScaleEnabled = !FloatNearlyEqual(data.puddleScale, 0.0f);
 
+    data.rain = ClampPresetFloat(data.rain, 0.0f, 1.0f);
+    data.thunder = ClampPresetFloat(data.thunder, 0.0f, 1.0f);
+    data.dust = ClampPresetFloat(data.dust, 0.0f, 2.0f);
+    data.snow = ClampPresetFloat(data.snow, 0.0f, 1.0f);
+    data.nativeFog = ClampPresetFloat(data.nativeFog, 0.0f, 15.0f);
+    if (!state.nativeFogEnabledSeen) data.nativeFogEnabled = !FloatNearlyEqual(data.nativeFog, 1.0f);
     data.exp2C = ClampPresetFloat(data.exp2C, 0.0f, 15.0f);
     data.exp2D = ClampPresetFloat(data.exp2D, 0.0f, 15.0f);
     data.nightSkyRotation = ClampPresetFloat(data.nightSkyRotation, -89.0f, 89.0f);
@@ -1178,7 +1239,6 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     data.moonYaw = ClampPresetFloat(data.moonYaw, -180.0f, 180.0f);
     data.moonPitch = ClampPresetFloat(data.moonPitch, -89.0f, 89.0f);
     data.moonRoll = ClampPresetFloat(data.moonRoll, -180.0f, 180.0f);
-    data.nativeFog = ClampPresetFloat(data.nativeFog, 0.0f, 15.0f);
     data.cloudAmount = ClampPresetFloat(data.cloudAmount, 0.0f, 15.0f);
 
     if (state.sawLegacyAlias) {
@@ -1244,8 +1304,12 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
 
     AppendPresetLine(out, "[Weather]");
     AppendPresetKeyValue(out, "ForceClearSky", FormatPresetBool(data.forceClearSky));
+    AppendPresetKeyValue(out, "NoRain", FormatPresetBool(data.noRain));
     AppendPresetKeyValue(out, "Rain", FormatPresetFloat(Clamp01(data.rain)));
+    AppendPresetKeyValue(out, "Thunder", FormatPresetFloat(Clamp01(data.thunder)));
+    AppendPresetKeyValue(out, "NoDust", FormatPresetBool(data.noDust));
     AppendPresetKeyValue(out, "Dust", FormatPresetFloat(ClampPresetFloat(data.dust, 0.0f, 2.0f)));
+    AppendPresetKeyValue(out, "NoSnow", FormatPresetBool(data.noSnow));
     AppendPresetKeyValue(out, "Snow", FormatPresetFloat(Clamp01(data.snow)));
     out += '\n';
 
@@ -1320,11 +1384,15 @@ void AppendRegionSectionHeader(std::string& out, int regionId, const char* secti
 }
 
 void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherPresetData& data, const WeatherPresetMask& mask) {
-    if (mask.forceClearSky || mask.rain || mask.dust || mask.snow) {
+    if (mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow) {
         AppendRegionSectionHeader(out, regionId, "Weather");
         if (mask.forceClearSky) AppendPresetKeyValue(out, "ForceClearSky", FormatPresetBool(data.forceClearSky));
+        if (mask.noRain) AppendPresetKeyValue(out, "NoRain", FormatPresetBool(data.noRain));
         if (mask.rain) AppendPresetKeyValue(out, "Rain", FormatPresetFloat(Clamp01(data.rain)));
+        if (mask.thunder) AppendPresetKeyValue(out, "Thunder", FormatPresetFloat(Clamp01(data.thunder)));
+        if (mask.noDust) AppendPresetKeyValue(out, "NoDust", FormatPresetBool(data.noDust));
         if (mask.dust) AppendPresetKeyValue(out, "Dust", FormatPresetFloat(ClampPresetFloat(data.dust, 0.0f, 2.0f)));
+        if (mask.noSnow) AppendPresetKeyValue(out, "NoSnow", FormatPresetBool(data.noSnow));
         if (mask.snow) AppendPresetKeyValue(out, "Snow", FormatPresetFloat(Clamp01(data.snow)));
         out += '\n';
     }
@@ -1471,8 +1539,12 @@ bool PresetPackageEquals(const WeatherPresetPackage& a, const WeatherPresetPacka
 WeatherPresetData CaptureCurrentPresetData() {
     WeatherPresetData data{};
     data.forceClearSky = g_forceClear.load();
+    data.noRain = g_noRain.load();
     data.rain = ActiveOverrideValue(g_oRain, 0.0f);
+    data.thunder = ActiveOverrideValue(g_oThunder, 0.0f);
+    data.noDust = g_noDust.load();
     data.dust = ActiveOverrideValue(g_oDust, 0.0f);
+    data.noSnow = g_noSnow.load();
     data.snow = ActiveOverrideValue(g_oSnow, 0.0f);
     data.visualTimeOverride = g_timeCtrlActive.load() && g_timeFreeze.load();
     data.timeHour = NormalizeHour24(g_timeTargetHour.load());
@@ -1521,7 +1593,7 @@ WeatherPresetData CaptureCurrentPresetData() {
         data.fogPercent = 0.0f;
     }
     data.nativeFogEnabled = g_oNativeFog.active.load();
-    data.nativeFog = data.nativeFogEnabled ? ClampPresetFloat(g_oNativeFog.value.load(), 0.0f, 15.0f) : 0.0f;
+    data.nativeFog = data.nativeFogEnabled ? ClampPresetFloat(g_oNativeFog.value.load(), 0.0f, 15.0f) : 1.0f;
     data.noFog = g_noFog.load();
     data.wind = ClampPresetFloat(g_windMul.load(), 0.0f, 15.0f);
     data.noWind = g_noWind.load();
@@ -1532,8 +1604,12 @@ WeatherPresetData CaptureCurrentPresetData() {
 
 void ApplyPresetData(const WeatherPresetData& data) {
     g_forceClear.store(data.forceClearSky);
+    g_noRain.store(data.noRain);
+    g_noDust.store(data.noDust);
+    g_noSnow.store(data.noSnow);
 
     ApplyPositiveOverride(g_oRain, data.rain, 0.0f, 1.0f);
+    ApplyPositiveOverride(g_oThunder, data.thunder, 0.0f, 1.0f);
     ApplyPositiveOverride(g_oDust, data.dust, 0.0f, 2.0f);
     ApplyPositiveOverride(g_oSnow, data.snow, 0.0f, 1.0f);
 
@@ -1577,7 +1653,7 @@ void ApplyPresetData(const WeatherPresetData& data) {
     } else g_oFog.clear();
 
     const float nativeFog = ClampPresetFloat(data.nativeFog, 0.0f, 15.0f);
-    if (data.nativeFogEnabled && nativeFog > 0.0001f) g_oNativeFog.set(nativeFog);
+    if (data.nativeFogEnabled && fabsf(nativeFog - 1.0f) > 0.001f) g_oNativeFog.set(nativeFog);
     else g_oNativeFog.clear();
 
     g_noFog.store(data.noFog);

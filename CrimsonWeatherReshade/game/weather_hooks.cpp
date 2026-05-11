@@ -379,19 +379,14 @@ __m128 __fastcall Hooked_GetRainIntensity(long long ws) {
         return g_pOrigGetRainIntensity ? g_pOrigGetRainIntensity(ws) : PackScalar(0.0f);
     }
     if (g_forceClear.load()) return PackScalar(0.0f);
+    const float thunderRainBias = g_thunderSchedulerRainBias.load();
+    if (std::isfinite(thunderRainBias) && thunderRainBias > 0.0001f) {
+        const float baseRain = (!g_noRain.load() && g_oRain.active.load()) ? g_oRain.value.load() : 0.0f;
+        return PackScalar(max(baseRain, thunderRainBias));
+    }
+    if (g_noRain.load()) return PackScalar(0.0f);
     if (g_oRain.active.load())
         return PackScalar(g_oRain.value.load());
-    if (g_oSnow.active.load()) {
-        static ULONGLONG s_lastSnowRainSuppressLog = 0;
-        ULONGLONG now = GetTickCount64();
-        if (now - s_lastSnowRainSuppressLog > 1500) {
-            s_lastSnowRainSuppressLog = now;
-            float baseRain = g_pOrigGetRainIntensity ? ExtractScalar(g_pOrigGetRainIntensity(ws)) : 0.0f;
-            Log("[rain] suppress native rain during snow override baseRain=%.3f\n", baseRain);
-        }
-        return PackScalar(0.0f);
-    }
-
     float baseRain = g_pOrigGetRainIntensity ? ExtractScalar(g_pOrigGetRainIntensity(ws)) : 0.0f;
     if (baseRain > 0.01f) {
         static ULONGLONG s_lastRainBaseLog = 0;
@@ -408,7 +403,7 @@ __m128 __fastcall Hooked_GetSnowIntensity(long long ws) {
     if (!g_modEnabled.load()) {
         return g_pOrigGetSnowIntensity ? g_pOrigGetSnowIntensity(ws) : PackScalar(0.0f);
     }
-    if (g_forceClear.load()) return PackScalar(0.0f);
+    if (g_forceClear.load() || g_noSnow.load()) return PackScalar(0.0f);
     if (g_oSnow.active.load())
         return PackScalar(g_oSnow.value.load());
     return g_pOrigGetSnowIntensity ? g_pOrigGetSnowIntensity(ws) : PackScalar(0.0f);
@@ -418,7 +413,7 @@ __m128 __fastcall Hooked_GetDustIntensity(long long ws) {
     if (!g_modEnabled.load()) {
         return g_pOrigGetDustIntensity ? g_pOrigGetDustIntensity(ws) : PackScalar(0.0f);
     }
-    if (g_noWind.load())
+    if (g_noDust.load() || g_noWind.load())
         return PackScalar(0.0f);
     float mul = g_windMul.load();
     if (mul < 0.0f) mul = 0.0f;
@@ -633,6 +628,97 @@ static void ForceApplyFogFromFrame(long long* self) {
 
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+}
+
+static void RememberGameGlobalEffectManager(long long* self) {
+    if (!self || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(self), 9 * sizeof(long long))) {
+        return;
+    }
+
+    __try {
+        const uintptr_t manager = static_cast<uintptr_t>(self[8]);
+        if (manager && IsReadableTickPtr(manager, 0x100)) {
+            g_lastGameGlobalEffectManager.store(manager);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+static unsigned short SelectThunderGlobalEffectId(float rainHint) {
+    constexpr unsigned short kRainLightning = 0x4244;
+    constexpr unsigned short kHeavyRainLightning = 0x42DC;
+    constexpr unsigned short kLightningDryWeather = 0x428E;
+
+    if (rainHint >= 0.75f) {
+        return kHeavyRainLightning;
+    }
+    if (rainHint >= 0.10f) {
+        return kRainLightning;
+    }
+    return kLightningDryWeather;
+}
+
+static const char* ThunderGlobalEffectName(unsigned short id) {
+    switch (id) {
+    case 0x4244: return "RainLightning";
+    case 0x42DC: return "HeavyRainLightning";
+    case 0x42C6: return "LightningDry";
+    case 0x428E: return "LightningDryWeather";
+    default: return "Unknown";
+    }
+}
+
+static float ThunderRateCurve(float thunder) {
+    thunder = min(1.0f, max(0.0f, thunder));
+    return powf(thunder, 0.55f);
+}
+
+static int ThunderVisualClusterCount(float thunder) {
+    if (thunder >= 0.98f) return 4;
+    if (thunder >= 0.90f) return 3;
+    if (thunder >= 0.75f) return 2;
+    return 1;
+}
+
+static void TriggerThunderGlobalEffect(float rainHint, float thunder) {
+    if (!g_pSpawnGameGlobalEffect) {
+        return;
+    }
+
+    const uintptr_t manager = g_lastGameGlobalEffectManager.load();
+    if (!manager || !IsReadableTickPtr(manager, 0x100)) {
+        return;
+    }
+
+    static DWORD64 s_lastNativeGlobalEffectMs = 0;
+    const DWORD64 now = GetTickCount64();
+    const float rate = ThunderRateCurve(thunder);
+    const DWORD64 minGapMs = static_cast<DWORD64>((0.25f + (1.0f - rate) * 6.0f) * 1000.0f);
+    if (now - s_lastNativeGlobalEffectMs < minGapMs) {
+        return;
+    }
+    s_lastNativeGlobalEffectMs = now;
+
+    unsigned short effectId = SelectThunderGlobalEffectId(rainHint);
+    const int clusterCount = ThunderVisualClusterCount(thunder);
+    long long lastResult = 0;
+    int spawned = 0;
+    for (int i = 0; i < clusterCount; ++i) {
+        unsigned short spawnId = effectId;
+        __try {
+            lastResult = g_pSpawnGameGlobalEffect(static_cast<long long>(manager), &spawnId);
+            ++spawned;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            Log("[thunder-native] exception manager=%p effect=%s id=0x%04X cluster=%d/%d\n",
+                reinterpret_cast<void*>(manager), ThunderGlobalEffectName(spawnId), spawnId, i + 1, clusterCount);
+            break;
+        }
+    }
+
+    Log("[thunder-native] spawn manager=%p effect=%s id=0x%04X result=%lld rain=%.3f amount=%.3f cluster=%d/%d gap=%llu\n",
+        reinterpret_cast<void*>(manager), ThunderGlobalEffectName(effectId), effectId,
+        lastResult, rainHint, thunder, spawned, clusterCount,
+        static_cast<unsigned long long>(minGapMs));
 }
 
 static constexpr float kCloudGeometryMax = 64.0f;
@@ -1174,6 +1260,7 @@ void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
         if (g_pOrigWeatherFrameUpdate) g_pOrigWeatherFrameUpdate(self, dt);
         return;
     }
+    RememberGameGlobalEffectManager(self);
     PrimeFogSetHooksFromFrame(self);
 
     if (self && (g_forceClear.load() || g_noFog.load() || g_oFog.active.load())) {
@@ -1189,6 +1276,7 @@ void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
 
     if (g_pOrigWeatherFrameUpdate) g_pOrigWeatherFrameUpdate(self, dt);
 
+    RememberGameGlobalEffectManager(self);
     ForceApplyFogFromFrame(self);
 
     (void)dt;
@@ -1232,7 +1320,14 @@ static void ApplyWeatherParams(long long self, const ResolvedEnv& env) {
             }
         }
 
-        if (g_oDust.active.load()) {
+        if (g_noDust.load()) {
+            At<float>(env.cloudNode, CN::DUST_BASE) = 0.0f;
+            At<float>(env.cloudNode, CN::DUST_ADD) = 0.0f;
+            At<float>(env.cloudNode, CN::DUST_WIND_SCALE) = 0.0f;
+            At<float>(env.cloudNode, CN::DUST_THRESH) = 0.0f;
+        }
+
+        if (!g_noDust.load() && g_oDust.active.load()) {
             At<float>(env.cloudNode, CN::DUST_BASE) = nativeDust;
             At<float>(env.cloudNode, CN::DUST_ADD) = nativeDust * 0.10f;
             At<float>(env.cloudNode, CN::DUST_WIND_SCALE) = DustSliderToWindScale(dust);
@@ -1253,9 +1348,9 @@ static void ApplyWeatherParams(long long self, const ResolvedEnv& env) {
 }
 static uint32_t ComputeCustomEffectMask() {
     uint32_t mask = 0;
-    float rain = g_oRain.active.load() ? g_oRain.value.load() : 0.0f;
-    float snow = g_oSnow.active.load() ? g_oSnow.value.load() : 0.0f;
-    float dust = g_oDust.active.load() ? g_oDust.value.load() : 0.0f;
+    float rain = (!g_noRain.load() && g_oRain.active.load()) ? g_oRain.value.load() : 0.0f;
+    float snow = (!g_noSnow.load() && g_oSnow.active.load()) ? g_oSnow.value.load() : 0.0f;
+    float dust = (!g_noDust.load() && g_oDust.active.load()) ? g_oDust.value.load() : 0.0f;
     float wind = g_oWindActual.active.load() ? g_oWindActual.value.load() : 0.0f;
 
     if (rain > 0.01f) mask |= 0x003;      // effects 0,1 (rain drops)
@@ -1269,8 +1364,8 @@ static uint32_t ComputeCustomEffectMask() {
 }
 
 static bool IsRainOnlyControlMode() {
-    bool rainDriven = g_oRain.active.load();
-    bool others = g_oSnow.active.load() || g_oDust.active.load() ||
+    bool rainDriven = !g_noRain.load() && g_oRain.active.load();
+    bool others = g_noSnow.load() || g_noDust.load() || g_oSnow.active.load() || g_oDust.active.load() ||
                    g_oFog.active.load() ||
                    g_oCloudThk.active.load() ||
                    g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() ||
@@ -1282,7 +1377,7 @@ static bool IsRainOnlyControlMode() {
 
 static void TickRainOnly(long long self, const ResolvedEnv& env, int nullSent) {
     if (!g_pActivateEffect || !g_pSetIntensity || !env.particleMgr) return;
-    float rain = g_oRain.active.load() ? g_oRain.value.load() : 0.0f;
+    float rain = (!g_noRain.load() && g_oRain.active.load()) ? g_oRain.value.load() : 0.0f;
 
     if (kEnableDirectNodeWrites && env.cloudNode) {
         At<float>(env.cloudNode, CN::STORM_THRESH) = rain;
@@ -1331,6 +1426,14 @@ static void StopWeatherEffectsByMask(long long self, uint32_t effectMask) {
         int h = At<int>(self, WCO::HANDLE_ARRAY + i * 4);
         if (h != nullSent) g_pSetIntensity(env.particleMgr, h, 0.0f);
     }
+}
+
+static uint32_t ComputeSuppressedWeatherEffectMask() {
+    uint32_t mask = 0;
+    if (g_noRain.load()) mask |= 0x013u;
+    if (g_noSnow.load()) mask |= 0x00Cu;
+    if (g_noDust.load()) mask |= 0x040u;
+    return mask;
 }
 
 static void ApplyNoWindPolicy(long long self, const ResolvedEnv& env) {
@@ -1422,14 +1525,14 @@ static void TickWeatherState(long long self, float dt) {
                 int h = At<int>(self, WCO::HANDLE_ARRAY + i * 4);
                 if (h != nullSent) {
                     float effI = 1.0f;
-                    if (i <= 1) effI = g_oRain.active.load() ? g_oRain.value.load() : 0.0f;
-                    else if (i == 2 || i == 3) effI = g_oSnow.active.load() ? g_oSnow.value.load() : 0.0f;
-                    else if (i == 4) effI = g_oRain.active.load() ? max(0.f, g_oRain.value.load() - 0.5f) * 2.f : 0.0f;
+                    if (i <= 1) effI = (!g_noRain.load() && g_oRain.active.load()) ? g_oRain.value.load() : 0.0f;
+                    else if (i == 2 || i == 3) effI = (!g_noSnow.load() && g_oSnow.active.load()) ? g_oSnow.value.load() : 0.0f;
+                    else if (i == 4) effI = (!g_noRain.load() && g_oRain.active.load()) ? max(0.f, g_oRain.value.load() - 0.5f) * 2.f : 0.0f;
                     else if (i == 5) effI = g_oWindActual.active.load() ? min(1.f, g_oWindActual.value.load() / 10.f) : 0.0f;
-                    else if (i == 6) effI = g_oDust.active.load() ? min(1.0f, g_oDust.value.load()) : 0.0f;
+                    else if (i == 6) effI = (!g_noDust.load() && g_oDust.active.load()) ? min(1.0f, g_oDust.value.load()) : 0.0f;
                     else if (i == 7) effI = min(
-                        g_oSnow.active.load() ? g_oSnow.value.load() : 0.0f,
-                        g_oDust.active.load() ? g_oDust.value.load() : 0.0f);
+                        (!g_noSnow.load() && g_oSnow.active.load()) ? g_oSnow.value.load() : 0.0f,
+                        (!g_noDust.load() && g_oDust.active.load()) ? g_oDust.value.load() : 0.0f);
                     else if (i == 8) effI = 0.0f;
                     g_pSetIntensity(env.particleMgr, h, effI);
                 }
@@ -1494,6 +1597,230 @@ long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short a
     return result;
 }
 
+struct ThunderAudioCandidate {
+    uint32_t eventId;
+    const char* eventName;
+};
+
+struct ThunderSoundBankCandidate {
+    uint32_t bankId;
+    const char* bankName;
+};
+
+static void EnsureThunderSoundBanksLoaded() {
+    if (!g_pAkLoadBankById) {
+        return;
+    }
+
+    static bool s_attempted = false;
+    if (s_attempted) {
+        return;
+    }
+    s_attempted = true;
+
+    constexpr ThunderSoundBankCandidate kThunderBanks[] = {
+        { 3452312330u, "env_thunder_2d" },
+        { 3469090149u, "env_thunder_3d" },
+    };
+
+    for (const ThunderSoundBankCandidate& bank : kThunderBanks) {
+        int result = 0;
+        __try {
+            result = g_pAkLoadBankById(bank.bankId, 0);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            Log("[thunder-audio] bank exception name=%s id=%u\n",
+                bank.bankName, bank.bankId);
+            continue;
+        }
+        Log("[thunder-audio] bank=%s id=%u load=%d\n",
+            bank.bankName, bank.bankId, result);
+    }
+}
+
+static uint64_t ResolveWeatherAudioGameObjectId() {
+    if (!g_pEnvManager || !*g_pEnvManager) {
+        return 0;
+    }
+
+    __try {
+        const long long envMgr = static_cast<long long>(*g_pEnvManager);
+        if (!envMgr || !IsReadableTickPtr(static_cast<uintptr_t>(envMgr), sizeof(uintptr_t))) {
+            return 0;
+        }
+
+        auto* envVt = *reinterpret_cast<uintptr_t**>(envMgr);
+        if (!envVt || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(envVt), 0x48)) {
+            return 0;
+        }
+
+        auto getRoot = reinterpret_cast<long long(__fastcall*)(long long)>(envVt[0x40 / 8]);
+        const long long root = getRoot(envMgr);
+        if (!root || !IsReadableTickPtr(static_cast<uintptr_t>(root + 0x1D0), sizeof(uintptr_t))) {
+            return 0;
+        }
+
+        const long long audioProvider = *reinterpret_cast<long long*>(root + 0x1D0);
+        if (!audioProvider || !IsReadableTickPtr(static_cast<uintptr_t>(audioProvider), sizeof(uintptr_t))) {
+            return 0;
+        }
+
+        auto* providerVt = *reinterpret_cast<uintptr_t**>(audioProvider);
+        if (!providerVt || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(providerVt), 0x198)) {
+            return 0;
+        }
+
+        auto getAudioObject = reinterpret_cast<long long(__fastcall*)(long long)>(providerVt[0x190 / 8]);
+        const long long audioObject = getAudioObject(audioProvider);
+        if (!audioObject || !IsReadableTickPtr(static_cast<uintptr_t>(audioObject + 0x18), sizeof(uint32_t))) {
+            return 0;
+        }
+
+        return static_cast<uint64_t>(*reinterpret_cast<uint32_t*>(audioObject + 0x18));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("[thunder-audio] audio object resolve exception\n");
+        return 0;
+    }
+}
+
+static void TryPlayThunderAudio(float thunder) {
+    (void)thunder;
+    if (!g_pAkPostEventById) {
+        return;
+    }
+
+    EnsureThunderSoundBanksLoaded();
+
+    static DWORD64 s_lastThunderSound = 0;
+    const DWORD64 now = GetTickCount64();
+    if (now - s_lastThunderSound < 500) {
+        return;
+    }
+    s_lastThunderSound = now;
+
+    constexpr ThunderAudioCandidate kThunderAudioCandidates[] = {
+        { 3685435772u, "env_oneshot_thunder" },
+    };
+
+    const uint64_t gameObjectId = ResolveWeatherAudioGameObjectId();
+    for (const ThunderAudioCandidate& candidate : kThunderAudioCandidates) {
+        uint32_t playingId = 0;
+        __try {
+            playingId = g_pAkPostEventById(candidate.eventId, gameObjectId, 0, nullptr, nullptr, 0, nullptr, 0);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            Log("[thunder-audio] post exception name=%s id=%u object=%llu\n",
+                candidate.eventName, candidate.eventId, static_cast<unsigned long long>(gameObjectId));
+            continue;
+        }
+        Log("[thunder-audio] post event=%s id=%u object=%llu playing=%u\n",
+            candidate.eventName, candidate.eventId,
+            static_cast<unsigned long long>(gameObjectId), playingId);
+        if (playingId) {
+            break;
+        }
+    }
+}
+
+static void TickNativeLightningBridge(long long self, float dt) {
+    constexpr float kThunderSchedulerTickSeconds = 0.10f;
+
+    if (!g_pNativeLightningScheduler || !g_pWeatherEffectGateByte || !self) {
+        return;
+    }
+
+    static float s_schedulerAccum = 0.0f;
+    if (!g_oThunder.active.load()) {
+        s_schedulerAccum = 0.0f;
+        return;
+    }
+
+    float thunder = g_oThunder.value.load();
+    if (!std::isfinite(thunder) || thunder <= 0.0001f) {
+        s_schedulerAccum = 0.0f;
+        return;
+    }
+    thunder = min(1.0f, max(0.0f, thunder));
+    s_schedulerAccum = min(0.5f, s_schedulerAccum + max(0.0f, dt));
+    if (s_schedulerAccum < kThunderSchedulerTickSeconds) {
+        return;
+    }
+    const float schedulerDt = s_schedulerAccum;
+    s_schedulerAccum = 0.0f;
+
+    const float rainHint = !g_noRain.load() && g_oRain.active.load() && std::isfinite(g_oRain.value.load())
+        ? min(1.0f, max(0.0f, g_oRain.value.load()))
+        : -1.0f;
+    if (!IsReadableTickPtr(static_cast<uintptr_t>(self), 0xF0)) {
+        return;
+    }
+
+    uint8_t gate = 0;
+    __try {
+        gate = *g_pWeatherEffectGateByte;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+    if (gate == 0) {
+        return;
+    }
+
+    long long effect = 0;
+    long long variation = 0;
+    float elapsedBefore = 0.0f;
+    float nextBefore = -1.0f;
+    if (!TryReadTickValue(self, 0x78, effect) || !TryReadTickValue(self, 0x80, variation) ||
+        !TryReadTickValue(self, 0xE4, elapsedBefore) || !TryReadTickValue(self, 0xE8, nextBefore)) {
+        return;
+    }
+    if (!effect || !variation) {
+        return;
+    }
+
+    __try {
+        float& elapsed = At<float>(self, 0xE4);
+        float& nextDelay = At<float>(self, 0xE8);
+        const float rate = ThunderRateCurve(thunder);
+        const float maxDelay = 0.85f + (1.0f - rate) * 18.0f;
+        const float schedulerRain = 0.85f + rate * 0.15f;
+        if (!std::isfinite(elapsed) || elapsed < 0.0f || elapsed > 120.0f) {
+            elapsed = 0.0f;
+        }
+        elapsed = min(120.0f, elapsed + schedulerDt);
+        if (std::isfinite(nextDelay) && nextDelay > maxDelay) {
+            nextDelay = maxDelay;
+        }
+        g_thunderSchedulerRainBias.store(schedulerRain);
+        g_pNativeLightningScheduler(self);
+        g_thunderSchedulerRainBias.store(0.0f);
+        if (std::isfinite(nextDelay) && nextDelay > maxDelay) {
+            nextDelay = maxDelay;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_thunderSchedulerRainBias.store(0.0f);
+        Log("[thunder] scheduler exception self=%p gate=%u\n", reinterpret_cast<void*>(self), gate);
+        return;
+    }
+
+    float elapsedAfter = 0.0f;
+    float nextAfter = -1.0f;
+    TryReadTickValue(self, 0xE4, elapsedAfter);
+    TryReadTickValue(self, 0xE8, nextAfter);
+
+    const bool spawnedStrike = elapsedBefore > 0.5f && elapsedAfter < 0.1f && nextAfter < 0.0f;
+    if (spawnedStrike) {
+        TriggerThunderGlobalEffect(rainHint, thunder);
+        TryPlayThunderAudio(thunder);
+    }
+
+    static DWORD64 s_lastLog = 0;
+    const DWORD64 now = GetTickCount64();
+    if (now - s_lastLog >= 2000) {
+        s_lastLog = now;
+        Log("[thunder] amount=%.3f rain=%.3f gate=%u e4=%.3f->%.3f e8=%.3f->%.3f effect=%p var=%p\n",
+            thunder, rainHint, gate, elapsedBefore, elapsedAfter, nextBefore, nextAfter,
+            reinterpret_cast<void*>(effect), reinterpret_cast<void*>(variation));
+    }
+}
+
 // Hooked weather tick.
 void __fastcall Hooked_WeatherTick(long long self, float dt) {
     const bool resetStopNow = g_resetStopRequested.exchange(false);
@@ -1536,6 +1863,11 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     if (g_activeWeather == kCustomWeather) {
         TickWeatherState(self, dt);
     }
+    const uint32_t suppressedWeatherMask = ComputeSuppressedWeatherEffectMask();
+    if (suppressedWeatherMask) {
+        StopWeatherEffectsByMask(self, suppressedWeatherMask);
+    }
+    TickNativeLightningBridge(self, dt);
     if (resetStopNow) {
         StopAllWeatherEffects(self);
     }
