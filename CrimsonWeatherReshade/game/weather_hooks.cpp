@@ -163,195 +163,22 @@ static bool TryReadTickValue(long long base, ptrdiff_t off, T& out) {
     }
 }
 
-static bool ReasonableProbeFloat(float value) {
+static bool ReasonableRegionFloat(float value) {
     return std::isfinite(value) && fabsf(value) < 100000000.0f;
 }
 
-static float ProbeFloat(long long base, ptrdiff_t off) {
+static float ReadRegionFloat(long long base, ptrdiff_t off) {
     float value = 0.0f;
-    if (!TryReadTickValue(base, off, value) || !ReasonableProbeFloat(value)) {
+    if (!TryReadTickValue(base, off, value) || !ReasonableRegionFloat(value)) {
         return 0.0f;
     }
     return value;
 }
 
-static long long ProbePtr(long long base, ptrdiff_t off) {
-    long long value = 0;
-    if (!TryReadTickValue(base, off, value)) {
-        return 0;
-    }
-    return value;
-}
-
-static int32_t ProbeS32(long long base, ptrdiff_t off) {
+static int32_t ReadRegionS32(long long base, ptrdiff_t off) {
     int32_t value = 0;
     TryReadTickValue(base, off, value);
     return value;
-}
-
-static bool LooksReadableProbePtr(long long value) {
-    if (value < 0x10000) {
-        return false;
-    }
-    return IsReadableTickPtr(static_cast<uintptr_t>(value), 0x10);
-}
-
-static void AppendProbeText(char* out, size_t cap, size_t& used, const char* fmt, ...);
-
-static bool CopyProbeAnsi(uintptr_t addr, char* out, size_t cap) {
-    if (!out || cap == 0) {
-        return false;
-    }
-    out[0] = '\0';
-    if (addr < 0x10000 || !IsReadableTickPtr(addr, 1)) {
-        return false;
-    }
-
-    size_t used = 0;
-    __try {
-        for (; used + 1 < cap; ++used) {
-            if (!IsReadableTickPtr(addr + used, 1)) {
-                break;
-            }
-            const unsigned char c = *reinterpret_cast<const unsigned char*>(addr + used);
-            if (c == 0) {
-                break;
-            }
-            if (c < 0x20 || c > 0x7E) {
-                if (c != '\t') {
-                    break;
-                }
-            }
-            out[used] = static_cast<char>(c);
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        out[0] = '\0';
-        return false;
-    }
-
-    out[used] = '\0';
-    return used >= 2;
-}
-
-static bool CopyProbeWideAscii(uintptr_t addr, char* out, size_t cap) {
-    if (!out || cap == 0) {
-        return false;
-    }
-    out[0] = '\0';
-    if (addr < 0x10000 || !IsReadableTickPtr(addr, sizeof(wchar_t))) {
-        return false;
-    }
-
-    size_t used = 0;
-    __try {
-        for (; used + 1 < cap; ++used) {
-            if (!IsReadableTickPtr(addr + used * sizeof(wchar_t), sizeof(wchar_t))) {
-                break;
-            }
-            const wchar_t c = *reinterpret_cast<const wchar_t*>(addr + used * sizeof(wchar_t));
-            if (c == 0) {
-                break;
-            }
-            if (c < 0x20 || c > 0x7E) {
-                break;
-            }
-            out[used] = static_cast<char>(c);
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        out[0] = '\0';
-        return false;
-    }
-
-    out[used] = '\0';
-    return used >= 2;
-}
-
-static void DescribeProbeText(long long value, char* out, size_t cap) {
-    if (!out || cap == 0) {
-        return;
-    }
-    out[0] = '\0';
-
-    const uintptr_t addr = static_cast<uintptr_t>(value);
-    if (CopyProbeAnsi(addr, out, cap) || CopyProbeWideAscii(addr, out, cap)) {
-        return;
-    }
-
-    long long nested = 0;
-    if (TryReadTickValue(value, 0, nested)) {
-        const uintptr_t nestedAddr = static_cast<uintptr_t>(nested);
-        if (CopyProbeAnsi(nestedAddr, out, cap) || CopyProbeWideAscii(nestedAddr, out, cap)) {
-            return;
-        }
-    }
-}
-
-static void AppendProbeQwords(char* out, size_t cap, size_t& used, long long base, ptrdiff_t start, ptrdiff_t end) {
-    int count = 0;
-    for (ptrdiff_t off = start; off <= end && count < 8; off += 8) {
-        uint64_t value = 0;
-        if (!TryReadTickValue(base, off, value)) {
-            continue;
-        }
-        AppendProbeText(out, cap, used, "+%02llX=%016llX ", static_cast<long long>(off), static_cast<unsigned long long>(value));
-        ++count;
-    }
-    if (count == 0) {
-        AppendProbeText(out, cap, used, "unreadable");
-    }
-}
-
-static void AppendProbeText(char* out, size_t cap, size_t& used, const char* fmt, ...) {
-    if (used >= cap) {
-        return;
-    }
-
-    va_list args;
-    va_start(args, fmt);
-    const int wrote = std::vsnprintf(out + used, cap - used, fmt, args);
-    va_end(args);
-    if (wrote <= 0) {
-        return;
-    }
-
-    const size_t added = static_cast<size_t>(wrote);
-    used = (added >= cap - used) ? cap - 1 : used + added;
-}
-
-static void AppendPtrProbeScan(char* out, size_t cap, size_t& used, long long base, ptrdiff_t start, ptrdiff_t end) {
-    int count = 0;
-    for (ptrdiff_t off = start; off <= end && count < 28; off += 8) {
-        const long long value = ProbePtr(base, off);
-        if (!LooksReadableProbePtr(value)) {
-            continue;
-        }
-
-        AppendProbeText(out, cap, used, "+%03llX=%p ", static_cast<long long>(off), reinterpret_cast<void*>(value));
-        ++count;
-    }
-    if (count == 0) {
-        AppendProbeText(out, cap, used, "none");
-    }
-}
-
-static void AppendSmallIntProbeScan(char* out, size_t cap, size_t& used, long long base, ptrdiff_t start, ptrdiff_t end) {
-    int count = 0;
-    for (ptrdiff_t off = start; off <= end && count < 36; off += 4) {
-        int32_t value = 0;
-        if (!TryReadTickValue(base, off, value)) {
-            continue;
-        }
-
-        if (value == 0 || value == -1 || value < -100000 || value > 100000) {
-            continue;
-        }
-
-        AppendProbeText(out, cap, used, "+%03llX=%d ", static_cast<long long>(off), value);
-        ++count;
-    }
-    if (count == 0) {
-        AppendProbeText(out, cap, used, "none");
-    }
 }
 
 struct RegionAnchor {
@@ -372,7 +199,7 @@ static RegionClassification ClassifyRegionFromPosition(float x, float y, float z
         return { 6, 0 }; // Abyss
     }
 
-    // Hand-tuned first pass for the Hernand -> Demeniss -> Delesyia road test.
+    // Bias the Hernand -> Demeniss -> Delesyia corridor to match the game's border toasts.
     // Pure nearest-anchor classification switches to Demeniss noticeably after
     // the game's own border toast, so bias this corridor westward.
     if (z >= -4700.0f && z <= -2500.0f) {
@@ -387,7 +214,7 @@ static RegionClassification ClassifyRegionFromPosition(float x, float y, float z
         }
     }
 
-    // Preliminary anchors from the 2026-05-10 route probe:
+    // Position anchors captured from the main regional route:
     // Hernand -> Demeniss -> Delesyia -> Tashkalp -> Urdavah -> Pailune -> Varnia.
     static constexpr RegionAnchor kAnchors[] = {
         { 1, 1, -10479.6f, 553.0f, -4158.2f }, // Hernand
@@ -506,10 +333,10 @@ static void UpdateRegionState(const ResolvedEnv& env, float dt) {
         return;
     }
 
-    const float x = ProbeFloat(env.entity, 0xC8);
-    const float y = ProbeFloat(env.entity, 0xCC);
-    const float z = ProbeFloat(env.entity, 0xD0);
-    if (!ReasonableProbeFloat(x) || !ReasonableProbeFloat(y) || !ReasonableProbeFloat(z)) {
+    const float x = ReadRegionFloat(env.entity, 0xC8);
+    const float y = ReadRegionFloat(env.entity, 0xCC);
+    const float z = ReadRegionFloat(env.entity, 0xD0);
+    if (!ReasonableRegionFloat(x) || !ReasonableRegionFloat(y) || !ReasonableRegionFloat(z)) {
         g_regionStateValid.store(false);
         g_regionMajorId.store(0);
         g_regionLocalId.store(0);
@@ -538,8 +365,8 @@ static void UpdateRegionState(const ResolvedEnv& env, float dt) {
     g_regionPosX.store(x);
     g_regionPosY.store(y);
     g_regionPosZ.store(z);
-    g_regionSectorX.store(ProbeS32(env.entity, 0xE0));
-    g_regionSectorZ.store(ProbeS32(env.entity, 0xE8));
+    g_regionSectorX.store(ReadRegionS32(env.entity, 0xE0));
+    g_regionSectorZ.store(ReadRegionS32(env.entity, 0xE8));
     g_regionMajorId.store(classified.majorId);
     g_regionLocalId.store(classified.localId);
     g_regionPreviousPosValid.store(true);
@@ -607,7 +434,6 @@ static constexpr uint32_t kFogReceiverOverrideMask = 0x1F;
 static constexpr float kFogOverdriveNormAt100 = 2.4f;
 static constexpr float kFogDenseMax = 500.0f;
 static constexpr bool kEnableDirectNodeWrites = true;
-static constexpr bool kWeatherTickPassThroughOnly = false;
 
 static inline void ApplyAuthoritativeFogProfile(float fogValue,
                                                 float& v0, float& v1, float& v2, float& v3, float& v4) {
@@ -635,7 +461,7 @@ void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams) {
     if (!g_modEnabled.load()) return;
     if (!outParams) return;
 
-    if (g_forceClear.load()) {
+    if (g_forceClear.load() || g_noFog.load()) {
         __try {
             float* p = reinterpret_cast<float*>(outParams + 0x10);
             p[0] = 0.0f; p[1] = 0.0f; p[2] = 0.0f; p[3] = 0.0f; p[4] = 2.0f;
@@ -661,38 +487,15 @@ void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams) {
     }
 }
 
-static bool AnyCelestialOverrideActive() {
-    return g_oSunDirX.active.load() || g_oSunDirY.active.load() ||
-           g_oMoonDirX.active.load() || g_oMoonDirY.active.load();
-}
-
-static void CaptureAtmosphereCelestialBase(long long atmosphereObj) {
-    if (!atmosphereObj) return;
-    __try {
-        g_atmoBaseSunDirX.store(At<float>(atmosphereObj, AC0::SUN_DIR_X));
-        g_atmoBaseSunDirY.store(At<float>(atmosphereObj, AC0::SUN_DIR_Y));
-        g_atmoBaseMoonDirX.store(At<float>(atmosphereObj, AC0::MOON_DIR_X));
-        g_atmoBaseMoonDirY.store(At<float>(atmosphereObj, AC0::MOON_DIR_Y));
-        g_atmoCelestialBaseValid.store(true);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        g_atmoCelestialBaseValid.store(false);
-    }
-}
-
-static void ApplyCelestialOverrides(const ResolvedEnv& env) {
-    if (!env.atmosphereNode) {
-        g_atmoCelestialBaseValid.store(false);
-        return;
-    }
-
-    CaptureAtmosphereCelestialBase(env.atmosphereNode);
+static bool AnyPackedCelestialOverrideActive() {
+    return g_oSunSize.active.load() || g_oMoonSize.active.load() || g_oExpNightSkyRot.active.load();
 }
 
 static float ResolveFogSetValue(int idx, float incoming) {
     if (!g_modEnabled.load()) return incoming;
     if (idx < 0 || idx >= 5) return incoming;
     if ((kFogReceiverOverrideMask & (1u << idx)) == 0) return incoming;
-    if (g_forceClear.load()) {
+    if (g_forceClear.load() || g_noFog.load()) {
         static constexpr float kClearFogProfile[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 2.0f };
         return kClearFogProfile[idx];
     }
@@ -785,7 +588,8 @@ static void PrimeFogSetHooksFromFrame(long long* self) {
 
 static void ForceApplyFogFromFrame(long long* self) {
     const bool forceClear = g_forceClear.load();
-    if (!self || (!forceClear && !g_oFog.active.load()) || !g_pOrigAtmosFogBlend) return;
+    const bool noFog = g_noFog.load();
+    if (!self || (!forceClear && !noFog && !g_oFog.active.load()) || !g_pOrigAtmosFogBlend) return;
 
     __try {
         struct FogOut {
@@ -795,7 +599,7 @@ static void ForceApplyFogFromFrame(long long* self) {
 
         g_pOrigAtmosFogBlend((long long)self, (long long)&out);
 
-        float fog = forceClear ? 0.0f : max(0.0f, g_oFog.value.load());
+        float fog = (forceClear || noFog) ? 0.0f : max(0.0f, g_oFog.value.load());
         ApplyAuthoritativeFogProfile(fog, out.v0, out.v1, out.v2, out.v3, out.v4);
 
         long long provider = *reinterpret_cast<long long*>(reinterpret_cast<uint8_t*>(self) + 0x48);
@@ -999,11 +803,251 @@ static float CloudHeightUiToMultiplier(float ui) {
     return 1.0f + ((ui - 1.0f) * (9.0f / 14.0f));
 }
 
+static constexpr int kPackedSunSize = 0x02;
+static constexpr int kPackedSunSizeCos = 0x03;
+static constexpr int kPackedSunDirection = 0x04;
+static constexpr int kPackedMoonSize = 0x07;
+static constexpr int kPackedMoonSizeCos = 0x08;
+static constexpr int kPackedMoonDirection = 0x09;
+static constexpr int kPackedEarthAxisTilt = 0x0A;
+static constexpr int kPackedLatitude = 0x0B;
+static constexpr float kPackedAngleToRad = 0.01745329251994329577f;
+static constexpr float kDegToRad = 0.01745329251994329577f;
+static constexpr float kRadToDeg = 57.295779513082320876f;
+static constexpr int kSceneTimeW = 3;
+static constexpr int kSceneSunDirection = 42 * 4;
+static constexpr int kSceneMoonDirection = 43 * 4;
+static constexpr int kSceneMoonRight = 44 * 4;
+static constexpr int kSceneMoonUp = 45 * 4;
+
+struct CwVec3 {
+    float x;
+    float y;
+    float z;
+};
+
+static float ClampFloat(float v, float lo, float hi) {
+    return min(hi, max(lo, v));
+}
+
+static float NormalizeSignedDegrees(float v) {
+    while (v > 180.0f) v -= 360.0f;
+    while (v < -180.0f) v += 360.0f;
+    return v;
+}
+
+static float SceneTimeToNightSkyYaw(float sceneTimeW) {
+    if (!std::isfinite(sceneTimeW)) return 0.0f;
+    return NormalizeSignedDegrees((sceneTimeW * 15.0f) - 180.0f);
+}
+
+static float NightSkyYawToSceneTime(float yaw) {
+    return (NormalizeSignedDegrees(yaw) + 180.0f) / 15.0f;
+}
+
+static CwVec3 NormalizeVec3(CwVec3 v, CwVec3 fallback) {
+    const float lenSq = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (!std::isfinite(lenSq) || lenSq < 0.000001f) return fallback;
+    const float invLen = 1.0f / sqrtf(lenSq);
+    return { v.x * invLen, v.y * invLen, v.z * invLen };
+}
+
+static CwVec3 CrossVec3(CwVec3 a, CwVec3 b) {
+    return {
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    };
+}
+
+static void DirectionToYawPitch(CwVec3 dir, float& yaw, float& pitch) {
+    dir = NormalizeVec3(dir, { 0.0f, 0.0f, 1.0f });
+    yaw = atan2f(dir.x, dir.z) * kRadToDeg;
+    pitch = asinf(ClampFloat(dir.y, -1.0f, 1.0f)) * kRadToDeg;
+}
+
+static CwVec3 YawPitchToDirection(float yaw, float pitch) {
+    const float yawRad = yaw * kDegToRad;
+    const float pitchRad = ClampFloat(pitch, -89.0f, 89.0f) * kDegToRad;
+    const float cp = cosf(pitchRad);
+    return NormalizeVec3({ sinf(yawRad) * cp, sinf(pitchRad), cosf(yawRad) * cp }, { 0.0f, 0.0f, 1.0f });
+}
+
+static void StoreFloat4Direction(float* scene, int index, CwVec3 dir) {
+    scene[index + 0] = dir.x;
+    scene[index + 1] = dir.y;
+    scene[index + 2] = dir.z;
+}
+
+static void StoreMoonBasis(float* scene, CwVec3 moonDir, float rollDegrees) {
+    const CwVec3 upRef = fabsf(moonDir.y) > 0.98f ? CwVec3{ 1.0f, 0.0f, 0.0f } : CwVec3{ 0.0f, 1.0f, 0.0f };
+    CwVec3 right = NormalizeVec3(CrossVec3(upRef, moonDir), { 1.0f, 0.0f, 0.0f });
+    CwVec3 up = NormalizeVec3(CrossVec3(moonDir, right), { 0.0f, 1.0f, 0.0f });
+
+    if (std::isfinite(rollDegrees) && fabsf(rollDegrees) > 0.0001f) {
+        const float rollRad = rollDegrees * kDegToRad;
+        const float c = cosf(rollRad);
+        const float s = sinf(rollRad);
+        const CwVec3 rolledRight{
+            right.x * c + up.x * s,
+            right.y * c + up.y * s,
+            right.z * c + up.z * s
+        };
+        const CwVec3 rolledUp{
+            up.x * c - right.x * s,
+            up.y * c - right.y * s,
+            up.z * c - right.z * s
+        };
+        right = NormalizeVec3(rolledRight, right);
+        up = NormalizeVec3(rolledUp, up);
+    }
+
+    StoreFloat4Direction(scene, kSceneMoonRight, right);
+    StoreFloat4Direction(scene, kSceneMoonUp, up);
+}
+
+static void CapturePackedCelestialBase(const float* packedOut) {
+    if (!packedOut) return;
+    if (!std::isfinite(packedOut[kPackedSunSize]) ||
+        !std::isfinite(packedOut[kPackedSunDirection]) ||
+        !std::isfinite(packedOut[kPackedMoonSize]) ||
+        !std::isfinite(packedOut[kPackedMoonDirection])) {
+        return;
+    }
+
+    if (!g_oSunSize.active.load()) {
+        g_atmoBaseSunSize.store(packedOut[kPackedSunSize]);
+    }
+    if (!g_oMoonSize.active.load()) {
+        g_atmoBaseMoonSize.store(packedOut[kPackedMoonSize]);
+    }
+    if (!g_oExpNightSkyRot.active.load() && std::isfinite(packedOut[kPackedEarthAxisTilt])) {
+        g_windPackBase0A.store(packedOut[kPackedEarthAxisTilt]);
+        g_windPackBase0AValid.store(true);
+    }
+    if (!g_oExpNightSkyRot.active.load() && std::isfinite(packedOut[kPackedLatitude])) {
+        g_windPackBase0B.store(packedOut[kPackedLatitude]);
+        g_windPackBase0BValid.store(true);
+    }
+
+    if (!g_atmoCelestialBaseValid.load()) {
+        g_atmoCelestialBaseValid.store(true);
+    }
+}
+
+static void ApplyPackedCelestialOverrides(float* packedOut) {
+    if (!packedOut) return;
+    CapturePackedCelestialBase(packedOut);
+    if (!AnyPackedCelestialOverrideActive() || !g_atmoCelestialBaseValid.load()) return;
+
+    if (g_oSunSize.active.load()) {
+        const float size = ClampFloat(g_oSunSize.value.load(), 0.01f, 10.0f);
+        packedOut[kPackedSunSize] = size;
+        packedOut[kPackedSunSizeCos] = cosf(size * kPackedAngleToRad);
+    }
+    if (g_oMoonSize.active.load()) {
+        const float size = ClampFloat(g_oMoonSize.value.load(), 0.020f, 20.0f);
+        packedOut[kPackedMoonSize] = size;
+        packedOut[kPackedMoonSizeCos] = cosf(size * kPackedAngleToRad);
+    }
+    if (g_oExpNightSkyRot.active.load() && g_windPackBase0BValid.load()) {
+        const float pitch = ClampFloat(g_oExpNightSkyRot.value.load(), -89.0f, 89.0f);
+        packedOut[kPackedEarthAxisTilt] = pitch - 90.0f + g_windPackBase0B.load();
+    }
+
+}
+
+static void CaptureSceneCelestialBase(const float* scene) {
+    if (!scene) return;
+    CwVec3 sunDir{ scene[kSceneSunDirection + 0], scene[kSceneSunDirection + 1], scene[kSceneSunDirection + 2] };
+    CwVec3 moonDir{ scene[kSceneMoonDirection + 0], scene[kSceneMoonDirection + 1], scene[kSceneMoonDirection + 2] };
+    if (!std::isfinite(sunDir.x) || !std::isfinite(sunDir.y) || !std::isfinite(sunDir.z) ||
+        !std::isfinite(moonDir.x) || !std::isfinite(moonDir.y) || !std::isfinite(moonDir.z)) {
+        return;
+    }
+
+    float sunYaw = 0.0f, sunPitch = 0.0f, moonYaw = 0.0f, moonPitch = 0.0f;
+    DirectionToYawPitch(sunDir, sunYaw, sunPitch);
+    DirectionToYawPitch(moonDir, moonYaw, moonPitch);
+    if (!g_oSunDirX.active.load()) {
+        g_sceneBaseSunYaw.store(sunYaw);
+    }
+    if (!g_oSunDirY.active.load()) {
+        g_sceneBaseSunPitch.store(sunPitch);
+    }
+    if (!g_oMoonDirX.active.load()) {
+        g_sceneBaseMoonYaw.store(moonYaw);
+    }
+    if (!g_oMoonDirY.active.load()) {
+        g_sceneBaseMoonPitch.store(moonPitch);
+    }
+    if (!g_oNightSkyYaw.active.load() && std::isfinite(scene[kSceneTimeW])) {
+        g_sceneBaseNightSkyYaw.store(SceneTimeToNightSkyYaw(scene[kSceneTimeW]));
+    }
+
+    if (!g_sceneCelestialBaseValid.load()) {
+        g_sceneCelestialBaseValid.store(true);
+    }
+}
+
+static bool ApplySceneCelestialOverrides(float* scene) {
+    if (!scene) return false;
+    CaptureSceneCelestialBase(scene);
+    const bool sceneOverrideActive = g_oSunDirX.active.load() || g_oSunDirY.active.load() ||
+                                     g_oMoonDirX.active.load() || g_oMoonDirY.active.load() ||
+                                     g_oMoonRoll.active.load() || g_oNightSkyYaw.active.load();
+    if (!sceneOverrideActive || !g_sceneCelestialBaseValid.load()) return false;
+
+    if (g_oSunDirX.active.load() || g_oSunDirY.active.load()) {
+        const float yaw = g_oSunDirX.active.load() ? g_oSunDirX.value.load() : g_sceneBaseSunYaw.load();
+        const float pitch = g_oSunDirY.active.load() ? g_oSunDirY.value.load() : g_sceneBaseSunPitch.load();
+        StoreFloat4Direction(scene, kSceneSunDirection, YawPitchToDirection(yaw, pitch));
+    }
+    if (g_oMoonDirX.active.load() || g_oMoonDirY.active.load() || g_oMoonRoll.active.load()) {
+        const float yaw = g_oMoonDirX.active.load() ? g_oMoonDirX.value.load() : g_sceneBaseMoonYaw.load();
+        const float pitch = g_oMoonDirY.active.load() ? g_oMoonDirY.value.load() : g_sceneBaseMoonPitch.load();
+        const CwVec3 moonDir = YawPitchToDirection(yaw, pitch);
+        if (g_oMoonDirX.active.load() || g_oMoonDirY.active.load()) {
+            StoreFloat4Direction(scene, kSceneMoonDirection, moonDir);
+        }
+        const float roll = g_oMoonRoll.active.load() ? ClampFloat(g_oMoonRoll.value.load(), -180.0f, 180.0f) : 0.0f;
+        StoreMoonBasis(scene, moonDir, roll);
+    }
+    if (g_oNightSkyYaw.active.load()) {
+        scene[kSceneTimeW] = NightSkyYawToSceneTime(g_oNightSkyYaw.value.load());
+    }
+
+    return true;
+}
+
+void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context) {
+    void* result = g_pOrigSceneFrameUpdate ? g_pOrigSceneFrameUpdate(self, context) : nullptr;
+    if (!g_modEnabled.load() || !self) return result;
+
+    __try {
+        auto* sceneSource = *reinterpret_cast<float**>(self + 0x428);
+        ApplySceneCelestialOverrides(sceneSource);
+
+        auto* sceneOwner = *reinterpret_cast<uint8_t**>(self + 0x430);
+        if (!sceneOwner) return result;
+        auto* scenePrimary = *reinterpret_cast<float**>(sceneOwner + 0x20);
+        ApplySceneCelestialOverrides(scenePrimary);
+        auto* sceneCopy = *reinterpret_cast<float**>(sceneOwner + 0x60);
+        ApplySceneCelestialOverrides(sceneCopy);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("[W] celestial scene override exception\n");
+    }
+    return result;
+}
+
 void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
     const bool modEnabled = g_modEnabled.load();
     if (g_pOrigWindPack) g_pOrigWindPack(windNodePtr, packedOut);
     if (!modEnabled) return;
     if (!packedOut) return;
+
+    ApplyPackedCelestialOverrides(packedOut);
 
     AtmosphereCloudPack nativeCloudPack{};
     const bool nativeCloudValid = ReadAtmosphereCloudPack(packedOut, nativeCloudPack);
@@ -1042,6 +1086,10 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         g_windPackBase0A.store(packedOut[0x0A]);
         g_windPackBase0AValid.store(true);
     }
+    if (!g_oExpNightSkyRot.active.load() && std::isfinite(packedOut[0x0B])) {
+        g_windPackBase0B.store(packedOut[0x0B]);
+        g_windPackBase0BValid.store(true);
+    }
     if (!g_oNativeFog.active.load() && std::isfinite(packedOut[0x11])) {
         g_windPackBase11.store(packedOut[0x11]);
         g_windPackBase11Valid.store(true);
@@ -1055,11 +1103,17 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         g_windPackBase1BValid.store(true);
     }
 
-    if (g_forceClear.load()) {
+    const bool forceClear = g_forceClear.load();
+    const bool noFog = g_noFog.load();
+    if (forceClear) {
         packedOut[0x1B] = 0.0f;
         packedOut[0x11] = 0.0f;
         packedOut[0x17] = 0.0f;
         return;
+    }
+    if (noFog) {
+        packedOut[0x11] = 0.0f;
+        packedOut[0x17] = 0.0f;
     }
 
     const bool cloudActive = g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load();
@@ -1088,7 +1142,6 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
 
     const bool exp2CActive = g_oExpCloud2C.active.load() && g_windPackBase2CValid.load();
     const bool exp2DActive = g_oExpCloud2D.active.load() && g_windPackBase2DValid.load();
-    const bool exp0AActive = g_oExpNightSkyRot.active.load() && g_windPackBase0AValid.load();
     if (exp2CActive) {
         const float mul = min(15.0f, max(0.0f, g_oExpCloud2C.get(1.0f)));
         packedOut[0x2C] = g_windPackBase2C.load() * mul;
@@ -1097,17 +1150,13 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         const float mul = min(15.0f, max(0.0f, g_oExpCloud2D.get(1.0f)));
         packedOut[0x2D] = g_windPackBase2D.load() * mul;
     }
-    if (exp0AActive) {
-        const float value = min(15.0f, max(-15.0f, g_oExpNightSkyRot.get(1.0f)));
-        packedOut[0x0A] = g_windPackBase0A.load() * value;
-    }
 
     if (g_oCloudVariation.active.load() && g_windPackBase32Valid.load()) {
         const float mul = min(15.0f, max(0.0f, g_oCloudVariation.get(1.0f)));
         packedOut[0x32] = g_windPackBase32.load() * mul;
     }
 
-    if (g_oNativeFog.active.load()) {
+    if (!noFog && g_oNativeFog.active.load()) {
         const float fogBoost = min(15.0f, max(0.0f, g_oNativeFog.value.load()));
         const float fogMul = 1.0f + fogBoost;
         if (g_windPackBase11Valid.load()) {
@@ -1127,7 +1176,7 @@ void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
     }
     PrimeFogSetHooksFromFrame(self);
 
-    if (self && (g_forceClear.load() || g_oFog.active.load())) {
+    if (self && (g_forceClear.load() || g_noFog.load() || g_oFog.active.load())) {
         __try {
             *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x98) = 0.0f;
             *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x9C) = 0.0f;
@@ -1311,7 +1360,6 @@ void __fastcall Hooked_ProcessWindState(long long self) {
     if (kEnableDirectNodeWrites && env.valid) {
         CaptureCloudBaseline(env);
         ApplyCloudOverrides(env);
-        ApplyCelestialOverrides(env);
     }
 }
 
@@ -1448,11 +1496,6 @@ long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short a
 
 // Hooked weather tick.
 void __fastcall Hooked_WeatherTick(long long self, float dt) {
-    if (kWeatherTickPassThroughOnly) {
-        if (g_pOriginalTick) g_pOriginalTick(self, dt);
-        return;
-    }
-
     const bool resetStopNow = g_resetStopRequested.exchange(false);
     const bool modSuspendNow = g_modSuspendRequested.exchange(false);
     const ResolvedEnv env = ResolveEnv();
@@ -1475,7 +1518,6 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
         StopWeatherEffectsByMask(self, 0x1DFu); 
         ApplyClearWeatherParams(self, env);
         ApplyWindFromSlider(self, env);
-        ApplyCelestialOverrides(env);
         if (resetStopNow) {
             StopAllWeatherEffects(self);
         }
@@ -1500,7 +1542,6 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     if (kEnableDirectNodeWrites && env.valid) {
         CaptureCloudBaseline(env);
         ApplyCloudOverrides(env);
-        ApplyCelestialOverrides(env);
     }
     ApplyDustWindPolicy(self, env);
     if (g_noWind.load()) {

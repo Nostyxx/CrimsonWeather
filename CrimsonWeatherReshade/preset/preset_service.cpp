@@ -35,8 +35,17 @@ struct WeatherPresetMask {
     bool exp2D = false;
     bool cloudVariation = false;
     bool nightSkyRotation = false;
+    bool nightSkyYaw = false;
+    bool sunSize = false;
+    bool sunYaw = false;
+    bool sunPitch = false;
+    bool moonSize = false;
+    bool moonYaw = false;
+    bool moonPitch = false;
+    bool moonRoll = false;
     bool fog = false;
     bool nativeFog = false;
+    bool noFog = false;
     bool wind = false;
     bool noWind = false;
     bool puddleScale = false;
@@ -144,10 +153,27 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         FloatNearlyEqual(a.cloudVariation, b.cloudVariation) &&
         a.nightSkyRotationEnabled == b.nightSkyRotationEnabled &&
         FloatNearlyEqual(a.nightSkyRotation, b.nightSkyRotation) &&
+        a.nightSkyYawEnabled == b.nightSkyYawEnabled &&
+        FloatNearlyEqual(a.nightSkyYaw, b.nightSkyYaw) &&
+        a.sunSizeEnabled == b.sunSizeEnabled &&
+        FloatNearlyEqual(a.sunSize, b.sunSize) &&
+        a.sunYawEnabled == b.sunYawEnabled &&
+        FloatNearlyEqual(a.sunYaw, b.sunYaw) &&
+        a.sunPitchEnabled == b.sunPitchEnabled &&
+        FloatNearlyEqual(a.sunPitch, b.sunPitch) &&
+        a.moonSizeEnabled == b.moonSizeEnabled &&
+        FloatNearlyEqual(a.moonSize, b.moonSize) &&
+        a.moonYawEnabled == b.moonYawEnabled &&
+        FloatNearlyEqual(a.moonYaw, b.moonYaw) &&
+        a.moonPitchEnabled == b.moonPitchEnabled &&
+        FloatNearlyEqual(a.moonPitch, b.moonPitch) &&
+        a.moonRollEnabled == b.moonRollEnabled &&
+        FloatNearlyEqual(a.moonRoll, b.moonRoll) &&
         a.fogEnabled == b.fogEnabled &&
         FloatNearlyEqual(a.fogPercent, b.fogPercent) &&
         a.nativeFogEnabled == b.nativeFogEnabled &&
         FloatNearlyEqual(a.nativeFog, b.nativeFog) &&
+        a.noFog == b.noFog &&
         FloatNearlyEqual(a.wind, b.wind) &&
         a.noWind == b.noWind &&
         a.puddleScaleEnabled == b.puddleScaleEnabled &&
@@ -158,7 +184,9 @@ bool PresetMaskAny(const WeatherPresetMask& mask) {
     return mask.forceClearSky || mask.rain || mask.dust || mask.snow || mask.time ||
         mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds ||
         mask.highClouds || mask.exp2C || mask.exp2D || mask.cloudVariation ||
-        mask.nightSkyRotation || mask.fog || mask.nativeFog || mask.wind ||
+        mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunYaw || mask.sunPitch ||
+        mask.moonSize || mask.moonYaw || mask.moonPitch || mask.moonRoll ||
+        mask.fog || mask.nativeFog || mask.noFog || mask.wind ||
         mask.noWind || mask.puddleScale;
 }
 
@@ -178,8 +206,17 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.exp2D = mask.exp2D;
     out.cloudVariation = mask.cloudVariation;
     out.nightSkyRotation = mask.nightSkyRotation;
+    out.nightSkyYaw = mask.nightSkyYaw;
+    out.sunSize = mask.sunSize;
+    out.sunYaw = mask.sunYaw;
+    out.sunPitch = mask.sunPitch;
+    out.moonSize = mask.moonSize;
+    out.moonYaw = mask.moonYaw;
+    out.moonPitch = mask.moonPitch;
+    out.moonRoll = mask.moonRoll;
     out.fog = mask.fog;
     out.nativeFog = mask.nativeFog;
+    out.noFog = mask.noFog;
     out.wind = mask.wind;
     out.noWind = mask.noWind;
     out.puddleScale = mask.puddleScale;
@@ -202,8 +239,17 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.exp2D = source.exp2D;
     mask.cloudVariation = source.cloudVariation;
     mask.nightSkyRotation = source.nightSkyRotation;
+    mask.nightSkyYaw = source.nightSkyYaw;
+    mask.sunSize = source.sunSize;
+    mask.sunYaw = source.sunYaw;
+    mask.sunPitch = source.sunPitch;
+    mask.moonSize = source.moonSize;
+    mask.moonYaw = source.moonYaw;
+    mask.moonPitch = source.moonPitch;
+    mask.moonRoll = source.moonRoll;
     mask.fog = source.fog;
     mask.nativeFog = source.nativeFog;
+    mask.noFog = source.noFog;
     mask.wind = source.wind;
     mask.noWind = source.noWind;
     mask.puddleScale = source.puddleScale;
@@ -225,8 +271,17 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.exp2D == b.exp2D &&
         a.cloudVariation == b.cloudVariation &&
         a.nightSkyRotation == b.nightSkyRotation &&
+        a.nightSkyYaw == b.nightSkyYaw &&
+        a.sunSize == b.sunSize &&
+        a.sunYaw == b.sunYaw &&
+        a.sunPitch == b.sunPitch &&
+        a.moonSize == b.moonSize &&
+        a.moonYaw == b.moonYaw &&
+        a.moonPitch == b.moonPitch &&
+        a.moonRoll == b.moonRoll &&
         a.fog == b.fog &&
         a.nativeFog == b.nativeFog &&
+        a.noFog == b.noFog &&
         a.wind == b.wind &&
         a.noWind == b.noWind &&
         a.puddleScale == b.puddleScale;
@@ -248,8 +303,17 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.exp2D = true;
     mask.cloudVariation = true;
     mask.nightSkyRotation = true;
+    mask.nightSkyYaw = true;
+    mask.sunSize = true;
+    mask.sunYaw = true;
+    mask.sunPitch = true;
+    mask.moonSize = true;
+    mask.moonYaw = true;
+    mask.moonPitch = true;
+    mask.moonRoll = true;
     mask.fog = true;
     mask.nativeFog = true;
+    mask.noFog = true;
     mask.wind = true;
     mask.noWind = true;
     mask.puddleScale = true;
@@ -272,8 +336,17 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.exp2D = base.exp2DEnabled != value.exp2DEnabled || !FloatNearlyEqual(base.exp2D, value.exp2D);
     mask.cloudVariation = base.cloudVariationEnabled != value.cloudVariationEnabled || !FloatNearlyEqual(base.cloudVariation, value.cloudVariation);
     mask.nightSkyRotation = base.nightSkyRotationEnabled != value.nightSkyRotationEnabled || !FloatNearlyEqual(base.nightSkyRotation, value.nightSkyRotation);
+    mask.nightSkyYaw = base.nightSkyYawEnabled != value.nightSkyYawEnabled || !FloatNearlyEqual(base.nightSkyYaw, value.nightSkyYaw);
+    mask.sunSize = base.sunSizeEnabled != value.sunSizeEnabled || !FloatNearlyEqual(base.sunSize, value.sunSize);
+    mask.sunYaw = base.sunYawEnabled != value.sunYawEnabled || !FloatNearlyEqual(base.sunYaw, value.sunYaw);
+    mask.sunPitch = base.sunPitchEnabled != value.sunPitchEnabled || !FloatNearlyEqual(base.sunPitch, value.sunPitch);
+    mask.moonSize = base.moonSizeEnabled != value.moonSizeEnabled || !FloatNearlyEqual(base.moonSize, value.moonSize);
+    mask.moonYaw = base.moonYawEnabled != value.moonYawEnabled || !FloatNearlyEqual(base.moonYaw, value.moonYaw);
+    mask.moonPitch = base.moonPitchEnabled != value.moonPitchEnabled || !FloatNearlyEqual(base.moonPitch, value.moonPitch);
+    mask.moonRoll = base.moonRollEnabled != value.moonRollEnabled || !FloatNearlyEqual(base.moonRoll, value.moonRoll);
     mask.fog = base.fogEnabled != value.fogEnabled || !FloatNearlyEqual(base.fogPercent, value.fogPercent);
     mask.nativeFog = base.nativeFogEnabled != value.nativeFogEnabled || !FloatNearlyEqual(base.nativeFog, value.nativeFog);
+    mask.noFog = base.noFog != value.noFog;
     mask.wind = !FloatNearlyEqual(base.wind, value.wind);
     mask.noWind = base.noWind != value.noWind;
     mask.puddleScale = base.puddleScaleEnabled != value.puddleScaleEnabled || !FloatNearlyEqual(base.puddleScale, value.puddleScale);
@@ -325,6 +398,38 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
         target.nightSkyRotationEnabled = source.nightSkyRotationEnabled;
         target.nightSkyRotation = source.nightSkyRotation;
     }
+    if (mask.nightSkyYaw) {
+        target.nightSkyYawEnabled = source.nightSkyYawEnabled;
+        target.nightSkyYaw = source.nightSkyYaw;
+    }
+    if (mask.sunSize) {
+        target.sunSizeEnabled = source.sunSizeEnabled;
+        target.sunSize = source.sunSize;
+    }
+    if (mask.sunYaw) {
+        target.sunYawEnabled = source.sunYawEnabled;
+        target.sunYaw = source.sunYaw;
+    }
+    if (mask.sunPitch) {
+        target.sunPitchEnabled = source.sunPitchEnabled;
+        target.sunPitch = source.sunPitch;
+    }
+    if (mask.moonSize) {
+        target.moonSizeEnabled = source.moonSizeEnabled;
+        target.moonSize = source.moonSize;
+    }
+    if (mask.moonYaw) {
+        target.moonYawEnabled = source.moonYawEnabled;
+        target.moonYaw = source.moonYaw;
+    }
+    if (mask.moonPitch) {
+        target.moonPitchEnabled = source.moonPitchEnabled;
+        target.moonPitch = source.moonPitch;
+    }
+    if (mask.moonRoll) {
+        target.moonRollEnabled = source.moonRollEnabled;
+        target.moonRoll = source.moonRoll;
+    }
     if (mask.fog) {
         target.fogEnabled = source.fogEnabled;
         target.fogPercent = source.fogPercent;
@@ -333,6 +438,7 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
         target.nativeFogEnabled = source.nativeFogEnabled;
         target.nativeFog = source.nativeFog;
     }
+    if (mask.noFog) target.noFog = source.noFog;
     if (mask.wind) target.wind = source.wind;
     if (mask.noWind) target.noWind = source.noWind;
     if (mask.puddleScale) {
@@ -352,6 +458,17 @@ float LerpPresetHour(float a, float b, float t) {
     if (delta > 12.0f) delta -= 24.0f;
     if (delta < -12.0f) delta += 24.0f;
     return NormalizeHour24(na + delta * t);
+}
+
+float NormalizeSignedDegrees(float value) {
+    while (value > 180.0f) value -= 360.0f;
+    while (value < -180.0f) value += 360.0f;
+    return value;
+}
+
+float LerpPresetDegrees180(float a, float b, float t) {
+    float delta = NormalizeSignedDegrees(b - a);
+    return NormalizeSignedDegrees(a + delta * t);
 }
 
 bool ChoosePresetBool(bool a, bool b, float t) {
@@ -390,10 +507,27 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.cloudVariation = LerpPresetFloat(a.cloudVariation, b.cloudVariation, t);
     out.nightSkyRotationEnabled = a.nightSkyRotationEnabled || b.nightSkyRotationEnabled;
     out.nightSkyRotation = LerpPresetFloat(a.nightSkyRotation, b.nightSkyRotation, t);
+    out.nightSkyYawEnabled = a.nightSkyYawEnabled || b.nightSkyYawEnabled;
+    out.nightSkyYaw = LerpPresetDegrees180(a.nightSkyYaw, b.nightSkyYaw, t);
+    out.sunSizeEnabled = a.sunSizeEnabled || b.sunSizeEnabled;
+    out.sunSize = LerpPresetFloat(a.sunSize, b.sunSize, t);
+    out.sunYawEnabled = a.sunYawEnabled || b.sunYawEnabled;
+    out.sunYaw = LerpPresetDegrees180(a.sunYaw, b.sunYaw, t);
+    out.sunPitchEnabled = a.sunPitchEnabled || b.sunPitchEnabled;
+    out.sunPitch = LerpPresetFloat(a.sunPitch, b.sunPitch, t);
+    out.moonSizeEnabled = a.moonSizeEnabled || b.moonSizeEnabled;
+    out.moonSize = LerpPresetFloat(a.moonSize, b.moonSize, t);
+    out.moonYawEnabled = a.moonYawEnabled || b.moonYawEnabled;
+    out.moonYaw = LerpPresetDegrees180(a.moonYaw, b.moonYaw, t);
+    out.moonPitchEnabled = a.moonPitchEnabled || b.moonPitchEnabled;
+    out.moonPitch = LerpPresetFloat(a.moonPitch, b.moonPitch, t);
+    out.moonRollEnabled = a.moonRollEnabled || b.moonRollEnabled;
+    out.moonRoll = LerpPresetDegrees180(a.moonRoll, b.moonRoll, t);
     out.fogEnabled = a.fogEnabled || b.fogEnabled;
     out.fogPercent = LerpPresetFloat(a.fogPercent, b.fogPercent, t);
     out.nativeFogEnabled = a.nativeFogEnabled || b.nativeFogEnabled;
     out.nativeFog = LerpPresetFloat(a.nativeFog, b.nativeFog, t);
+    out.noFog = ChoosePresetBool(a.noFog, b.noFog, t);
     out.wind = LerpPresetFloat(a.wind, b.wind, t);
     out.noWind = ChoosePresetBool(a.noWind, b.noWind, t);
     out.puddleScaleEnabled = a.puddleScaleEnabled || b.puddleScaleEnabled;
@@ -473,9 +607,18 @@ std::string PresetMaskSummary(const WeatherPresetMask& mask) {
     AppendMaskField(out, mask.exp2C, "2C");
     AppendMaskField(out, mask.exp2D, "2D");
     AppendMaskField(out, mask.cloudVariation, "cloudVar");
-    AppendMaskField(out, mask.nightSkyRotation, "nightRot");
+    AppendMaskField(out, mask.nightSkyRotation, "nightTilt");
+    AppendMaskField(out, mask.nightSkyYaw, "nightPhase");
+    AppendMaskField(out, mask.sunSize, "sunSize");
+    AppendMaskField(out, mask.sunYaw, "sunYaw");
+    AppendMaskField(out, mask.sunPitch, "sunPitch");
+    AppendMaskField(out, mask.moonSize, "moonSize");
+    AppendMaskField(out, mask.moonYaw, "moonYaw");
+    AppendMaskField(out, mask.moonPitch, "moonPitch");
+    AppendMaskField(out, mask.moonRoll, "moonRoll");
     AppendMaskField(out, mask.fog, "fog");
     AppendMaskField(out, mask.nativeFog, "nativeFog");
+    AppendMaskField(out, mask.noFog, "noFog");
     AppendMaskField(out, mask.wind, "wind");
     AppendMaskField(out, mask.noWind, "noWind");
     AppendMaskField(out, mask.puddleScale, "puddle");
@@ -484,7 +627,7 @@ std::string PresetMaskSummary(const WeatherPresetMask& mask) {
 
 void LogPresetDataSummary(const char* tag, int regionId, const WeatherPresetData& data) {
     if (!kPresetVerboseTestLog) return;
-    Log("[preset-test] %s region=%s clear=%d rain=%.3f dust=%.3f snow=%.3f time=%d@%.2f wind=%.3f noWind=%d fog=%d/%.1f nativeFog=%d/%.2f cloudAmt=%d/%.2f cloudH=%d/%.2f cloudD=%d/%.2f puddle=%d/%.3f\n",
+    Log("[preset-test] %s region=%s clear=%d rain=%.3f dust=%.3f snow=%.3f time=%d@%.2f wind=%.3f noWind=%d fog=%d/%.1f nativeFog=%d/%.2f noFog=%d cloudAmt=%d/%.2f cloudH=%d/%.2f cloudD=%d/%.2f puddle=%d/%.3f\n",
         tag ? tag : "data",
         RegionDisplayName(regionId),
         data.forceClearSky ? 1 : 0,
@@ -499,6 +642,7 @@ void LogPresetDataSummary(const char* tag, int regionId, const WeatherPresetData
         data.fogPercent,
         data.nativeFogEnabled ? 1 : 0,
         data.nativeFog,
+        data.noFog ? 1 : 0,
         data.cloudAmountEnabled ? 1 : 0,
         data.cloudAmount,
         data.cloudHeightEnabled ? 1 : 0,
@@ -607,8 +751,8 @@ std::string g_rememberedPresetName;
 bool g_rememberedPresetLoaded = false;
 bool g_autoApplyRememberedTried = false;
 bool g_autoApplyRememberedArmed = false;
-float g_worldReadyStableSeconds = 0.0f;
-constexpr float kWorldReadyAutoApplyDelaySeconds = 1.0f;
+ULONGLONG g_worldReadyStableStartTick = 0;
+constexpr ULONGLONG kWorldReadyAutoApplyDelayMs = 1000;
 
 void LoadRememberedPresetNameOnce() {
     if (g_rememberedPresetLoaded) return;
@@ -769,6 +913,14 @@ struct PresetParseState {
     bool exp2DEnabledSeen = false;
     bool cloudVariationEnabledSeen = false;
     bool nightSkyRotationEnabledSeen = false;
+    bool nightSkyYawEnabledSeen = false;
+    bool sunSizeEnabledSeen = false;
+    bool sunYawEnabledSeen = false;
+    bool sunPitchEnabledSeen = false;
+    bool moonSizeEnabledSeen = false;
+    bool moonYawEnabledSeen = false;
+    bool moonPitchEnabledSeen = false;
+    bool moonRollEnabledSeen = false;
     bool fogEnabledSeen = false;
     bool nativeFogEnabledSeen = false;
     bool puddleScaleEnabledSeen = false;
@@ -796,10 +948,19 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "2DEnabled") || KeyEquals(key, "2D")) mask.exp2D = true;
     else if (KeyEquals(key, "CloudVariationEnabled") || KeyEquals(key, "CloudVariation") ||
              KeyEquals(key, "CloudThicknessEnabled") || KeyEquals(key, "CloudThickness")) mask.cloudVariation = true;
-    else if (KeyEquals(key, "NightSkyRotationEnabled") || KeyEquals(key, "NightSkyRotation")) mask.nightSkyRotation = true;
+    else if (KeyEquals(key, "NightSkyTiltEnabled") || KeyEquals(key, "NightSkyTilt")) mask.nightSkyRotation = true;
+    else if (KeyEquals(key, "NightSkyPhaseEnabled") || KeyEquals(key, "NightSkyPhase")) mask.nightSkyYaw = true;
+    else if (KeyEquals(key, "SunSizeEnabled") || KeyEquals(key, "SunSize")) mask.sunSize = true;
+    else if (KeyEquals(key, "SunYawEnabled") || KeyEquals(key, "SunYaw")) mask.sunYaw = true;
+    else if (KeyEquals(key, "SunPitchEnabled") || KeyEquals(key, "SunPitch")) mask.sunPitch = true;
+    else if (KeyEquals(key, "MoonSizeEnabled") || KeyEquals(key, "MoonSize")) mask.moonSize = true;
+    else if (KeyEquals(key, "MoonYawEnabled") || KeyEquals(key, "MoonYaw")) mask.moonYaw = true;
+    else if (KeyEquals(key, "MoonPitchEnabled") || KeyEquals(key, "MoonPitch")) mask.moonPitch = true;
+    else if (KeyEquals(key, "MoonRollEnabled") || KeyEquals(key, "MoonRoll")) mask.moonRoll = true;
     else if (KeyEquals(key, "FogEnabled") || KeyEquals(key, "Fog")) mask.fog = true;
     else if (KeyEquals(key, "NativeFogEnabled") || KeyEquals(key, "NativeFog") ||
              KeyEquals(key, "PlainFogEnabled") || KeyEquals(key, "PlainFog")) mask.nativeFog = true;
+    else if (KeyEquals(key, "NoFog")) mask.noFog = true;
     else if (KeyEquals(key, "Wind")) mask.wind = true;
     else if (KeyEquals(key, "NoWind")) mask.noWind = true;
     else if (KeyEquals(key, "PuddleScaleEnabled") || KeyEquals(key, "PuddleScale")) mask.puddleScale = true;
@@ -889,13 +1050,69 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
     } else if (KeyEquals(key, "CloudVariation") ||
                KeyEquals(key, "CloudThickness")) {
         if (TryParseFloat(value, floatValue)) data.cloudVariation = floatValue;
-    } else if (KeyEquals(key, "NightSkyRotationEnabled")) {
+    } else if (KeyEquals(key, "NightSkyTiltEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.nightSkyRotationEnabled = boolValue;
             state.nightSkyRotationEnabledSeen = true;
         }
-    } else if (KeyEquals(key, "NightSkyRotation")) {
+    } else if (KeyEquals(key, "NightSkyTilt")) {
         if (TryParseFloat(value, floatValue)) data.nightSkyRotation = floatValue;
+    } else if (KeyEquals(key, "NightSkyPhaseEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.nightSkyYawEnabled = boolValue;
+            state.nightSkyYawEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "NightSkyPhase")) {
+        if (TryParseFloat(value, floatValue)) data.nightSkyYaw = floatValue;
+    } else if (KeyEquals(key, "SunSizeEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.sunSizeEnabled = boolValue;
+            state.sunSizeEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "SunSize")) {
+        if (TryParseFloat(value, floatValue)) data.sunSize = floatValue;
+    } else if (KeyEquals(key, "SunYawEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.sunYawEnabled = boolValue;
+            state.sunYawEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "SunYaw")) {
+        if (TryParseFloat(value, floatValue)) data.sunYaw = floatValue;
+    } else if (KeyEquals(key, "SunPitchEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.sunPitchEnabled = boolValue;
+            state.sunPitchEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "SunPitch")) {
+        if (TryParseFloat(value, floatValue)) data.sunPitch = floatValue;
+    } else if (KeyEquals(key, "MoonSizeEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.moonSizeEnabled = boolValue;
+            state.moonSizeEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MoonSize")) {
+        if (TryParseFloat(value, floatValue)) data.moonSize = floatValue;
+    } else if (KeyEquals(key, "MoonYawEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.moonYawEnabled = boolValue;
+            state.moonYawEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MoonYaw")) {
+        if (TryParseFloat(value, floatValue)) data.moonYaw = floatValue;
+    } else if (KeyEquals(key, "MoonPitchEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.moonPitchEnabled = boolValue;
+            state.moonPitchEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MoonPitch")) {
+        if (TryParseFloat(value, floatValue)) data.moonPitch = floatValue;
+    } else if (KeyEquals(key, "MoonRollEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.moonRollEnabled = boolValue;
+            state.moonRollEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MoonRoll")) {
+        if (TryParseFloat(value, floatValue)) data.moonRoll = floatValue;
     } else if (KeyEquals(key, "FogEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.fogEnabled = boolValue;
@@ -910,6 +1127,8 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "NativeFog") || KeyEquals(key, "PlainFog")) {
         if (TryParseFloat(value, floatValue)) data.nativeFog = floatValue;
+    } else if (KeyEquals(key, "NoFog")) {
+        if (TryParseBool(value, boolValue)) data.noFog = boolValue;
     } else if (KeyEquals(key, "Wind")) {
         if (TryParseFloat(value, floatValue)) data.wind = floatValue;
     } else if (KeyEquals(key, "NoWind")) {
@@ -936,13 +1155,29 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     if (!state.exp2DEnabledSeen) data.exp2DEnabled = false;
     if (!state.cloudVariationEnabledSeen) data.cloudVariationEnabled = false;
     if (!state.nightSkyRotationEnabledSeen) data.nightSkyRotationEnabled = false;
+    if (!state.nightSkyYawEnabledSeen) data.nightSkyYawEnabled = false;
+    if (!state.sunSizeEnabledSeen) data.sunSizeEnabled = false;
+    if (!state.sunYawEnabledSeen) data.sunYawEnabled = false;
+    if (!state.sunPitchEnabledSeen) data.sunPitchEnabled = false;
+    if (!state.moonSizeEnabledSeen) data.moonSizeEnabled = false;
+    if (!state.moonYawEnabledSeen) data.moonYawEnabled = false;
+    if (!state.moonPitchEnabledSeen) data.moonPitchEnabled = false;
+    if (!state.moonRollEnabledSeen) data.moonRollEnabled = false;
     if (!state.fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
     if (!state.nativeFogEnabledSeen) data.nativeFogEnabled = !FloatNearlyEqual(data.nativeFog, 0.0f);
     if (!state.puddleScaleEnabledSeen) data.puddleScaleEnabled = !FloatNearlyEqual(data.puddleScale, 0.0f);
 
     data.exp2C = ClampPresetFloat(data.exp2C, 0.0f, 15.0f);
     data.exp2D = ClampPresetFloat(data.exp2D, 0.0f, 15.0f);
-    data.nightSkyRotation = ClampPresetFloat(data.nightSkyRotation, -15.0f, 15.0f);
+    data.nightSkyRotation = ClampPresetFloat(data.nightSkyRotation, -89.0f, 89.0f);
+    data.nightSkyYaw = ClampPresetFloat(data.nightSkyYaw, -180.0f, 180.0f);
+    data.sunSize = ClampPresetFloat(data.sunSize, 0.01f, 10.0f);
+    data.sunYaw = ClampPresetFloat(data.sunYaw, -180.0f, 180.0f);
+    data.sunPitch = ClampPresetFloat(data.sunPitch, -89.0f, 89.0f);
+    data.moonSize = ClampPresetFloat(data.moonSize, 0.020f, 20.0f);
+    data.moonYaw = ClampPresetFloat(data.moonYaw, -180.0f, 180.0f);
+    data.moonPitch = ClampPresetFloat(data.moonPitch, -89.0f, 89.0f);
+    data.moonRoll = ClampPresetFloat(data.moonRoll, -180.0f, 180.0f);
     data.nativeFog = ClampPresetFloat(data.nativeFog, 0.0f, 15.0f);
     data.cloudAmount = ClampPresetFloat(data.cloudAmount, 0.0f, 15.0f);
 
@@ -1039,10 +1274,29 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "2D", FormatPresetFloat(ClampPresetFloat(data.exp2D, 0.0f, 15.0f)));
     AppendPresetKeyValue(out, "CloudVariationEnabled", FormatPresetBool(data.cloudVariationEnabled));
     AppendPresetKeyValue(out, "CloudVariation", FormatPresetFloat(ClampPresetFloat(data.cloudVariation, 0.0f, 15.0f)));
-    AppendPresetKeyValue(out, "NightSkyRotationEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
-    AppendPresetKeyValue(out, "NightSkyRotation", FormatPresetFloat(ClampPresetFloat(data.nightSkyRotation, -15.0f, 15.0f)));
     AppendPresetKeyValue(out, "PuddleScaleEnabled", FormatPresetBool(data.puddleScaleEnabled));
     AppendPresetKeyValue(out, "PuddleScale", FormatPresetFloat(Clamp01(data.puddleScale)));
+    out += '\n';
+
+    AppendPresetLine(out, "[Celestial]");
+    AppendPresetKeyValue(out, "NightSkyTiltEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
+    AppendPresetKeyValue(out, "NightSkyTilt", FormatPresetFloat(ClampPresetFloat(data.nightSkyRotation, -89.0f, 89.0f)));
+    AppendPresetKeyValue(out, "NightSkyPhaseEnabled", FormatPresetBool(data.nightSkyYawEnabled));
+    AppendPresetKeyValue(out, "NightSkyPhase", FormatPresetFloat(ClampPresetFloat(data.nightSkyYaw, -180.0f, 180.0f)));
+    AppendPresetKeyValue(out, "SunSizeEnabled", FormatPresetBool(data.sunSizeEnabled));
+    AppendPresetKeyValue(out, "SunSize", FormatPresetFloat(ClampPresetFloat(data.sunSize, 0.01f, 10.0f)));
+    AppendPresetKeyValue(out, "SunYawEnabled", FormatPresetBool(data.sunYawEnabled));
+    AppendPresetKeyValue(out, "SunYaw", FormatPresetFloat(ClampPresetFloat(data.sunYaw, -180.0f, 180.0f)));
+    AppendPresetKeyValue(out, "SunPitchEnabled", FormatPresetBool(data.sunPitchEnabled));
+    AppendPresetKeyValue(out, "SunPitch", FormatPresetFloat(ClampPresetFloat(data.sunPitch, -89.0f, 89.0f)));
+    AppendPresetKeyValue(out, "MoonSizeEnabled", FormatPresetBool(data.moonSizeEnabled));
+    AppendPresetKeyValue(out, "MoonSize", FormatPresetFloat(ClampPresetFloat(data.moonSize, 0.020f, 20.0f)));
+    AppendPresetKeyValue(out, "MoonYawEnabled", FormatPresetBool(data.moonYawEnabled));
+    AppendPresetKeyValue(out, "MoonYaw", FormatPresetFloat(ClampPresetFloat(data.moonYaw, -180.0f, 180.0f)));
+    AppendPresetKeyValue(out, "MoonPitchEnabled", FormatPresetBool(data.moonPitchEnabled));
+    AppendPresetKeyValue(out, "MoonPitch", FormatPresetFloat(ClampPresetFloat(data.moonPitch, -89.0f, 89.0f)));
+    AppendPresetKeyValue(out, "MoonRollEnabled", FormatPresetBool(data.moonRollEnabled));
+    AppendPresetKeyValue(out, "MoonRoll", FormatPresetFloat(ClampPresetFloat(data.moonRoll, -180.0f, 180.0f)));
     out += '\n';
 
     AppendPresetLine(out, "[Atmosphere]");
@@ -1050,6 +1304,7 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "Fog", FormatPresetFloat(ClampPresetFloat(data.fogPercent, 0.0f, 100.0f)));
     AppendPresetKeyValue(out, "NativeFogEnabled", FormatPresetBool(data.nativeFogEnabled));
     AppendPresetKeyValue(out, "NativeFog", FormatPresetFloat(ClampPresetFloat(data.nativeFog, 0.0f, 15.0f)));
+    AppendPresetKeyValue(out, "NoFog", FormatPresetBool(data.noFog));
     AppendPresetKeyValue(out, "Wind", FormatPresetFloat(ClampPresetFloat(data.wind, 0.0f, 15.0f)));
     AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
 
@@ -1106,7 +1361,7 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         out += '\n';
     }
 
-    if (mask.exp2C || mask.exp2D || mask.cloudVariation || mask.nightSkyRotation || mask.puddleScale) {
+    if (mask.exp2C || mask.exp2D || mask.cloudVariation || mask.puddleScale) {
         AppendRegionSectionHeader(out, regionId, "Experiment");
         if (mask.exp2C) {
             AppendPresetKeyValue(out, "2CEnabled", FormatPresetBool(data.exp2CEnabled));
@@ -1120,10 +1375,6 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
             AppendPresetKeyValue(out, "CloudVariationEnabled", FormatPresetBool(data.cloudVariationEnabled));
             AppendPresetKeyValue(out, "CloudVariation", FormatPresetFloat(ClampPresetFloat(data.cloudVariation, 0.0f, 15.0f)));
         }
-        if (mask.nightSkyRotation) {
-            AppendPresetKeyValue(out, "NightSkyRotationEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
-            AppendPresetKeyValue(out, "NightSkyRotation", FormatPresetFloat(ClampPresetFloat(data.nightSkyRotation, -15.0f, 15.0f)));
-        }
         if (mask.puddleScale) {
             AppendPresetKeyValue(out, "PuddleScaleEnabled", FormatPresetBool(data.puddleScaleEnabled));
             AppendPresetKeyValue(out, "PuddleScale", FormatPresetFloat(Clamp01(data.puddleScale)));
@@ -1131,7 +1382,48 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         out += '\n';
     }
 
-    if (mask.fog || mask.nativeFog || mask.wind || mask.noWind) {
+    if (mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunYaw || mask.sunPitch || mask.moonSize || mask.moonYaw || mask.moonPitch || mask.moonRoll) {
+        AppendRegionSectionHeader(out, regionId, "Celestial");
+        if (mask.nightSkyRotation) {
+            AppendPresetKeyValue(out, "NightSkyTiltEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
+            AppendPresetKeyValue(out, "NightSkyTilt", FormatPresetFloat(ClampPresetFloat(data.nightSkyRotation, -89.0f, 89.0f)));
+        }
+        if (mask.nightSkyYaw) {
+            AppendPresetKeyValue(out, "NightSkyPhaseEnabled", FormatPresetBool(data.nightSkyYawEnabled));
+            AppendPresetKeyValue(out, "NightSkyPhase", FormatPresetFloat(ClampPresetFloat(data.nightSkyYaw, -180.0f, 180.0f)));
+        }
+        if (mask.sunSize) {
+            AppendPresetKeyValue(out, "SunSizeEnabled", FormatPresetBool(data.sunSizeEnabled));
+            AppendPresetKeyValue(out, "SunSize", FormatPresetFloat(ClampPresetFloat(data.sunSize, 0.01f, 10.0f)));
+        }
+        if (mask.sunYaw) {
+            AppendPresetKeyValue(out, "SunYawEnabled", FormatPresetBool(data.sunYawEnabled));
+            AppendPresetKeyValue(out, "SunYaw", FormatPresetFloat(ClampPresetFloat(data.sunYaw, -180.0f, 180.0f)));
+        }
+        if (mask.sunPitch) {
+            AppendPresetKeyValue(out, "SunPitchEnabled", FormatPresetBool(data.sunPitchEnabled));
+            AppendPresetKeyValue(out, "SunPitch", FormatPresetFloat(ClampPresetFloat(data.sunPitch, -89.0f, 89.0f)));
+        }
+        if (mask.moonSize) {
+            AppendPresetKeyValue(out, "MoonSizeEnabled", FormatPresetBool(data.moonSizeEnabled));
+            AppendPresetKeyValue(out, "MoonSize", FormatPresetFloat(ClampPresetFloat(data.moonSize, 0.020f, 20.0f)));
+        }
+        if (mask.moonYaw) {
+            AppendPresetKeyValue(out, "MoonYawEnabled", FormatPresetBool(data.moonYawEnabled));
+            AppendPresetKeyValue(out, "MoonYaw", FormatPresetFloat(ClampPresetFloat(data.moonYaw, -180.0f, 180.0f)));
+        }
+        if (mask.moonPitch) {
+            AppendPresetKeyValue(out, "MoonPitchEnabled", FormatPresetBool(data.moonPitchEnabled));
+            AppendPresetKeyValue(out, "MoonPitch", FormatPresetFloat(ClampPresetFloat(data.moonPitch, -89.0f, 89.0f)));
+        }
+        if (mask.moonRoll) {
+            AppendPresetKeyValue(out, "MoonRollEnabled", FormatPresetBool(data.moonRollEnabled));
+            AppendPresetKeyValue(out, "MoonRoll", FormatPresetFloat(ClampPresetFloat(data.moonRoll, -180.0f, 180.0f)));
+        }
+        out += '\n';
+    }
+
+    if (mask.fog || mask.nativeFog || mask.noFog || mask.wind || mask.noWind) {
         AppendRegionSectionHeader(out, regionId, "Atmosphere");
         if (mask.fog) {
             AppendPresetKeyValue(out, "FogEnabled", FormatPresetBool(data.fogEnabled));
@@ -1141,6 +1433,7 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
             AppendPresetKeyValue(out, "NativeFogEnabled", FormatPresetBool(data.nativeFogEnabled));
             AppendPresetKeyValue(out, "NativeFog", FormatPresetFloat(ClampPresetFloat(data.nativeFog, 0.0f, 15.0f)));
         }
+        if (mask.noFog) AppendPresetKeyValue(out, "NoFog", FormatPresetBool(data.noFog));
         if (mask.wind) AppendPresetKeyValue(out, "Wind", FormatPresetFloat(ClampPresetFloat(data.wind, 0.0f, 15.0f)));
         if (mask.noWind) AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
         out += '\n';
@@ -1200,7 +1493,26 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.cloudVariationEnabled = g_oCloudVariation.active.load();
     data.cloudVariation = OverrideValueIf(data.cloudVariationEnabled, g_oCloudVariation, 1.0f);
     data.nightSkyRotationEnabled = g_oExpNightSkyRot.active.load();
-    data.nightSkyRotation = OverrideValueIf(data.nightSkyRotationEnabled, g_oExpNightSkyRot, 1.0f);
+    data.nightSkyRotation = OverrideValueIf(data.nightSkyRotationEnabled, g_oExpNightSkyRot,
+        g_windPackBase0AValid.load() && g_windPackBase0BValid.load()
+            ? ClampPresetFloat(g_windPackBase0A.load() + 90.0f - g_windPackBase0B.load(), -89.0f, 89.0f)
+            : 0.0f);
+    data.nightSkyYawEnabled = g_oNightSkyYaw.active.load();
+    data.nightSkyYaw = OverrideValueIf(data.nightSkyYawEnabled, g_oNightSkyYaw, g_sceneBaseNightSkyYaw.load());
+    data.sunSizeEnabled = g_oSunSize.active.load();
+    data.sunSize = OverrideValueIf(data.sunSizeEnabled, g_oSunSize, g_atmoBaseSunSize.load());
+    data.sunYawEnabled = g_oSunDirX.active.load();
+    data.sunYaw = OverrideValueIf(data.sunYawEnabled, g_oSunDirX, g_sceneBaseSunYaw.load());
+    data.sunPitchEnabled = g_oSunDirY.active.load();
+    data.sunPitch = OverrideValueIf(data.sunPitchEnabled, g_oSunDirY, g_sceneBaseSunPitch.load());
+    data.moonSizeEnabled = g_oMoonSize.active.load();
+    data.moonSize = OverrideValueIf(data.moonSizeEnabled, g_oMoonSize, g_atmoBaseMoonSize.load());
+    data.moonYawEnabled = g_oMoonDirX.active.load();
+    data.moonYaw = OverrideValueIf(data.moonYawEnabled, g_oMoonDirX, g_sceneBaseMoonYaw.load());
+    data.moonPitchEnabled = g_oMoonDirY.active.load();
+    data.moonPitch = OverrideValueIf(data.moonPitchEnabled, g_oMoonDirY, g_sceneBaseMoonPitch.load());
+    data.moonRollEnabled = g_oMoonRoll.active.load();
+    data.moonRoll = OverrideValueIf(data.moonRollEnabled, g_oMoonRoll, 0.0f);
     data.fogEnabled = g_oFog.active.load();
     if (data.fogEnabled) {
         const float fogN = sqrtf(min(1.0f, max(0.0f, g_oFog.value.load() / 100.0f)));
@@ -1210,6 +1522,7 @@ WeatherPresetData CaptureCurrentPresetData() {
     }
     data.nativeFogEnabled = g_oNativeFog.active.load();
     data.nativeFog = data.nativeFogEnabled ? ClampPresetFloat(g_oNativeFog.value.load(), 0.0f, 15.0f) : 0.0f;
+    data.noFog = g_noFog.load();
     data.wind = ClampPresetFloat(g_windMul.load(), 0.0f, 15.0f);
     data.noWind = g_noWind.load();
     data.puddleScaleEnabled = g_oCloudThk.active.load();
@@ -1246,7 +1559,15 @@ void ApplyPresetData(const WeatherPresetData& data) {
     ApplyEnabledOverride(g_oExpCloud2C, data.exp2CEnabled, data.exp2C, 0.0f, 15.0f);
     ApplyEnabledOverride(g_oExpCloud2D, data.exp2DEnabled, data.exp2D, 0.0f, 15.0f);
     ApplyEnabledOverride(g_oCloudVariation, data.cloudVariationEnabled, data.cloudVariation, 0.0f, 15.0f);
-    ApplyEnabledOverride(g_oExpNightSkyRot, data.nightSkyRotationEnabled, data.nightSkyRotation, -15.0f, 15.0f);
+    ApplyEnabledOverride(g_oExpNightSkyRot, data.nightSkyRotationEnabled, data.nightSkyRotation, -89.0f, 89.0f);
+    ApplyEnabledOverride(g_oNightSkyYaw, data.nightSkyYawEnabled, data.nightSkyYaw, -180.0f, 180.0f);
+    ApplyEnabledOverride(g_oSunSize, data.sunSizeEnabled, data.sunSize, 0.01f, 10.0f);
+    ApplyEnabledOverride(g_oSunDirX, data.sunYawEnabled, data.sunYaw, -180.0f, 180.0f);
+    ApplyEnabledOverride(g_oSunDirY, data.sunPitchEnabled, data.sunPitch, -89.0f, 89.0f);
+    ApplyEnabledOverride(g_oMoonSize, data.moonSizeEnabled, data.moonSize, 0.020f, 20.0f);
+    ApplyEnabledOverride(g_oMoonDirX, data.moonYawEnabled, data.moonYaw, -180.0f, 180.0f);
+    ApplyEnabledOverride(g_oMoonDirY, data.moonPitchEnabled, data.moonPitch, -89.0f, 89.0f);
+    ApplyEnabledOverride(g_oMoonRoll, data.moonRollEnabled, data.moonRoll, -180.0f, 180.0f);
 
     const float fogPct = ClampPresetFloat(data.fogPercent, 0.0f, 100.0f);
     if (data.fogEnabled) {
@@ -1259,6 +1580,7 @@ void ApplyPresetData(const WeatherPresetData& data) {
     if (data.nativeFogEnabled && nativeFog > 0.0001f) g_oNativeFog.set(nativeFog);
     else g_oNativeFog.clear();
 
+    g_noFog.store(data.noFog);
     const float wind = ClampPresetFloat(data.wind, 0.0f, 15.0f);
     g_windMul.store(wind);
     g_noWind.store(data.noWind);
@@ -1277,6 +1599,8 @@ bool LoadPresetPackageInternal(const char* path, WeatherPresetPackage& outPackag
     int currentRegion = kPresetRegionGlobal;
     char line[256] = {};
     bool headerSeen = false;
+    bool formatVersionSeen = false;
+    int loadedFormatVersion = 0;
     while (fgets(line, static_cast<int>(sizeof(line)), fp)) {
         std::string text = TrimCopy(line);
         StripUtf8Bom(text);
@@ -1311,6 +1635,11 @@ bool LoadPresetPackageInternal(const char* path, WeatherPresetPackage& outPackag
 
         const std::string key = TrimCopy(text.substr(0, eq));
         const std::string value = TrimCopy(text.substr(eq + 1));
+        if (currentRegion == kPresetRegionGlobal && KeyEquals(key, "FormatVersion")) {
+            formatVersionSeen = true;
+            loadedFormatVersion = atoi(value.c_str());
+            continue;
+        }
         if (currentRegion > kPresetRegionGlobal && KeyEquals(key, "Enabled")) {
             bool enabled = true;
             if (TryParseBool(value, enabled)) {
@@ -1328,6 +1657,13 @@ bool LoadPresetPackageInternal(const char* path, WeatherPresetPackage& outPackag
 
     fclose(fp);
     if (!headerSeen) return false;
+    if (!formatVersionSeen) {
+        Log("[preset] %s has no FormatVersion; loading as legacy format\n", path);
+    } else if (loadedFormatVersion > 0 && loadedFormatVersion < kPresetFormatVersion) {
+        Log("[preset] %s format %d loaded by current format %d\n", path, loadedFormatVersion, kPresetFormatVersion);
+    } else if (loadedFormatVersion > kPresetFormatVersion) {
+        Log("[W] %s format %d is newer than current format %d\n", path, loadedFormatVersion, kPresetFormatVersion);
+    }
     WeatherPresetPackage package{};
     NormalizeLoadedPreset(globalState, path);
     package.global = globalState.data;
@@ -1711,7 +2047,7 @@ void Preset_TryAutoApplyRemembered() {
     if (g_autoApplyRememberedTried) return;
     g_autoApplyRememberedTried = true;
     g_autoApplyRememberedArmed = false;
-    g_worldReadyStableSeconds = 0.0f;
+    g_worldReadyStableStartTick = 0;
 
     Preset_EnsureInitialized();
     if (g_rememberedPresetName.empty()) {
@@ -1740,7 +2076,7 @@ void Preset_TryAutoApplyRemembered() {
 void Preset_ArmAutoApplyRemembered() {
     LoadRememberedPresetNameOnce();
     g_autoApplyRememberedTried = false;
-    g_worldReadyStableSeconds = 0.0f;
+    g_worldReadyStableStartTick = 0;
     g_autoApplyRememberedArmed = !g_rememberedPresetName.empty();
     if (g_autoApplyRememberedArmed) {
         Log("[preset] pending auto-apply: %s\n", g_rememberedPresetName.c_str());
@@ -1822,15 +2158,21 @@ void Preset_OnWorldTick(bool worldReady, float dt) {
     if (!g_autoApplyRememberedArmed || g_autoApplyRememberedTried) return;
 
     if (!worldReady) {
-        g_worldReadyStableSeconds = 0.0f;
+        g_worldReadyStableStartTick = 0;
         return;
     }
 
-    if (!(dt > 0.0f) || dt > 0.5f) return;
+    (void)dt;
 
-    g_worldReadyStableSeconds += dt;
-    if (g_worldReadyStableSeconds < kWorldReadyAutoApplyDelaySeconds) return;
+    const ULONGLONG now = GetTickCount64();
+    if (g_worldReadyStableStartTick == 0) {
+        g_worldReadyStableStartTick = now;
+        return;
+    }
 
-    Log("[preset] world ready after %.2fs; applying remembered preset\n", g_worldReadyStableSeconds);
+    const ULONGLONG elapsedMs = now - g_worldReadyStableStartTick;
+    if (elapsedMs < kWorldReadyAutoApplyDelayMs) return;
+
+    Log("[preset] world ready after %.2fs; applying remembered preset\n", elapsedMs / 1000.0);
     Preset_TryAutoApplyRemembered();
 }

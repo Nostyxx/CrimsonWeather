@@ -179,14 +179,12 @@ const char* AobTargetLabel(AobTargetId id) {
         return "SetIntensity";
     case AobTargetId::WindPack:
         return "WindPack";
-    case AobTargetId::PostProcessLayerUpdate:
-        return "PostProcessLayerUpdate";
-    case AobTargetId::GetLayerMeta:
-        return "GetLayerMeta";
     case AobTargetId::WeatherFrameUpdate:
         return "WeatherFrameUpdate";
     case AobTargetId::AtmosFogBlend:
         return "AtmosFogBlend";
+    case AobTargetId::SceneFrameUpdate:
+        return "SceneFrameUpdate";
     case AobTargetId::EnvManagerPtr:
         return "EnvManagerPtr";
     case AobTargetId::NullSentinel:
@@ -346,10 +344,6 @@ bool RuntimeStartupHealthy(char* outReason, size_t outReasonSize) {
     return true;
 }
 
-float ClampUiScale(float v) {
-    return min(kUiScaleMax, max(kUiScaleMin, v));
-}
-
 void BuildIniPath(char* outPath, size_t outSize) {
     if (!outPath || outSize == 0) {
         return;
@@ -447,15 +441,11 @@ void LoadConfig(const char* dir) {
     g_cfg.effectToggleVK = KeyNameToVK(buf);
     GetPrivateProfileStringA("Hotkeys", "ControllerToggleEffect", "dpad_down+a", buf, sizeof(buf), path);
     g_cfg.controllerEffectToggleMask = ParseControllerCombo(buf, static_cast<WORD>(0x0002 | 0x4000));
-    g_cfg.uiScale = 1.0f;
     g_cfg.reshadeDiagnostics = false;
 #if defined(CW_WIND_ONLY)
     GetPrivateProfileStringA("Wind", "Multiplier", "1.0000", buf, sizeof(buf), path);
     g_windMul.store(min(15.0f, max(0.0f, static_cast<float>(atof(buf)))));
 #endif
-}
-
-void SaveConfigUIScale() {
 }
 
 void SaveWindOnlyConfig() {
@@ -507,6 +497,7 @@ void ResetAllSliders() {
     g_oExpCloud2D.clear();
     g_oCloudVariation.clear();
     g_oExpNightSkyRot.clear();
+    g_oNightSkyYaw.clear();
     g_oCloudThk.clear();
     g_oNativeFog.clear();
     g_oWind.clear();
@@ -515,7 +506,11 @@ void ResetAllSliders() {
     g_oSunDirY.clear();
     g_oMoonDirX.clear();
     g_oMoonDirY.clear();
+    g_oMoonRoll.clear();
+    g_oSunSize.clear();
+    g_oMoonSize.clear();
     g_noWind.store(false);
+    g_noFog.store(false);
     g_windMul.store(1.0f);
     g_timeCtrlActive.store(false);
     g_timeFreeze.store(false);
@@ -533,6 +528,10 @@ void ResetAllSliders() {
     g_windPackBase2C.store(0.0f);
     g_windPackBase2DValid.store(false);
     g_windPackBase2D.store(0.0f);
+    g_windPackBase0AValid.store(false);
+    g_windPackBase0A.store(0.0f);
+    g_windPackBase0BValid.store(false);
+    g_windPackBase0B.store(0.0f);
     g_windPackBase11Valid.store(false);
     g_windPackBase11.store(0.0f);
     g_windPackBase17Valid.store(false);
@@ -550,11 +549,13 @@ bool AnySliderActive() {
            g_oCloudAmount.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oExpCloud2C.active.load() || g_oExpCloud2D.active.load() ||
-           g_oCloudVariation.active.load() || g_oExpNightSkyRot.active.load() ||
+           g_oCloudVariation.active.load() || g_oExpNightSkyRot.active.load() || g_oNightSkyYaw.active.load() ||
            g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
+           g_noFog.load() ||
            fabsf(g_windMul.load() - 1.0f) > 0.001f ||
            g_oSunDirX.active.load() || g_oSunDirY.active.load() ||
-           g_oMoonDirX.active.load() || g_oMoonDirY.active.load();
+           g_oMoonDirX.active.load() || g_oMoonDirY.active.load() || g_oMoonRoll.active.load() ||
+           g_oSunSize.active.load() || g_oMoonSize.active.load();
 }
 
 bool AnyCustomWeatherSliderActive() {
@@ -730,11 +731,12 @@ float Clamp01(float v) {
 }
 
 float NormalizeHour24(float h) {
-    while (h < 0.0f) {
-        h += 24.0f;
+    if (!std::isfinite(h)) {
+        return 0.0f;
     }
-    while (h >= 24.0f) {
-        h -= 24.0f;
+    h = fmodf(h, 24.0f);
+    if (h < 0.0f) {
+        h += 24.0f;
     }
     return h;
 }

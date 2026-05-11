@@ -26,13 +26,42 @@ static constexpr bool kEnableWindPackHook = true;
 static constexpr bool kEnableFrameHooks = true;
 #endif
 
-static bool ParsePattern(const char*pat,uint8_t*bytes,uint8_t*mask,size_t&len){
-    len=0;const char*p=pat;
-    while(*p){while(*p==' ')p++;if(!*p)break;
-        if(p[0]=='?'&&p[1]=='?'){bytes[len]=0;mask[len]=0;len++;p+=2;}
-        else{auto h=[](char c)->uint8_t{return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:c-'A'+10;};
-            bytes[len]=(h(p[0])<<4)|h(p[1]);mask[len]=0xFF;len++;p+=2;}}
-    return len>0;}
+static int HexNibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool ParsePattern(const char* pattern, uint8_t* bytes, uint8_t* mask, size_t& len) {
+    len = 0;
+    if (!pattern || !bytes || !mask) return false;
+
+    const char* p = pattern;
+    while (*p) {
+        while (*p == ' ') ++p;
+        if (!*p) break;
+
+        if (p[0] == '?' && p[1] == '?') {
+            bytes[len] = 0;
+            mask[len] = 0;
+            ++len;
+            p += 2;
+            continue;
+        }
+
+        const int hi = HexNibble(p[0]);
+        const int lo = HexNibble(p[1]);
+        if (hi < 0 || lo < 0) return false;
+
+        bytes[len] = static_cast<uint8_t>((hi << 4) | lo);
+        mask[len] = 0xFF;
+        ++len;
+        p += 2;
+    }
+
+    return len > 0;
+}
 
 static uintptr_t ScanModule(const char*pat){
     uint8_t bytes[256],mask[256];size_t len=0;
@@ -113,6 +142,25 @@ static bool LooksLikeWindPack(uintptr_t f) {
         0x18, 0x4C, 0x0F, 0x44, 0xC1
     };
     return memcmp(wb, newShape, sizeof(newShape)) == 0;
+}
+
+static bool LooksLikeSceneFrameUpdate(uintptr_t f) {
+    if (!f) return false;
+    __try {
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(f);
+        const uint8_t sceneMemcpy[] = {
+            0x48, 0x8B, 0x8B, 0x30, 0x04, 0x00, 0x00,
+            0x41, 0xB8, 0xC0, 0x0A, 0x00, 0x00,
+            0x48, 0x8B, 0x93, 0x28, 0x04, 0x00, 0x00,
+            0x48, 0x8B, 0x49, 0x60, 0xE8
+        };
+        for (size_t i = 0; i + sizeof(sceneMemcpy) <= 0x280; ++i) {
+            if (memcmp(p + i, sceneMemcpy, sizeof(sceneMemcpy)) == 0) return true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return false;
 }
 
 static bool ReadBytesSafe(uintptr_t addr, uint8_t* out, size_t n){
@@ -305,9 +353,7 @@ static void RecomputeRuntimeHealthSummary() {
     SetRuntimeGroupHealth(RuntimeHealthGroup::Infra,
         AggregateTargetHealth({
             AobTargetId::NativeToast,
-            AobTargetId::MinimapRegionLabels,
-            AobTargetId::PostProcessLayerUpdate,
-            AobTargetId::GetLayerMeta
+            AobTargetId::MinimapRegionLabels
         }, note), note);
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::ForceClear,
@@ -389,8 +435,10 @@ static void RecomputeRuntimeHealthSummary() {
         }, note), note);
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::CelestialControls,
-        RuntimeHealthState::Disabled,
-        "Disabled");
+        AggregateTargetHealth({
+            AobTargetId::WindPack,
+            AobTargetId::SceneFrameUpdate
+        }, note), note);
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::NativeToast,
         AggregateTargetHealth({
@@ -1067,6 +1115,36 @@ bool RunAOBScan(){
     } else {
         Log("[W] WindPack not found (cloud speed pack override limited)\n");
     }
+    uintptr_t addrSceneFrameUpdate = 0;
+    if (addrWindPack) {
+        uintptr_t windPackXrefs[8] = {};
+        size_t nWindPackXrefs = FindCallsitesTo(addrWindPack, windPackXrefs, 8);
+        for (size_t i = 0; i < nWindPackXrefs && !addrSceneFrameUpdate; ++i) {
+            uintptr_t atmosphereFrame = FindFunctionStartViaUnwind(windPackXrefs[i]);
+            if (!atmosphereFrame) continue;
+
+            uintptr_t frameXrefs[32] = {};
+            size_t nFrameXrefs = FindCallsitesTo(atmosphereFrame, frameXrefs, 32);
+            for (size_t j = 0; j < nFrameXrefs && !addrSceneFrameUpdate; ++j) {
+                uintptr_t candidate = FindFunctionStartViaUnwind(frameXrefs[j]);
+                if (!candidate || candidate == atmosphereFrame) continue;
+                if (!FindDirectCallToTargetInRange(candidate, 0x280, atmosphereFrame, nullptr)) continue;
+                if (LooksLikeSceneFrameUpdate(candidate)) {
+                    addrSceneFrameUpdate = candidate;
+                }
+            }
+        }
+    }
+    if (!addrSceneFrameUpdate) {
+        addrSceneFrameUpdate = ScanModule(
+            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 70 B8 01 00 00 00 48 8B FA 2B 81 EC 02 00 00 48 8B D9"
+        );
+    }
+    if (addrSceneFrameUpdate) {
+        Log("[AOB] SceneFrameUpdate = %p\n", (void*)addrSceneFrameUpdate);
+    } else {
+        Log("[W] SceneFrameUpdate not found (celestial direction override unavailable)\n");
+    }
     uintptr_t addrPPLayerUpdate = ScanModule(
         "48 8B C4 48 89 58 10 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ??"
     );
@@ -1078,21 +1156,7 @@ bool RunAOBScan(){
     if (addrPPLayerUpdate) {
         Log("[AOB] PostProcessLayerUpdate = %p\n", (void*)addrPPLayerUpdate);
     } else {
-        Log("[W] PostProcessLayerUpdate not found (diag hook disabled)\n");
-    }
-    uintptr_t addrGetLayerMeta = 0;
-    if (addrPPLayerUpdate && *reinterpret_cast<uint8_t*>(addrPPLayerUpdate + 0xB3) == 0xE8) {
-        addrGetLayerMeta = ReadCall(addrPPLayerUpdate + 0xB3);
-    }
-    if (!addrGetLayerMeta) {
-        addrGetLayerMeta = ScanModule(
-            "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 83 EC 40 0F B7 39 48 8B 1D ?? ?? ?? ??"
-        );
-    }
-    if (addrGetLayerMeta) {
-        Log("[AOB] GetLayerMeta = %p\n", (void*)addrGetLayerMeta);
-    } else {
-        Log("[W] GetLayerMeta not found (entry channel logs limited)\n");
+        Log("[W] PostProcessLayerUpdate not found (fog xref resolver disabled)\n");
     }
     uintptr_t addrWeatherFrameUpdate = 0;
     uintptr_t addrAtmosFogBlend = 0;
@@ -1276,12 +1340,11 @@ bool RunAOBScan(){
     if (addrMinimapRegionLabels) {
         Log("[AOB] MinimapRegionLabels = %p\n", (void*)addrMinimapRegionLabels);
     } else {
-        Log("[W] MinimapRegionLabels not found (game HUD region ID probe disabled)\n");
+        Log("[W] MinimapRegionLabels not found (game HUD region ID resolver disabled)\n");
     }
 
     g_pActivateEffect = reinterpret_cast<ActivateEffect_fn>(addrActivate);
     g_pSetIntensity   = reinterpret_cast<SetIntensity_fn>  (addrSetIntensity);
-    g_pGetLayerMeta   = reinterpret_cast<GetLayerMeta_fn>  (addrGetLayerMeta);
 
     if (kEnableWeatherTickHook) {
         InstallHook((void*)tick,(void*)&Hooked_WeatherTick,
@@ -1316,6 +1379,9 @@ bool RunAOBScan(){
         if(kEnableWindPackHook && addrWindPack)
             InstallHook((void*)addrWindPack,(void*)&Hooked_WindPack,
                         (void**)&g_pOrigWindPack,"WindPack",false);
+        if(kEnableFrameHooks && addrSceneFrameUpdate)
+            InstallHook((void*)addrSceneFrameUpdate,(void*)&Hooked_SceneFrameUpdate,
+                        (void**)&g_pOrigSceneFrameUpdate,"SceneFrameUpdate",false);
     }
     if (kEnableGameplayHooks || kEnableFrameHooks) {
         if(addrWeatherFrameUpdate)
@@ -1402,16 +1468,14 @@ bool RunAOBScan(){
         !windPackInstalled ? "unresolved or hook failed"
             : "hook installed");
 
-    SetAobTargetHealth(AobTargetId::PostProcessLayerUpdate,
-        RuntimeHealthState::Disabled,
-        addrPPLayerUpdate,
-        "diagnostic hook removed");
-
-    SetAobTargetHealth(AobTargetId::GetLayerMeta,
-        addrGetLayerMeta
-            ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
-        addrGetLayerMeta,
-        addrGetLayerMeta ? "optional diagnostic resolver ready" : "optional diagnostic resolver unavailable");
+    const bool sceneFrameInstalled = addrSceneFrameUpdate && g_pOrigSceneFrameUpdate;
+    SetAobTargetHealth(AobTargetId::SceneFrameUpdate,
+        sceneFrameInstalled
+            ? RuntimeHealthState::Ready
+            : RuntimeHealthState::Disabled,
+        addrSceneFrameUpdate,
+        !sceneFrameInstalled ? "scene constant buffer hook unavailable"
+            : "hook installed");
 
     const bool weatherFrameInstalled = addrWeatherFrameUpdate && g_pOrigWeatherFrameUpdate;
     SetAobTargetHealth(AobTargetId::WeatherFrameUpdate,

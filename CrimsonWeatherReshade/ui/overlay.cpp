@@ -129,9 +129,6 @@ bool TryParseClockText(const char* text, int* outMinuteOfDay) {
 
 } // namespace
 
-void ApplyUiScale(float scale) {
-}
-
 namespace {
 
 void DrawFeatureUnavailable(RuntimeFeatureId feature) {
@@ -637,15 +634,6 @@ void DrawStatusRowBlocked(
     DrawStatusRowText(snapshot, name, "BLOCKED", regionOverride, tooltip);
 }
 
-void DrawStatusRowForcedZero(
-    const WeatherPresetStatusSnapshot& snapshot,
-    const char* name,
-    const char* value,
-    bool regionOverride,
-    const char* tooltip) {
-    DrawStatusRowText(snapshot, name, value, regionOverride, tooltip);
-}
-
 void DrawStatusRowEnabledFloat(
     const WeatherPresetStatusSnapshot& snapshot,
     const char* name,
@@ -711,31 +699,59 @@ void DrawStatusTab() {
         DrawStatusRowActiveFloat(snapshot, "Time Hour", snapshot.effective.visualTimeOverride, NormalizeHour24(snapshot.effective.timeHour), "%.2f", snapshot.regionSource.time, "Crimson Weather currently forces time to %s.");
 
         if (snapshot.effective.forceClearSky) {
-            DrawStatusRowForcedZero(snapshot, "Cloud Amount", "x0.00", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so Crimson Weather forces cloud amount to zero.");
+            DrawStatusRowBlocked(snapshot, "Cloud Amount", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud amount overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "Cloud Height", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud height overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "Cloud Density", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud density overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "Mid Clouds", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so mid-cloud overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "High Clouds", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so high-cloud overrides are not applied.");
         } else {
             DrawStatusRowEnabledFloat(snapshot, "Cloud Amount", snapshot.effective.cloudAmountEnabled, snapshot.effective.cloudAmount, "x%.2f", snapshot.regionSource.cloudAmount, "Crimson Weather currently multiplies cloud amount by %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Cloud Height", snapshot.effective.cloudHeightEnabled, snapshot.effective.cloudHeight, "x%.2f", snapshot.regionSource.cloudHeight, "Crimson Weather currently multiplies cloud height by %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Cloud Density", snapshot.effective.cloudDensityEnabled, snapshot.effective.cloudDensity, "x%.2f", snapshot.regionSource.cloudDensity, "Crimson Weather currently multiplies cloud density by %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Mid Clouds", snapshot.effective.midCloudsEnabled, snapshot.effective.midClouds, "x%.2f", snapshot.regionSource.midClouds, "Crimson Weather currently multiplies mid clouds by %s.");
+            DrawStatusRowEnabledFloat(snapshot, "High Clouds", snapshot.effective.highCloudsEnabled, snapshot.effective.highClouds, "x%.2f", snapshot.regionSource.highClouds, "Crimson Weather currently multiplies high clouds by %s.");
         }
-        DrawStatusRowEnabledFloat(snapshot, "Cloud Height", snapshot.effective.cloudHeightEnabled, snapshot.effective.cloudHeight, "x%.2f", snapshot.regionSource.cloudHeight, "Crimson Weather currently multiplies cloud height by %s.");
-        DrawStatusRowEnabledFloat(snapshot, "Cloud Density", snapshot.effective.cloudDensityEnabled, snapshot.effective.cloudDensity, "x%.2f", snapshot.regionSource.cloudDensity, "Crimson Weather currently multiplies cloud density by %s.");
-        DrawStatusRowEnabledFloat(snapshot, "Mid Clouds", snapshot.effective.midCloudsEnabled, snapshot.effective.midClouds, "x%.2f", snapshot.regionSource.midClouds, "Crimson Weather currently multiplies mid clouds by %s.");
-        DrawStatusRowEnabledFloat(snapshot, "High Clouds", snapshot.effective.highCloudsEnabled, snapshot.effective.highClouds, "x%.2f", snapshot.regionSource.highClouds, "Crimson Weather currently multiplies high clouds by %s.");
-
-        DrawStatusRowEnabledFloat(snapshot, "2C", snapshot.effective.exp2CEnabled, snapshot.effective.exp2C, "x%.2f", snapshot.regionSource.exp2C, "Crimson Weather currently multiplies 2C by %s.");
-        DrawStatusRowEnabledFloat(snapshot, "2D", snapshot.effective.exp2DEnabled, snapshot.effective.exp2D, "x%.2f", snapshot.regionSource.exp2D, "Crimson Weather currently multiplies 2D by %s.");
-        DrawStatusRowEnabledFloat(snapshot, "Cloud Variation", snapshot.effective.cloudVariationEnabled, snapshot.effective.cloudVariation, "x%.2f", snapshot.regionSource.cloudVariation, "Crimson Weather currently multiplies cloud variation by %s.");
-        DrawStatusRowEnabledFloat(snapshot, "Night Sky Rotation", snapshot.effective.nightSkyRotationEnabled, snapshot.effective.nightSkyRotation, "%.2f", snapshot.regionSource.nightSkyRotation, "Crimson Weather currently scales night sky rotation by %s.");
-        DrawStatusRowEnabledFloat(snapshot, "Puddle Scale", snapshot.effective.puddleScaleEnabled, snapshot.effective.puddleScale, "%.3f", snapshot.regionSource.puddleScale, "Crimson Weather currently sets puddle scale to %s.");
 
         if (snapshot.effective.forceClearSky) {
-            DrawStatusRowForcedZero(snapshot, "Fog [LEGACY]", "0.0%", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so Crimson Weather forces legacy fog to zero.");
+            DrawStatusRowBlocked(snapshot, "2C", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so 2C cloud overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "2D", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so 2D cloud overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "Cloud Variation", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud variation overrides are not applied.");
+        } else {
+            DrawStatusRowEnabledFloat(snapshot, "2C", snapshot.effective.exp2CEnabled, snapshot.effective.exp2C, "x%.2f", snapshot.regionSource.exp2C, "Crimson Weather currently multiplies 2C by %s.");
+            DrawStatusRowEnabledFloat(snapshot, "2D", snapshot.effective.exp2DEnabled, snapshot.effective.exp2D, "x%.2f", snapshot.regionSource.exp2D, "Crimson Weather currently multiplies 2D by %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Cloud Variation", snapshot.effective.cloudVariationEnabled, snapshot.effective.cloudVariation, "x%.2f", snapshot.regionSource.cloudVariation, "Crimson Weather currently multiplies cloud variation by %s.");
+        }
+        DrawStatusRowEnabledFloat(snapshot, "Puddle Scale", snapshot.effective.puddleScaleEnabled, snapshot.effective.puddleScale, "%.3f", snapshot.regionSource.puddleScale, "Crimson Weather currently sets puddle scale to %s.");
+
+        DrawStatusRowEnabledFloat(snapshot, "Night Sky Tilt", snapshot.effective.nightSkyRotationEnabled, snapshot.effective.nightSkyRotation, "%.2f", snapshot.regionSource.nightSkyRotation, "Crimson Weather currently sets the native night sky tilt to %s.");
+        DrawStatusRowEnabledFloat(snapshot, "Night Sky Phase", snapshot.effective.nightSkyYawEnabled, snapshot.effective.nightSkyYaw, "%.2f", snapshot.regionSource.nightSkyYaw, "Crimson Weather currently sets the native night sky phase to %s.");
+        DrawStatusRowEnabledFloat(snapshot, "Sun Size", snapshot.effective.sunSizeEnabled, snapshot.effective.sunSize, "%.3f", snapshot.regionSource.sunSize, "Crimson Weather currently sets sun size to %s.");
+        DrawStatusRowEnabledFloat(snapshot, "Sun Yaw Lock", snapshot.effective.sunYawEnabled, snapshot.effective.sunYaw, "%.2f", snapshot.regionSource.sunYaw, "Crimson Weather currently locks sun yaw to %s, overriding natural sun movement.");
+        DrawStatusRowEnabledFloat(snapshot, "Sun Pitch Lock", snapshot.effective.sunPitchEnabled, snapshot.effective.sunPitch, "%.2f", snapshot.regionSource.sunPitch, "Crimson Weather currently locks sun pitch to %s, overriding natural sun movement.");
+        DrawStatusRowEnabledFloat(snapshot, "Moon Size", snapshot.effective.moonSizeEnabled, snapshot.effective.moonSize, "%.3f", snapshot.regionSource.moonSize, "Crimson Weather currently sets moon size to %s.");
+        DrawStatusRowEnabledFloat(snapshot, "Moon Yaw Lock", snapshot.effective.moonYawEnabled, snapshot.effective.moonYaw, "%.2f", snapshot.regionSource.moonYaw, "Crimson Weather currently locks moon yaw to %s, overriding natural moon movement.");
+        DrawStatusRowEnabledFloat(snapshot, "Moon Pitch Lock", snapshot.effective.moonPitchEnabled, snapshot.effective.moonPitch, "%.2f", snapshot.regionSource.moonPitch, "Crimson Weather currently locks moon pitch to %s, overriding natural moon movement.");
+        DrawStatusRowEnabledFloat(snapshot, "Moon Rotation", snapshot.effective.moonRollEnabled, snapshot.effective.moonRoll, "%.2f", snapshot.regionSource.moonRoll, "Crimson Weather currently rotates the moon disc to %s.");
+
+        const bool fogForcedZero = snapshot.effective.forceClearSky || snapshot.effective.noFog;
+        const bool fogForceSource = snapshot.effective.forceClearSky ? snapshot.regionSource.forceClearSky : snapshot.regionSource.noFog;
+        const char* fogForceTooltip = snapshot.effective.forceClearSky
+            ? "Force Clear Sky is active, so Crimson Weather forces legacy fog to zero."
+            : "No Fog is active, so Crimson Weather forces legacy fog to zero.";
+        const char* nativeFogForceTooltip = snapshot.effective.forceClearSky
+            ? "Force Clear Sky is active, so Crimson Weather forces native fog to zero."
+            : "No Fog is active, so Crimson Weather forces native fog to zero.";
+        if (fogForcedZero) {
+            DrawStatusRowBlocked(snapshot, "Fog [LEGACY]", fogForceSource, fogForceTooltip);
         } else {
             DrawStatusRowEnabledFloat(snapshot, "Fog [LEGACY]", snapshot.effective.fogEnabled, snapshot.effective.fogPercent, "%.1f%%", snapshot.regionSource.fog, "Crimson Weather currently forces legacy fog to %s.");
         }
-        if (snapshot.effective.forceClearSky) {
-            DrawStatusRowForcedZero(snapshot, "Fog", "0.00", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so Crimson Weather forces native fog to zero.");
+        if (fogForcedZero) {
+            DrawStatusRowBlocked(snapshot, "Fog", fogForceSource, nativeFogForceTooltip);
         } else {
             DrawStatusRowEnabledFloat(snapshot, "Fog", snapshot.effective.nativeFogEnabled, snapshot.effective.nativeFog, "%.2f", snapshot.regionSource.nativeFog, "Crimson Weather currently scales native fog by %s.");
         }
+        DrawStatusRowBool(snapshot, "No Fog", snapshot.effective.noFog, snapshot.regionSource.noFog, "Crimson Weather currently disables fog.");
         if (snapshot.effective.noWind) {
             DrawStatusRowBlocked(snapshot, "Wind", snapshot.regionSource.noWind, "No Wind is active, so the wind multiplier is not applied.");
         } else {
@@ -1370,50 +1386,9 @@ void DrawAtmosphereTab() {
     ImGui::Spacing();
     ImGui::SeparatorText("Atmosphere");
 
-    float fogPct = detachedEdit ? editData.fogPercent : 0.0f;
-    if (!detachedEdit && g_oFog.active.load()) {
-        const float fogN = sqrtf(min(1.0f, max(0.0f, g_oFog.value.load() / 100.0f)));
-        fogPct = fogN * 100.0f;
-    }
-
-    const bool fogFeatureAvailable = RuntimeFeatureAvailable(RuntimeFeatureId::FogControls);
-    if (!fogFeatureAvailable) {
-        ImGui::BeginDisabled();
-    }
-    bool fogChanged = false;
-    bool fogOverrideChanged = false;
-    const bool fogReset = DrawSliderFloatRow("Fog [LEGACY]", "fog_legacy", &fogPct, 0.0f, 100.0f, "%.1f%%", &fogChanged, regionScoped ? &overrideMask.fog : nullptr, &fogOverrideChanged);
-
-    if (fogReset) {
-        if (detachedEdit) {
-            editData.fogEnabled = false;
-            editData.fogPercent = 0.0f;
-            if (regionScoped) overrideMask.fog = true;
-            editChanged = true;
-        } else {
-            g_oFog.clear();
-        }
-    } else if (fogOverrideChanged) {
-        editChanged = true;
-    } else if (fogFeatureAvailable && fogChanged) {
-        if (detachedEdit) {
-            editData.fogPercent = min(100.0f, max(0.0f, fogPct));
-            editData.fogEnabled = editData.fogPercent > 0.001f;
-            if (regionScoped) overrideMask.fog = true;
-            editChanged = true;
-        } else {
-            const float t = fogPct * 0.01f;
-            g_oFog.set(t * t * 100.0f);
-        }
-    }
-
-    if (!fogFeatureAvailable) {
-        ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::FogControls);
-    }
-
     float fogFromWind = detachedEdit ? editData.nativeFog : (g_oNativeFog.active.load() ? g_oNativeFog.value.load() : 0.0f);
-    const bool windEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::WindControls);
+    const bool fogBlocked = detachedEdit ? (editData.forceClearSky || editData.noFog) : (g_forceClear.load() || g_noFog.load());
+    const bool windEnabled = !fogBlocked && RuntimeFeatureAvailable(RuntimeFeatureId::WindControls);
     if (!windEnabled) {
         ImGui::BeginDisabled();
     }
@@ -1446,7 +1421,28 @@ void DrawAtmosphereTab() {
     }
     if (!windEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::WindControls);
+        if (!fogBlocked) {
+            DrawFeatureUnavailable(RuntimeFeatureId::WindControls);
+        }
+    }
+
+    bool noFog = detachedEdit ? editData.noFog : g_noFog.load();
+    bool noFogOverrideChanged = false;
+    const bool noFogChanged = regionScoped
+        ? DrawOverrideCheckboxRow("No Fog", "no_fog", &noFog, &overrideMask.noFog, &noFogOverrideChanged)
+        : ImGui::Checkbox("No Fog", &noFog);
+    if (noFogOverrideChanged) {
+        editChanged = true;
+    }
+    if (noFogChanged) {
+        if (detachedEdit) {
+            editData.noFog = noFog;
+            if (regionScoped) overrideMask.noFog = true;
+            editChanged = true;
+        } else {
+            g_noFog.store(noFog);
+        }
+        GUI_SetStatus(noFog ? "No Fog enabled" : "No Fog disabled");
     }
 
     if (detachedEdit && editChanged) {
@@ -1550,34 +1546,56 @@ void DrawExperimentTab() {
         }
     }
 
-    float rotation = detachedEdit ? editData.nightSkyRotation : (g_oExpNightSkyRot.active.load() ? g_oExpNightSkyRot.value.load() : 1.0f);
-    bool rotationChanged = false;
-    bool rotationOverrideChanged = false;
-    if (DrawSliderFloatRow("Night Sky Rotation X [0A]", "rotation", &rotation, -15.0f, 15.0f, "%.2f", &rotationChanged, regionScoped ? &overrideMask.nightSkyRotation : nullptr, &rotationOverrideChanged)) {
-        if (detachedEdit) {
-            editData.nightSkyRotationEnabled = false;
-            editData.nightSkyRotation = 1.0f;
-            if (regionScoped) overrideMask.nightSkyRotation = true;
-            editChanged = true;
-        } else {
-            g_oExpNightSkyRot.clear();
-        }
-    } else if (rotationOverrideChanged) {
-        editChanged = true;
-    } else if (enabled && rotationChanged) {
-        if (detachedEdit) {
-            editData.nightSkyRotation = min(15.0f, max(-15.0f, rotation));
-            editData.nightSkyRotationEnabled = fabsf(editData.nightSkyRotation - 1.0f) > 0.001f;
-            if (regionScoped) overrideMask.nightSkyRotation = true;
-            editChanged = true;
-        } else {
-            fabsf(rotation - 1.0f) <= 0.001f ? g_oExpNightSkyRot.clear() : g_oExpNightSkyRot.set(rotation);
-        }
-    }
-
     if (!enabled) {
         ImGui::EndDisabled();
         DrawFeatureUnavailable(RuntimeFeatureId::ExperimentControls);
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Legacy Fog");
+    float fogPct = detachedEdit ? editData.fogPercent : 0.0f;
+    if (!detachedEdit && g_oFog.active.load()) {
+        const float fogN = sqrtf(min(1.0f, max(0.0f, g_oFog.value.load() / 100.0f)));
+        fogPct = fogN * 100.0f;
+    }
+
+    const bool fogBlocked = detachedEdit ? (editData.forceClearSky || editData.noFog) : (g_forceClear.load() || g_noFog.load());
+    const bool fogFeatureAvailable = !fogBlocked && RuntimeFeatureAvailable(RuntimeFeatureId::FogControls);
+    if (!fogFeatureAvailable) {
+        ImGui::BeginDisabled();
+    }
+    bool fogChanged = false;
+    bool fogOverrideChanged = false;
+    const bool fogReset = DrawSliderFloatRow("Fog [LEGACY]", "fog_legacy", &fogPct, 0.0f, 100.0f, "%.1f%%", &fogChanged, regionScoped ? &overrideMask.fog : nullptr, &fogOverrideChanged);
+
+    if (fogReset) {
+        if (detachedEdit) {
+            editData.fogEnabled = false;
+            editData.fogPercent = 0.0f;
+            if (regionScoped) overrideMask.fog = true;
+            editChanged = true;
+        } else {
+            g_oFog.clear();
+        }
+    } else if (fogOverrideChanged) {
+        editChanged = true;
+    } else if (fogFeatureAvailable && fogChanged) {
+        if (detachedEdit) {
+            editData.fogPercent = min(100.0f, max(0.0f, fogPct));
+            editData.fogEnabled = editData.fogPercent > 0.001f;
+            if (regionScoped) overrideMask.fog = true;
+            editChanged = true;
+        } else {
+            const float t = fogPct * 0.01f;
+            g_oFog.set(t * t * 100.0f);
+        }
+    }
+
+    if (!fogFeatureAvailable) {
+        ImGui::EndDisabled();
+        if (!fogBlocked) {
+            DrawFeatureUnavailable(RuntimeFeatureId::FogControls);
+        }
     }
 
     ImGui::Spacing();
@@ -1613,6 +1631,307 @@ void DrawExperimentTab() {
     if (!detailEnabled) {
         ImGui::EndDisabled();
         DrawFeatureUnavailable(RuntimeFeatureId::DetailControls);
+    }
+
+    if (detachedEdit && editChanged) {
+        if (regionScoped) {
+            Preset_SetEditRegionDataWithOverrides(editData, overrideMask);
+        } else {
+            Preset_SetEditRegionData(editData);
+        }
+    }
+}
+
+void DrawCelestialTab() {
+    if (DrawDisabledTabBody()) {
+        return;
+    }
+
+    const bool detachedEdit = Preset_IsEditingDetachedRegion();
+    WeatherPresetData editData = detachedEdit ? Preset_GetEditRegionData() : WeatherPresetData{};
+    const bool regionScoped = detachedEdit && Preset_GetEditRegion() > kPresetRegionGlobal;
+    WeatherPresetSourceMask overrideMask = regionScoped ? Preset_GetEditRegionOverrideMask() : WeatherPresetSourceMask{};
+    bool editChanged = false;
+
+    ImGui::SeparatorText("Night Sky");
+    const bool celestialEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::CelestialControls);
+    if (!celestialEnabled) {
+        ImGui::BeginDisabled();
+    }
+
+    const float nativeNightSkyPitch = (g_windPackBase0AValid.load() && g_windPackBase0BValid.load())
+        ? min(89.0f, max(-89.0f, g_windPackBase0A.load() + 90.0f - g_windPackBase0B.load()))
+        : 0.0f;
+    const float nativeNightSkyYaw = g_sceneBaseNightSkyYaw.load();
+    const float nativeSunSize = g_atmoBaseSunSize.load();
+    const float nativeSunYaw = g_sceneBaseSunYaw.load();
+    const float nativeSunPitch = g_sceneBaseSunPitch.load();
+    const float nativeMoonSize = g_atmoBaseMoonSize.load();
+    const float nativeMoonYaw = g_sceneBaseMoonYaw.load();
+    const float nativeMoonPitch = g_sceneBaseMoonPitch.load();
+    const float nativeMoonRoll = 0.0f;
+
+    float nightSkyPitch = detachedEdit
+        ? (editData.nightSkyRotationEnabled ? editData.nightSkyRotation : nativeNightSkyPitch)
+        : (g_oExpNightSkyRot.active.load() ? g_oExpNightSkyRot.value.load() : nativeNightSkyPitch);
+    bool nightSkyPitchChanged = false;
+    bool nightSkyPitchOverrideChanged = false;
+    if (DrawSliderFloatRow("Night Sky Tilt", "night_sky_tilt", &nightSkyPitch, -89.0f, 89.0f, "%.2f", &nightSkyPitchChanged, regionScoped ? &overrideMask.nightSkyRotation : nullptr, &nightSkyPitchOverrideChanged)) {
+        if (detachedEdit) {
+            editData.nightSkyRotationEnabled = false;
+            editData.nightSkyRotation = nativeNightSkyPitch;
+            if (regionScoped) overrideMask.nightSkyRotation = true;
+            editChanged = true;
+        } else {
+            g_oExpNightSkyRot.clear();
+        }
+    } else if (nightSkyPitchOverrideChanged) {
+        editChanged = true;
+    } else if (celestialEnabled && nightSkyPitchChanged) {
+        if (detachedEdit) {
+            editData.nightSkyRotation = min(89.0f, max(-89.0f, nightSkyPitch));
+            editData.nightSkyRotationEnabled = fabsf(editData.nightSkyRotation - nativeNightSkyPitch) > 0.001f;
+            if (regionScoped) overrideMask.nightSkyRotation = true;
+            editChanged = true;
+        } else {
+            nightSkyPitch = min(89.0f, max(-89.0f, nightSkyPitch));
+            fabsf(nightSkyPitch - nativeNightSkyPitch) <= 0.001f ? g_oExpNightSkyRot.clear() : g_oExpNightSkyRot.set(nightSkyPitch);
+        }
+    }
+
+    float nightSkyYaw = detachedEdit
+        ? (editData.nightSkyYawEnabled ? editData.nightSkyYaw : nativeNightSkyYaw)
+        : (g_oNightSkyYaw.active.load() ? g_oNightSkyYaw.value.load() : nativeNightSkyYaw);
+    bool nightSkyYawChanged = false;
+    bool nightSkyYawOverrideChanged = false;
+    if (DrawSliderFloatRow("Night Sky Phase", "night_sky_phase", &nightSkyYaw, -180.0f, 180.0f, "%.2f", &nightSkyYawChanged, regionScoped ? &overrideMask.nightSkyYaw : nullptr, &nightSkyYawOverrideChanged)) {
+        if (detachedEdit) {
+            editData.nightSkyYawEnabled = false;
+            editData.nightSkyYaw = nativeNightSkyYaw;
+            if (regionScoped) overrideMask.nightSkyYaw = true;
+            editChanged = true;
+        } else {
+            g_oNightSkyYaw.clear();
+        }
+    } else if (nightSkyYawOverrideChanged) {
+        editChanged = true;
+    } else if (celestialEnabled && nightSkyYawChanged) {
+        if (detachedEdit) {
+            editData.nightSkyYaw = min(180.0f, max(-180.0f, nightSkyYaw));
+            editData.nightSkyYawEnabled = fabsf(editData.nightSkyYaw - nativeNightSkyYaw) > 0.001f;
+            if (regionScoped) overrideMask.nightSkyYaw = true;
+            editChanged = true;
+        } else {
+            nightSkyYaw = min(180.0f, max(-180.0f, nightSkyYaw));
+            fabsf(nightSkyYaw - nativeNightSkyYaw) <= 0.001f ? g_oNightSkyYaw.clear() : g_oNightSkyYaw.set(nightSkyYaw);
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Sun");
+
+    float sunSize = detachedEdit
+        ? (editData.sunSizeEnabled ? editData.sunSize : nativeSunSize)
+        : (g_oSunSize.active.load() ? g_oSunSize.value.load() : nativeSunSize);
+    bool sunSizeChanged = false;
+    bool sunSizeOverrideChanged = false;
+    if (DrawSliderFloatRow("Sun Size", "sun_size", &sunSize, 0.01f, 10.0f, "%.3f", &sunSizeChanged, regionScoped ? &overrideMask.sunSize : nullptr, &sunSizeOverrideChanged)) {
+        if (detachedEdit) {
+            editData.sunSizeEnabled = false;
+            editData.sunSize = nativeSunSize;
+            if (regionScoped) overrideMask.sunSize = true;
+            editChanged = true;
+        } else {
+            g_oSunSize.clear();
+        }
+    } else if (sunSizeOverrideChanged) {
+        editChanged = true;
+    } else if (celestialEnabled && sunSizeChanged) {
+        if (detachedEdit) {
+            editData.sunSize = min(10.0f, max(0.01f, sunSize));
+            editData.sunSizeEnabled = fabsf(editData.sunSize - nativeSunSize) > 0.001f;
+            if (regionScoped) overrideMask.sunSize = true;
+            editChanged = true;
+        } else {
+            sunSize = min(10.0f, max(0.01f, sunSize));
+            fabsf(sunSize - nativeSunSize) <= 0.001f ? g_oSunSize.clear() : g_oSunSize.set(sunSize);
+        }
+    }
+
+    float sunYaw = detachedEdit
+        ? (editData.sunYawEnabled ? editData.sunYaw : nativeSunYaw)
+        : (g_oSunDirX.active.load() ? g_oSunDirX.value.load() : nativeSunYaw);
+    bool sunYawChanged = false;
+    bool sunYawOverrideChanged = false;
+    if (DrawSliderFloatRow("Sun Yaw Lock", "sun_yaw", &sunYaw, -180.0f, 180.0f, "%.2f", &sunYawChanged, regionScoped ? &overrideMask.sunYaw : nullptr, &sunYawOverrideChanged)) {
+        if (detachedEdit) {
+            editData.sunYawEnabled = false;
+            editData.sunYaw = nativeSunYaw;
+            if (regionScoped) overrideMask.sunYaw = true;
+            editChanged = true;
+        } else {
+            g_oSunDirX.clear();
+        }
+    } else if (sunYawOverrideChanged) {
+        editChanged = true;
+    } else if (celestialEnabled && sunYawChanged) {
+        if (detachedEdit) {
+            editData.sunYaw = min(180.0f, max(-180.0f, sunYaw));
+            editData.sunYawEnabled = fabsf(editData.sunYaw - nativeSunYaw) > 0.001f;
+            if (regionScoped) overrideMask.sunYaw = true;
+            editChanged = true;
+        } else {
+            sunYaw = min(180.0f, max(-180.0f, sunYaw));
+            fabsf(sunYaw - nativeSunYaw) <= 0.001f ? g_oSunDirX.clear() : g_oSunDirX.set(sunYaw);
+        }
+    }
+
+    float sunPitch = detachedEdit
+        ? (editData.sunPitchEnabled ? editData.sunPitch : nativeSunPitch)
+        : (g_oSunDirY.active.load() ? g_oSunDirY.value.load() : nativeSunPitch);
+    bool sunPitchChanged = false;
+    bool sunPitchOverrideChanged = false;
+    if (DrawSliderFloatRow("Sun Pitch Lock", "sun_pitch", &sunPitch, -89.0f, 89.0f, "%.2f", &sunPitchChanged, regionScoped ? &overrideMask.sunPitch : nullptr, &sunPitchOverrideChanged)) {
+        if (detachedEdit) {
+            editData.sunPitchEnabled = false;
+            editData.sunPitch = nativeSunPitch;
+            if (regionScoped) overrideMask.sunPitch = true;
+            editChanged = true;
+        } else {
+            g_oSunDirY.clear();
+        }
+    } else if (sunPitchOverrideChanged) {
+        editChanged = true;
+    } else if (celestialEnabled && sunPitchChanged) {
+        if (detachedEdit) {
+            editData.sunPitch = min(89.0f, max(-89.0f, sunPitch));
+            editData.sunPitchEnabled = fabsf(editData.sunPitch - nativeSunPitch) > 0.001f;
+            if (regionScoped) overrideMask.sunPitch = true;
+            editChanged = true;
+        } else {
+            sunPitch = min(89.0f, max(-89.0f, sunPitch));
+            fabsf(sunPitch - nativeSunPitch) <= 0.001f ? g_oSunDirY.clear() : g_oSunDirY.set(sunPitch);
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Moon");
+
+    float moonSize = detachedEdit
+        ? (editData.moonSizeEnabled ? editData.moonSize : nativeMoonSize)
+        : (g_oMoonSize.active.load() ? g_oMoonSize.value.load() : nativeMoonSize);
+    bool moonSizeChanged = false;
+    bool moonSizeOverrideChanged = false;
+    if (DrawSliderFloatRow("Moon Size", "moon_size", &moonSize, 0.020f, 20.0f, "%.3f", &moonSizeChanged, regionScoped ? &overrideMask.moonSize : nullptr, &moonSizeOverrideChanged)) {
+        if (detachedEdit) {
+            editData.moonSizeEnabled = false;
+            editData.moonSize = nativeMoonSize;
+            if (regionScoped) overrideMask.moonSize = true;
+            editChanged = true;
+        } else {
+            g_oMoonSize.clear();
+        }
+    } else if (moonSizeOverrideChanged) {
+        editChanged = true;
+    } else if (celestialEnabled && moonSizeChanged) {
+        if (detachedEdit) {
+            editData.moonSize = min(20.0f, max(0.020f, moonSize));
+            editData.moonSizeEnabled = fabsf(editData.moonSize - nativeMoonSize) > 0.001f;
+            if (regionScoped) overrideMask.moonSize = true;
+            editChanged = true;
+        } else {
+            moonSize = min(20.0f, max(0.020f, moonSize));
+            fabsf(moonSize - nativeMoonSize) <= 0.001f ? g_oMoonSize.clear() : g_oMoonSize.set(moonSize);
+        }
+    }
+
+    float moonYaw = detachedEdit
+        ? (editData.moonYawEnabled ? editData.moonYaw : nativeMoonYaw)
+        : (g_oMoonDirX.active.load() ? g_oMoonDirX.value.load() : nativeMoonYaw);
+    bool moonYawChanged = false;
+    bool moonYawOverrideChanged = false;
+    if (DrawSliderFloatRow("Moon Yaw Lock", "moon_yaw", &moonYaw, -180.0f, 180.0f, "%.2f", &moonYawChanged, regionScoped ? &overrideMask.moonYaw : nullptr, &moonYawOverrideChanged)) {
+        if (detachedEdit) {
+            editData.moonYawEnabled = false;
+            editData.moonYaw = nativeMoonYaw;
+            if (regionScoped) overrideMask.moonYaw = true;
+            editChanged = true;
+        } else {
+            g_oMoonDirX.clear();
+        }
+    } else if (moonYawOverrideChanged) {
+        editChanged = true;
+    } else if (celestialEnabled && moonYawChanged) {
+        if (detachedEdit) {
+            editData.moonYaw = min(180.0f, max(-180.0f, moonYaw));
+            editData.moonYawEnabled = fabsf(editData.moonYaw - nativeMoonYaw) > 0.001f;
+            if (regionScoped) overrideMask.moonYaw = true;
+            editChanged = true;
+        } else {
+            moonYaw = min(180.0f, max(-180.0f, moonYaw));
+            fabsf(moonYaw - nativeMoonYaw) <= 0.001f ? g_oMoonDirX.clear() : g_oMoonDirX.set(moonYaw);
+        }
+    }
+
+    float moonPitch = detachedEdit
+        ? (editData.moonPitchEnabled ? editData.moonPitch : nativeMoonPitch)
+        : (g_oMoonDirY.active.load() ? g_oMoonDirY.value.load() : nativeMoonPitch);
+    bool moonPitchChanged = false;
+    bool moonPitchOverrideChanged = false;
+    if (DrawSliderFloatRow("Moon Pitch Lock", "moon_pitch", &moonPitch, -89.0f, 89.0f, "%.2f", &moonPitchChanged, regionScoped ? &overrideMask.moonPitch : nullptr, &moonPitchOverrideChanged)) {
+        if (detachedEdit) {
+            editData.moonPitchEnabled = false;
+            editData.moonPitch = nativeMoonPitch;
+            if (regionScoped) overrideMask.moonPitch = true;
+            editChanged = true;
+        } else {
+            g_oMoonDirY.clear();
+        }
+    } else if (moonPitchOverrideChanged) {
+        editChanged = true;
+    } else if (celestialEnabled && moonPitchChanged) {
+        if (detachedEdit) {
+            editData.moonPitch = min(89.0f, max(-89.0f, moonPitch));
+            editData.moonPitchEnabled = fabsf(editData.moonPitch - nativeMoonPitch) > 0.001f;
+            if (regionScoped) overrideMask.moonPitch = true;
+            editChanged = true;
+        } else {
+            moonPitch = min(89.0f, max(-89.0f, moonPitch));
+            fabsf(moonPitch - nativeMoonPitch) <= 0.001f ? g_oMoonDirY.clear() : g_oMoonDirY.set(moonPitch);
+        }
+    }
+
+    float moonRoll = detachedEdit
+        ? (editData.moonRollEnabled ? editData.moonRoll : nativeMoonRoll)
+        : (g_oMoonRoll.active.load() ? g_oMoonRoll.value.load() : nativeMoonRoll);
+    bool moonRollChanged = false;
+    bool moonRollOverrideChanged = false;
+    if (DrawSliderFloatRow("Moon Rotation", "moon_roll", &moonRoll, -180.0f, 180.0f, "%.2f", &moonRollChanged, regionScoped ? &overrideMask.moonRoll : nullptr, &moonRollOverrideChanged)) {
+        if (detachedEdit) {
+            editData.moonRollEnabled = false;
+            editData.moonRoll = nativeMoonRoll;
+            if (regionScoped) overrideMask.moonRoll = true;
+            editChanged = true;
+        } else {
+            g_oMoonRoll.clear();
+        }
+    } else if (moonRollOverrideChanged) {
+        editChanged = true;
+    } else if (celestialEnabled && moonRollChanged) {
+        if (detachedEdit) {
+            editData.moonRoll = min(180.0f, max(-180.0f, moonRoll));
+            editData.moonRollEnabled = fabsf(editData.moonRoll - nativeMoonRoll) > 0.001f;
+            if (regionScoped) overrideMask.moonRoll = true;
+            editChanged = true;
+        } else {
+            moonRoll = min(180.0f, max(-180.0f, moonRoll));
+            fabsf(moonRoll - nativeMoonRoll) <= 0.001f ? g_oMoonRoll.clear() : g_oMoonRoll.set(moonRoll);
+        }
+    }
+
+    if (!celestialEnabled) {
+        ImGui::EndDisabled();
+        DrawFeatureUnavailable(RuntimeFeatureId::CelestialControls);
     }
 
     if (detachedEdit && editChanged) {
@@ -1664,6 +1983,10 @@ void DrawOverlay(reshade::api::effect_runtime*) {
         }
         if (ImGui::BeginTabItem("Atmosphere")) {
             DrawAtmosphereTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Celestial")) {
+            DrawCelestialTab();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Experiment")) {

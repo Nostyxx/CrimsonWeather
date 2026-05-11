@@ -124,7 +124,10 @@ void StopHotkeyService() {
         SetEvent(g_hotkeyStopEvent);
     }
     if (g_hotkeyThread) {
-        WaitForSingleObject(g_hotkeyThread, 500);
+        const DWORD waitResult = WaitForSingleObject(g_hotkeyThread, 500);
+        if (waitResult == WAIT_TIMEOUT) {
+            Log("[W] hotkey thread did not stop within 500ms\n");
+        }
         CloseHandle(g_hotkeyThread);
         g_hotkeyThread = nullptr;
     }

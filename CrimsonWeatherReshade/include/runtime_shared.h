@@ -28,14 +28,13 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_VERSION "0.5.1"
+#define MOD_VERSION "0.5.2"
 
 struct Config {
     bool logEnabled = true;
     bool autoStart = true;
     int effectToggleVK = VK_F10;
     WORD controllerEffectToggleMask = 0;
-    float uiScale = 1.0f;
     bool reshadeDiagnostics = false;
 };
 
@@ -43,22 +42,17 @@ inline Config g_cfg{};
 inline FILE* g_logFile = nullptr;
 inline bool g_logEnabled = true;
 inline char g_pluginDir[MAX_PATH] = {};
-inline constexpr float kUiScaleMin = 0.75f;
-inline constexpr float kUiScaleMax = 3.00f;
 
 void Log(const char* fmt, ...);
-float ClampUiScale(float v);
 void BuildIniPath(char* outPath, size_t outSize);
 int KeyNameToVK(const char* name);
 WORD ControllerTokenToMask(const char* token);
 WORD ParseControllerCombo(const char* text, WORD fallback);
 bool IsControllerComboPressed(WORD buttons, WORD comboMask);
 void LoadConfig(const char* dir);
-void SaveConfigUIScale();
 void SaveWindOnlyConfig();
 void OpenLogFile(const char* dir);
 void GUI_SetStatus(const char* msg);
-void ApplyUiScale(float scale);
 void ResetAllSliders();
 bool AnySliderActive();
 bool AnyCustomWeatherSliderActive();
@@ -158,11 +152,11 @@ typedef void(__fastcall* ActivateEffect_fn)(long long self, int id, long long* s
 typedef void(__fastcall* SetIntensity_fn)(long long particleMgr, int handle, float v);
 typedef __m128(__fastcall* GetWeatherIntensity_fn)(long long weatherState);
 typedef __m128(__fastcall* GetDustIntensity_fn)(long long weatherState);
-typedef long long(__fastcall* GetLayerMeta_fn)(void* layerEntry);
 typedef void(__fastcall* AtmosFogBlend_fn)(long long ctx, long long outParams);
 typedef void(__fastcall* WeatherFrameUpdate_fn)(long long* self, float dt);
 typedef void(__fastcall* ProcessWindState_fn)(long long self);
 typedef void(__fastcall* WindPack_fn)(long long* windNodePtr, float* packedOut);
+typedef void*(__fastcall* SceneFrameUpdate_fn)(long long self, long long context);
 typedef long long(__fastcall* MinimapRegionLabels_fn)(long long self, unsigned short areaId, unsigned short subAreaId);
 typedef long long*(__fastcall* FogReceiverGetter_fn)(long long provider);
 typedef void(__fastcall* FogReceiverSet_fn)(long long* receiver, float value);
@@ -178,11 +172,11 @@ inline SetIntensity_fn g_pSetIntensity = nullptr;
 inline GetWeatherIntensity_fn g_pOrigGetRainIntensity = nullptr;
 inline GetWeatherIntensity_fn g_pOrigGetSnowIntensity = nullptr;
 inline GetDustIntensity_fn g_pOrigGetDustIntensity = nullptr;
-inline GetLayerMeta_fn g_pGetLayerMeta = nullptr;
 inline AtmosFogBlend_fn g_pOrigAtmosFogBlend = nullptr;
 inline WeatherFrameUpdate_fn g_pOrigWeatherFrameUpdate = nullptr;
 inline ProcessWindState_fn g_pOrigProcessWindState = nullptr;
 inline WindPack_fn g_pOrigWindPack = nullptr;
+inline SceneFrameUpdate_fn g_pOrigSceneFrameUpdate = nullptr;
 inline MinimapRegionLabels_fn g_pOrigMinimapRegionLabels = nullptr;
 inline uintptr_t* g_pEnvManager = nullptr;
 inline int* g_pNullSentinel = nullptr;
@@ -249,10 +243,9 @@ enum class AobTargetId : uint8_t {
     ActivateEffect,
     SetIntensity,
     WindPack,
-    PostProcessLayerUpdate,
-    GetLayerMeta,
     WeatherFrameUpdate,
     AtmosFogBlend,
+    SceneFrameUpdate,
     EnvManagerPtr,
     NullSentinel,
     TimeStores,
@@ -347,6 +340,7 @@ inline SliderOverride g_oExpCloud2C;
 inline SliderOverride g_oExpCloud2D;
 inline SliderOverride g_oCloudVariation;
 inline SliderOverride g_oExpNightSkyRot;
+inline SliderOverride g_oNightSkyYaw;
 inline SliderOverride g_oCloudThk;
 inline SliderOverride g_oNativeFog;
 inline SliderOverride g_oWind;
@@ -355,8 +349,12 @@ inline SliderOverride g_oSunDirX;
 inline SliderOverride g_oSunDirY;
 inline SliderOverride g_oMoonDirX;
 inline SliderOverride g_oMoonDirY;
+inline SliderOverride g_oMoonRoll;
+inline SliderOverride g_oSunSize;
+inline SliderOverride g_oMoonSize;
 inline std::atomic<bool> g_forceClear{ false };
 inline std::atomic<bool> g_noWind{ false };
+inline std::atomic<bool> g_noFog{ false };
 inline std::atomic<bool> g_modEnabled{ true };
 inline std::atomic<bool> g_modSuspendRequested{ false };
 inline std::atomic<bool> g_regionStateValid{ false };
@@ -427,6 +425,8 @@ inline std::atomic<bool> g_windPackBase2DValid{ false };
 inline std::atomic<float> g_windPackBase2D{ 0.0f };
 inline std::atomic<bool> g_windPackBase0AValid{ false };
 inline std::atomic<float> g_windPackBase0A{ 0.0f };
+inline std::atomic<bool> g_windPackBase0BValid{ false };
+inline std::atomic<float> g_windPackBase0B{ 0.0f };
 inline std::atomic<bool> g_windPackBase11Valid{ false };
 inline std::atomic<float> g_windPackBase11{ 0.0f };
 inline std::atomic<bool> g_windPackBase17Valid{ false };
@@ -437,10 +437,14 @@ inline std::atomic<bool> g_windNodeBaseValid{ false };
 inline std::atomic<float> g_windNodeBaseSpeed{ 0.0f };
 inline std::atomic<float> g_windNodeBaseGust{ 0.0f };
 inline std::atomic<bool> g_atmoCelestialBaseValid{ false };
-inline std::atomic<float> g_atmoBaseSunDirX{ 0.0f };
-inline std::atomic<float> g_atmoBaseSunDirY{ 0.0f };
-inline std::atomic<float> g_atmoBaseMoonDirX{ 0.0f };
-inline std::atomic<float> g_atmoBaseMoonDirY{ 0.0f };
+inline std::atomic<float> g_atmoBaseSunSize{ 0.267f };
+inline std::atomic<float> g_atmoBaseMoonSize{ 0.267f };
+inline std::atomic<bool> g_sceneCelestialBaseValid{ false };
+inline std::atomic<float> g_sceneBaseSunYaw{ 0.0f };
+inline std::atomic<float> g_sceneBaseSunPitch{ 0.0f };
+inline std::atomic<float> g_sceneBaseMoonYaw{ 0.0f };
+inline std::atomic<float> g_sceneBaseMoonPitch{ 0.0f };
+inline std::atomic<float> g_sceneBaseNightSkyYaw{ 0.0f };
 inline int g_activeWeather = -1;
 inline std::atomic<bool> g_resetStopRequested{ false };
 inline constexpr int kCustomWeather = 99;
@@ -497,5 +501,6 @@ void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams);
 void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt);
 void __fastcall Hooked_ProcessWindState(long long self);
 void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut);
+void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context);
 long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short areaId, unsigned short subAreaId);
 void __fastcall Hooked_WeatherTick(long long self, float dt);
