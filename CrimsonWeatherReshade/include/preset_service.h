@@ -7,6 +7,8 @@ struct WeatherPresetData {
     float snow = 0.0f;
     bool visualTimeOverride = false;
     float timeHour = 12.0f;
+    bool cloudAmountEnabled = false;
+    float cloudAmount = 1.0f;
     bool cloudHeightEnabled = false;
     float cloudHeight = 1.0f;
     bool cloudDensityEnabled = false;
@@ -15,14 +17,6 @@ struct WeatherPresetData {
     float midClouds = 1.0f;
     bool highCloudsEnabled = false;
     float highClouds = 1.0f;
-    bool sunLocationXEnabled = false;
-    float sunLocationX = 0.0f;
-    bool sunLocationYEnabled = false;
-    float sunLocationY = 0.0f;
-    bool moonLocationXEnabled = false;
-    float moonLocationX = 0.0f;
-    bool moonLocationYEnabled = false;
-    float moonLocationY = 0.0f;
     bool exp2CEnabled = false;
     float exp2C = 1.0f;
     bool exp2DEnabled = false;
@@ -41,6 +35,48 @@ struct WeatherPresetData {
     float puddleScale = 0.0f;
 };
 
+constexpr int kPresetRegionGlobal = 0;
+constexpr int kPresetRegionHernand = 1;
+constexpr int kPresetRegionDemeniss = 2;
+constexpr int kPresetRegionDelesyia = 3;
+constexpr int kPresetRegionPailune = 4;
+constexpr int kPresetRegionCrimsonDesert = 5;
+constexpr int kPresetRegionAbyss = 6;
+constexpr int kPresetRegionCount = 7;
+
+struct WeatherPresetSourceMask {
+    bool forceClearSky = false;
+    bool rain = false;
+    bool dust = false;
+    bool snow = false;
+    bool time = false;
+    bool cloudAmount = false;
+    bool cloudHeight = false;
+    bool cloudDensity = false;
+    bool midClouds = false;
+    bool highClouds = false;
+    bool exp2C = false;
+    bool exp2D = false;
+    bool cloudVariation = false;
+    bool nightSkyRotation = false;
+    bool fog = false;
+    bool nativeFog = false;
+    bool wind = false;
+    bool noWind = false;
+    bool puddleScale = false;
+};
+
+struct WeatherPresetStatusSnapshot {
+    bool hasPresetPackage = false;
+    int playerRegion = kPresetRegionGlobal;
+    int editRegion = kPresetRegionGlobal;
+    int blendFromRegion = -1;
+    int blendToRegion = -1;
+    float blendProgress = 1.0f;
+    WeatherPresetData effective{};
+    WeatherPresetSourceMask regionSource{};
+};
+
 void Preset_EnsureInitialized();
 void Preset_Refresh();
 int Preset_GetCount();
@@ -48,10 +84,21 @@ const char* Preset_GetDisplayName(int index);
 int Preset_GetSelectedIndex();
 bool Preset_HasSelection();
 const char* Preset_GetSelectedDisplayName();
+const char* Preset_GetRegionDisplayName(int regionId);
+int Preset_GetEditRegion();
+void Preset_SetEditRegion(int regionId);
+bool Preset_SelectedHasRegion(int regionId);
+bool Preset_IsEditingDetachedRegion();
+WeatherPresetData Preset_GetEditRegionData();
+WeatherPresetSourceMask Preset_GetEditRegionOverrideMask();
+void Preset_SetEditRegionData(const WeatherPresetData& data);
+void Preset_SetEditRegionDataWithOverrides(const WeatherPresetData& data, const WeatherPresetSourceMask& mask);
+void Preset_ResetEditRegion();
 void Preset_SelectNew();
 bool Preset_SelectIndex(int index);
 bool Preset_HasUnsavedChanges();
 bool Preset_CanSaveCurrent();
+WeatherPresetStatusSnapshot Preset_GetStatusSnapshot();
 void Preset_ArmAutoApplyRemembered();
 void Preset_OnWorldTick(bool worldReady, float dt);
 void Preset_TryAutoApplyRemembered();

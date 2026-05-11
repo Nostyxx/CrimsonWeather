@@ -1,7 +1,11 @@
 #include "pch.h"
 #include "runtime_shared.h"
 #include "preset_service.h"
+#include <cstdarg>
+#include <cfloat>
+#include <cstdio>
 #include <cstring>
+#include <intrin.h>
 #include <iterator>
 
 static float ExtractScalar(__m128 v) {
@@ -27,6 +31,22 @@ static float DustSliderToThreshold(float dust) {
 
 static float DustSliderToStorm(float dust) {
     return 40.0f + DustSliderToNative(dust);
+}
+
+static float DustWindControlMultiplier() {
+    float mul = g_windMul.load();
+    if (!std::isfinite(mul)) {
+        mul = 1.0f;
+    }
+    return min(3.0f, max(0.0f, mul));
+}
+
+static float DustSliderToWindScale(float dust) {
+    return max(0.0f, dust) * 0.60f * DustWindControlMultiplier();
+}
+
+static bool DustForcesCalmWind() {
+    return g_oDust.active.load() && DustWindControlMultiplier() <= 0.001f;
 }
 
 static bool IsReadableTickPtr(uintptr_t addr, size_t bytes) {
@@ -128,6 +148,404 @@ static ResolvedEnv ResolveCustomTickEnv() {
     return ResolveEnv();
 }
 
+template <typename T>
+static bool TryReadTickValue(long long base, ptrdiff_t off, T& out) {
+    const uintptr_t addr = static_cast<uintptr_t>(base + off);
+    if (!base || !IsReadableTickPtr(addr, sizeof(T))) {
+        return false;
+    }
+
+    __try {
+        out = *reinterpret_cast<T*>(addr);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static bool ReasonableProbeFloat(float value) {
+    return std::isfinite(value) && fabsf(value) < 100000000.0f;
+}
+
+static float ProbeFloat(long long base, ptrdiff_t off) {
+    float value = 0.0f;
+    if (!TryReadTickValue(base, off, value) || !ReasonableProbeFloat(value)) {
+        return 0.0f;
+    }
+    return value;
+}
+
+static long long ProbePtr(long long base, ptrdiff_t off) {
+    long long value = 0;
+    if (!TryReadTickValue(base, off, value)) {
+        return 0;
+    }
+    return value;
+}
+
+static int32_t ProbeS32(long long base, ptrdiff_t off) {
+    int32_t value = 0;
+    TryReadTickValue(base, off, value);
+    return value;
+}
+
+static bool LooksReadableProbePtr(long long value) {
+    if (value < 0x10000) {
+        return false;
+    }
+    return IsReadableTickPtr(static_cast<uintptr_t>(value), 0x10);
+}
+
+static void AppendProbeText(char* out, size_t cap, size_t& used, const char* fmt, ...);
+
+static bool CopyProbeAnsi(uintptr_t addr, char* out, size_t cap) {
+    if (!out || cap == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    if (addr < 0x10000 || !IsReadableTickPtr(addr, 1)) {
+        return false;
+    }
+
+    size_t used = 0;
+    __try {
+        for (; used + 1 < cap; ++used) {
+            if (!IsReadableTickPtr(addr + used, 1)) {
+                break;
+            }
+            const unsigned char c = *reinterpret_cast<const unsigned char*>(addr + used);
+            if (c == 0) {
+                break;
+            }
+            if (c < 0x20 || c > 0x7E) {
+                if (c != '\t') {
+                    break;
+                }
+            }
+            out[used] = static_cast<char>(c);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out[0] = '\0';
+        return false;
+    }
+
+    out[used] = '\0';
+    return used >= 2;
+}
+
+static bool CopyProbeWideAscii(uintptr_t addr, char* out, size_t cap) {
+    if (!out || cap == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    if (addr < 0x10000 || !IsReadableTickPtr(addr, sizeof(wchar_t))) {
+        return false;
+    }
+
+    size_t used = 0;
+    __try {
+        for (; used + 1 < cap; ++used) {
+            if (!IsReadableTickPtr(addr + used * sizeof(wchar_t), sizeof(wchar_t))) {
+                break;
+            }
+            const wchar_t c = *reinterpret_cast<const wchar_t*>(addr + used * sizeof(wchar_t));
+            if (c == 0) {
+                break;
+            }
+            if (c < 0x20 || c > 0x7E) {
+                break;
+            }
+            out[used] = static_cast<char>(c);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out[0] = '\0';
+        return false;
+    }
+
+    out[used] = '\0';
+    return used >= 2;
+}
+
+static void DescribeProbeText(long long value, char* out, size_t cap) {
+    if (!out || cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+
+    const uintptr_t addr = static_cast<uintptr_t>(value);
+    if (CopyProbeAnsi(addr, out, cap) || CopyProbeWideAscii(addr, out, cap)) {
+        return;
+    }
+
+    long long nested = 0;
+    if (TryReadTickValue(value, 0, nested)) {
+        const uintptr_t nestedAddr = static_cast<uintptr_t>(nested);
+        if (CopyProbeAnsi(nestedAddr, out, cap) || CopyProbeWideAscii(nestedAddr, out, cap)) {
+            return;
+        }
+    }
+}
+
+static void AppendProbeQwords(char* out, size_t cap, size_t& used, long long base, ptrdiff_t start, ptrdiff_t end) {
+    int count = 0;
+    for (ptrdiff_t off = start; off <= end && count < 8; off += 8) {
+        uint64_t value = 0;
+        if (!TryReadTickValue(base, off, value)) {
+            continue;
+        }
+        AppendProbeText(out, cap, used, "+%02llX=%016llX ", static_cast<long long>(off), static_cast<unsigned long long>(value));
+        ++count;
+    }
+    if (count == 0) {
+        AppendProbeText(out, cap, used, "unreadable");
+    }
+}
+
+static void AppendProbeText(char* out, size_t cap, size_t& used, const char* fmt, ...) {
+    if (used >= cap) {
+        return;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+    const int wrote = std::vsnprintf(out + used, cap - used, fmt, args);
+    va_end(args);
+    if (wrote <= 0) {
+        return;
+    }
+
+    const size_t added = static_cast<size_t>(wrote);
+    used = (added >= cap - used) ? cap - 1 : used + added;
+}
+
+static void AppendPtrProbeScan(char* out, size_t cap, size_t& used, long long base, ptrdiff_t start, ptrdiff_t end) {
+    int count = 0;
+    for (ptrdiff_t off = start; off <= end && count < 28; off += 8) {
+        const long long value = ProbePtr(base, off);
+        if (!LooksReadableProbePtr(value)) {
+            continue;
+        }
+
+        AppendProbeText(out, cap, used, "+%03llX=%p ", static_cast<long long>(off), reinterpret_cast<void*>(value));
+        ++count;
+    }
+    if (count == 0) {
+        AppendProbeText(out, cap, used, "none");
+    }
+}
+
+static void AppendSmallIntProbeScan(char* out, size_t cap, size_t& used, long long base, ptrdiff_t start, ptrdiff_t end) {
+    int count = 0;
+    for (ptrdiff_t off = start; off <= end && count < 36; off += 4) {
+        int32_t value = 0;
+        if (!TryReadTickValue(base, off, value)) {
+            continue;
+        }
+
+        if (value == 0 || value == -1 || value < -100000 || value > 100000) {
+            continue;
+        }
+
+        AppendProbeText(out, cap, used, "+%03llX=%d ", static_cast<long long>(off), value);
+        ++count;
+    }
+    if (count == 0) {
+        AppendProbeText(out, cap, used, "none");
+    }
+}
+
+struct RegionAnchor {
+    int localId;
+    int majorId;
+    float x;
+    float y;
+    float z;
+};
+
+struct RegionClassification {
+    int majorId = 0;
+    int localId = 0;
+};
+
+static RegionClassification ClassifyRegionFromPosition(float x, float y, float z) {
+    if (y > 1400.0f) {
+        return { 6, 0 }; // Abyss
+    }
+
+    // Hand-tuned first pass for the Hernand -> Demeniss -> Delesyia road test.
+    // Pure nearest-anchor classification switches to Demeniss noticeably after
+    // the game's own border toast, so bias this corridor westward.
+    if (z >= -4700.0f && z <= -2500.0f) {
+        if (x <= -9600.0f) {
+            return { 1, 1 }; // Hernand
+        }
+        if (x <= -6500.0f) {
+            return { 2, 2 }; // Demeniss
+        }
+        if (x <= -4200.0f && z <= -3600.0f) {
+            return { 3, 3 }; // Delesyia
+        }
+    }
+
+    // Preliminary anchors from the 2026-05-10 route probe:
+    // Hernand -> Demeniss -> Delesyia -> Tashkalp -> Urdavah -> Pailune -> Varnia.
+    static constexpr RegionAnchor kAnchors[] = {
+        { 1, 1, -10479.6f, 553.0f, -4158.2f }, // Hernand
+        { 2, 2,  -7721.1f, 522.1f, -3263.9f }, // Demeniss
+        { 3, 3,  -5597.5f, 520.6f, -4275.2f }, // Delesyia
+        { 4, 5,  -6111.7f, 616.9f,  -888.0f }, // Tashkalp -> Crimson Desert
+        { 5, 5,  -6489.3f, 972.7f,   103.0f }, // Urdavah -> Crimson Desert
+        { 6, 4, -10612.6f, 957.1f,   123.5f }, // Pailune
+        { 7, 5,  -3836.8f, 695.1f,  3529.6f }, // Varnia -> Crimson Desert
+    };
+
+    RegionClassification result{};
+    float bestDistSq = FLT_MAX;
+    for (const RegionAnchor& anchor : kAnchors) {
+        const float dx = x - anchor.x;
+        const float dz = z - anchor.z;
+        const float distSq = dx * dx + dz * dz;
+        if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            result.majorId = anchor.majorId;
+            result.localId = anchor.localId;
+        }
+    }
+    return result;
+}
+
+static RegionClassification ClassifyRegionFromGameHudIds(int areaId, int subAreaId) {
+    if (areaId <= 0 || areaId == 0xFFFF) {
+        return {};
+    }
+
+    // The minimap HUD passes regioninfo table indexes, not regioninfo keys.
+    // These blocks come from gamedata/regioninfo.pabgh table order:
+    //   0x0002..0x003F: Pailunese territory and child nodes
+    //   0x0040..0x00A4: Crimson Desert / Tashkalp / Varnia / Urdavah block
+    //   0x00A6..0x014C: Hernandian territory and child nodes
+    //   0x014E..0x01DC: Demenissian territory and child nodes
+    //   0x01DD..0x023B: Delesyian territory and child nodes
+    //   0x02D8..0x0308: Abyss and Abyss nodes
+    const int localId = (subAreaId > 0 && subAreaId != 0xFFFF) ? subAreaId : areaId;
+    if (areaId >= 0x0002 && areaId <= 0x003F) {
+        return { 4, localId }; // Pailune
+    }
+    if (areaId >= 0x0040 && areaId <= 0x00A4) {
+        return { 5, localId }; // Crimson Desert
+    }
+    if (areaId >= 0x00A6 && areaId <= 0x014C) {
+        return { 1, localId }; // Hernand
+    }
+    if (areaId >= 0x014E && areaId <= 0x01DC) {
+        return { 2, localId }; // Demeniss
+    }
+    if (areaId >= 0x01DD && areaId <= 0x023B) {
+        return { 3, localId }; // Delesyia
+    }
+    if (areaId >= 0x02D8 && areaId <= 0x0308) {
+        return { 6, localId }; // Abyss
+    }
+    return {};
+}
+
+static RegionClassification LastStableGameHudRegion() {
+    if (!g_gameRegionHudStableValid.load()) {
+        return {};
+    }
+
+    const int majorId = g_gameRegionHudStableMajorId.load();
+    if (majorId == 0) {
+        return {};
+    }
+    return { majorId, g_gameRegionHudStableLocalId.load() };
+}
+
+static RegionClassification UpdateStableGameHudRegion(float x, float y, float z) {
+    constexpr unsigned long long kDebounceMs = 180;
+
+    if (!g_gameRegionHudValid.load()) {
+        return LastStableGameHudRegion();
+    }
+
+    const unsigned long long lastChange = g_gameRegionHudLastChangeTick.load();
+    if (!lastChange || GetTickCount64() - lastChange < kDebounceMs) {
+        return LastStableGameHudRegion();
+    }
+
+    const int areaId = g_gameRegionHudAreaId.load();
+    const int subAreaId = g_gameRegionHudSubAreaId.load();
+    const RegionClassification classified = ClassifyRegionFromGameHudIds(areaId, subAreaId);
+    if (classified.majorId == 0) {
+        return LastStableGameHudRegion();
+    }
+
+    const int oldArea = g_gameRegionHudStableAreaId.load();
+    const int oldSubArea = g_gameRegionHudStableSubAreaId.load();
+    const int oldMajor = g_gameRegionHudStableMajorId.load();
+    if (oldArea == areaId && oldSubArea == subAreaId && oldMajor == classified.majorId) {
+        return classified;
+    }
+
+    g_gameRegionHudStableValid.store(true);
+    g_gameRegionHudStableAreaId.store(areaId);
+    g_gameRegionHudStableSubAreaId.store(subAreaId);
+    g_gameRegionHudStableMajorId.store(classified.majorId);
+    g_gameRegionHudStableLocalId.store(classified.localId);
+    g_gameRegionHudStableUpdateCount.fetch_add(1);
+
+    return classified;
+}
+
+static void UpdateRegionState(const ResolvedEnv& env, float dt) {
+    if (!env.entity) {
+        g_regionStateValid.store(false);
+        g_regionMajorId.store(0);
+        g_regionLocalId.store(0);
+        g_regionPreviousPosValid.store(false);
+        return;
+    }
+
+    const float x = ProbeFloat(env.entity, 0xC8);
+    const float y = ProbeFloat(env.entity, 0xCC);
+    const float z = ProbeFloat(env.entity, 0xD0);
+    if (!ReasonableProbeFloat(x) || !ReasonableProbeFloat(y) || !ReasonableProbeFloat(z)) {
+        g_regionStateValid.store(false);
+        g_regionMajorId.store(0);
+        g_regionLocalId.store(0);
+        g_regionPreviousPosValid.store(false);
+        return;
+    }
+
+    RegionClassification classified = UpdateStableGameHudRegion(x, y, z);
+
+    const int previousMajor = g_regionMajorId.load();
+    bool likelyTeleport = false;
+    if (g_regionPreviousPosValid.load()) {
+        const float dx = x - g_regionPosX.load();
+        const float dz = z - g_regionPosZ.load();
+        likelyTeleport = (dx * dx + dz * dz) > (900.0f * 900.0f);
+    }
+
+    if (classified.majorId != 0 && previousMajor != 0 && classified.majorId != previousMajor) {
+        g_regionPreviousMajorId.store(previousMajor);
+        g_regionTransitionSeconds.store(likelyTeleport ? 0.0f : 6.0f);
+    } else {
+        const float remaining = max(0.0f, g_regionTransitionSeconds.load() - max(0.0f, dt));
+        g_regionTransitionSeconds.store(remaining);
+    }
+
+    g_regionPosX.store(x);
+    g_regionPosY.store(y);
+    g_regionPosZ.store(z);
+    g_regionSectorX.store(ProbeS32(env.entity, 0xE0));
+    g_regionSectorZ.store(ProbeS32(env.entity, 0xE8));
+    g_regionMajorId.store(classified.majorId);
+    g_regionLocalId.store(classified.localId);
+    g_regionPreviousPosValid.store(true);
+    g_regionStateValid.store(true);
+}
+
 // Intensity hooks feed slider overrides into the engine weather blend inputs.
 __m128 __fastcall Hooked_GetRainIntensity(long long ws) {
     if (!g_modEnabled.load()) {
@@ -136,6 +554,16 @@ __m128 __fastcall Hooked_GetRainIntensity(long long ws) {
     if (g_forceClear.load()) return PackScalar(0.0f);
     if (g_oRain.active.load())
         return PackScalar(g_oRain.value.load());
+    if (g_oSnow.active.load()) {
+        static ULONGLONG s_lastSnowRainSuppressLog = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - s_lastSnowRainSuppressLog > 1500) {
+            s_lastSnowRainSuppressLog = now;
+            float baseRain = g_pOrigGetRainIntensity ? ExtractScalar(g_pOrigGetRainIntensity(ws)) : 0.0f;
+            Log("[rain] suppress native rain during snow override baseRain=%.3f\n", baseRain);
+        }
+        return PackScalar(0.0f);
+    }
 
     float baseRain = g_pOrigGetRainIntensity ? ExtractScalar(g_pOrigGetRainIntensity(ws)) : 0.0f;
     if (baseRain > 0.01f) {
@@ -165,19 +593,14 @@ __m128 __fastcall Hooked_GetDustIntensity(long long ws) {
     }
     if (g_noWind.load())
         return PackScalar(0.0f);
-    if (g_oDust.active.load()) {
-        return PackScalar(DustSliderToNative(g_oDust.value.load()));
-    }
-    float v = g_pOrigGetDustIntensity ? ExtractScalar(g_pOrigGetDustIntensity(ws)) : 0.0f;
     float mul = g_windMul.load();
     if (mul < 0.0f) mul = 0.0f;
     if (mul > 15.0f) mul = 15.0f;
+    if (g_oDust.active.load()) {
+        return PackScalar(DustSliderToNative(g_oDust.value.load()) * mul);
+    }
+    float v = g_pOrigGetDustIntensity ? ExtractScalar(g_pOrigGetDustIntensity(ws)) : 0.0f;
     return PackScalar(v * mul);
-}
-
-// Weather postprocess layer update hook.
-void __fastcall Hooked_PPLayerUpdate(long long layerMgr, float dt) {
-    if (g_pOrigPPLayerUpdate) g_pOrigPPLayerUpdate(layerMgr, dt);
 }
 
 static constexpr uint32_t kFogReceiverOverrideMask = 0x1F;
@@ -267,9 +690,13 @@ static void ApplyCelestialOverrides(const ResolvedEnv& env) {
 
 static float ResolveFogSetValue(int idx, float incoming) {
     if (!g_modEnabled.load()) return incoming;
-    if (!g_oFog.active.load()) return incoming;
     if (idx < 0 || idx >= 5) return incoming;
     if ((kFogReceiverOverrideMask & (1u << idx)) == 0) return incoming;
+    if (g_forceClear.load()) {
+        static constexpr float kClearFogProfile[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 2.0f };
+        return kClearFogProfile[idx];
+    }
+    if (!g_oFog.active.load()) return incoming;
     float forced = g_forcedFogSet[idx].load();
     return std::isfinite(forced) ? forced : incoming;
 }
@@ -357,7 +784,8 @@ static void PrimeFogSetHooksFromFrame(long long* self) {
 }
 
 static void ForceApplyFogFromFrame(long long* self) {
-    if (!self || !g_oFog.active.load() || !g_pOrigAtmosFogBlend) return;
+    const bool forceClear = g_forceClear.load();
+    if (!self || (!forceClear && !g_oFog.active.load()) || !g_pOrigAtmosFogBlend) return;
 
     __try {
         struct FogOut {
@@ -367,7 +795,7 @@ static void ForceApplyFogFromFrame(long long* self) {
 
         g_pOrigAtmosFogBlend((long long)self, (long long)&out);
 
-        float fog = max(0.0f, g_oFog.value.load());
+        float fog = forceClear ? 0.0f : max(0.0f, g_oFog.value.load());
         ApplyAuthoritativeFogProfile(fog, out.v0, out.v1, out.v2, out.v3, out.v4);
 
         long long provider = *reinterpret_cast<long long*>(reinterpret_cast<uint8_t*>(self) + 0x48);
@@ -572,10 +1000,10 @@ static float CloudHeightUiToMultiplier(float ui) {
 }
 
 void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
+    const bool modEnabled = g_modEnabled.load();
     if (g_pOrigWindPack) g_pOrigWindPack(windNodePtr, packedOut);
-    if (!g_modEnabled.load()) return;
+    if (!modEnabled) return;
     if (!packedOut) return;
-    if (g_forceClear.load()) return;
 
     AtmosphereCloudPack nativeCloudPack{};
     const bool nativeCloudValid = ReadAtmosphereCloudPack(packedOut, nativeCloudPack);
@@ -625,6 +1053,13 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
     if (std::isfinite(packedOut[0x1B])) {
         g_windPackBase1B.store(packedOut[0x1B]);
         g_windPackBase1BValid.store(true);
+    }
+
+    if (g_forceClear.load()) {
+        packedOut[0x1B] = 0.0f;
+        packedOut[0x11] = 0.0f;
+        packedOut[0x17] = 0.0f;
+        return;
     }
 
     const bool cloudActive = g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load();
@@ -692,7 +1127,7 @@ void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
     }
     PrimeFogSetHooksFromFrame(self);
 
-    if (self && g_oFog.active.load()) {
+    if (self && (g_forceClear.load() || g_oFog.active.load())) {
         __try {
             *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x98) = 0.0f;
             *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x9C) = 0.0f;
@@ -751,7 +1186,7 @@ static void ApplyWeatherParams(long long self, const ResolvedEnv& env) {
         if (g_oDust.active.load()) {
             At<float>(env.cloudNode, CN::DUST_BASE) = nativeDust;
             At<float>(env.cloudNode, CN::DUST_ADD) = nativeDust * 0.10f;
-            At<float>(env.cloudNode, CN::DUST_WIND_SCALE) = max(0.30f, dust * 0.60f);
+            At<float>(env.cloudNode, CN::DUST_WIND_SCALE) = DustSliderToWindScale(dust);
             At<float>(env.cloudNode, CN::DUST_THRESH) = min(At<float>(env.cloudNode, CN::DUST_THRESH), DustSliderToThreshold(dust));
             At<float>(env.cloudNode, CN::STORM_THRESH) = max(At<float>(env.cloudNode, CN::STORM_THRESH), DustSliderToStorm(dust));
             At<float>(env.cloudNode, CN::FOG_B) = max(At<float>(env.cloudNode, CN::FOG_B), DustSliderToFogB(dust));
@@ -778,7 +1213,7 @@ static uint32_t ComputeCustomEffectMask() {
     if (rain > 0.5f)  mask |= 0x010;      // effect 4 (heavy rain)
     if (snow > 0.01f) mask |= 0x004;      // effect 2 (snow flakes)
     if (snow > 0.3f)  mask |= 0x008;      // effect 3 (heavy snow)
-    if (wind > 0.5f)  mask |= 0x020;      // effect 5 (wind base)
+    if (wind > 0.5f)  mask |= 0x020;      // effect 5 (legacy wind/heavy-weather lane)
     if (dust > 0.1f)  mask |= 0x040;      // effect 6 (sand dust)
 
     return mask;
@@ -850,6 +1285,16 @@ static void StopWeatherEffectsByMask(long long self, uint32_t effectMask) {
 }
 
 static void ApplyNoWindPolicy(long long self, const ResolvedEnv& env) {
+    At<int>(self, WCO::SOUND_WIND)    = 0;
+    At<int>(self, WCO::SOUND_SKYWIND) = 0;
+    if (kEnableDirectNodeWrites && env.windNode) {
+        At<float>(env.windNode, WN::SPEED) = 0.0f;
+        At<float>(env.windNode, WN::GUST)  = 0.0f;
+    }
+}
+
+static void ApplyDustWindPolicy(long long self, const ResolvedEnv& env) {
+    if (!env.valid || !DustForcesCalmWind()) return;
     At<int>(self, WCO::SOUND_WIND)    = 0;
     At<int>(self, WCO::SOUND_SKYWIND) = 0;
     if (kEnableDirectNodeWrites && env.windNode) {
@@ -955,7 +1400,53 @@ static void EnterCustomMode() {
     }
 }
 
-// Hooked weather tick; keep the current stable call order.
+enum class MinimapRegionCallerKind : int {
+    Unknown = 0,
+    Setup = 1,
+    RefreshCurrent = 2,
+    EventCallback = 3,
+    RegionNode = 4,
+};
+
+static MinimapRegionCallerKind ClassifyMinimapRegionCaller(uintptr_t callerOffset) {
+    if (callerOffset >= 0xB2CD50 && callerOffset < 0xB2D8E1) {
+        return MinimapRegionCallerKind::Setup;
+    }
+    if (callerOffset >= 0xB2EEC0 && callerOffset < 0xB2EF70) {
+        return MinimapRegionCallerKind::RefreshCurrent;
+    }
+    if (callerOffset >= 0xB3BB10 && callerOffset < 0xB3BB2B) {
+        return MinimapRegionCallerKind::EventCallback;
+    }
+    if (callerOffset >= 0xA4D2530 && callerOffset < 0xA4D2663) {
+        return MinimapRegionCallerKind::RegionNode;
+    }
+    return MinimapRegionCallerKind::Unknown;
+}
+
+long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short areaId, unsigned short subAreaId) {
+    const auto caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    long long result = 0;
+    if (g_pOrigMinimapRegionLabels) {
+        result = g_pOrigMinimapRegionLabels(self, areaId, subAreaId);
+    }
+
+    const auto moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    const uintptr_t callerOffset = moduleBase && caller >= moduleBase ? caller - moduleBase : 0;
+    const MinimapRegionCallerKind callerKind = ClassifyMinimapRegionCaller(callerOffset);
+
+    g_gameRegionHudAreaId.exchange(static_cast<int>(areaId));
+    g_gameRegionHudSubAreaId.exchange(static_cast<int>(subAreaId));
+    g_gameRegionHudValid.store(areaId != 0xFFFF || subAreaId != 0xFFFF);
+    g_gameRegionHudCallerOffset.store(callerOffset);
+    g_gameRegionHudCallerKind.store(static_cast<int>(callerKind));
+    g_gameRegionHudLastChangeTick.store(GetTickCount64());
+    g_gameRegionHudUpdateCount.fetch_add(1);
+
+    return result;
+}
+
+// Hooked weather tick.
 void __fastcall Hooked_WeatherTick(long long self, float dt) {
     if (kWeatherTickPassThroughOnly) {
         if (g_pOriginalTick) g_pOriginalTick(self, dt);
@@ -965,7 +1456,8 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     const bool resetStopNow = g_resetStopRequested.exchange(false);
     const bool modSuspendNow = g_modSuspendRequested.exchange(false);
     const ResolvedEnv env = ResolveEnv();
-    const bool worldReady = env.valid && env.cloudNode && env.windNode && env.particleMgr;
+    const bool worldReady = env.entity && env.weatherState;
+    UpdateRegionState(env, dt);
     Preset_OnWorldTick(worldReady, dt);
 
     if (!g_modEnabled.load()) {
@@ -998,20 +1490,9 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
         g_activeWeather = -1;
     }
 
-    const bool rainOnlyControl = IsRainOnlyControlMode();
-    const bool dustDriven = g_oDust.active.load();
-    if (!dustDriven) {
-        TickWeatherState(self, dt);
-    }
     g_pOriginalTick(self, dt);
-    if (dustDriven && g_activeWeather == kCustomWeather) {
+    if (g_activeWeather == kCustomWeather) {
         TickWeatherState(self, dt);
-    }
-    if (rainOnlyControl && g_activeWeather == kCustomWeather) {
-        if (env.valid) {
-            const int nullSent = g_pNullSentinel ? *g_pNullSentinel : 0;
-            TickRainOnly(self, env, nullSent);
-        }
     }
     if (resetStopNow) {
         StopAllWeatherEffects(self);
@@ -1021,6 +1502,7 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
         ApplyCloudOverrides(env);
         ApplyCelestialOverrides(env);
     }
+    ApplyDustWindPolicy(self, env);
     if (g_noWind.load()) {
         ApplyNoWindPolicy(self, env);
     }

@@ -305,6 +305,7 @@ static void RecomputeRuntimeHealthSummary() {
     SetRuntimeGroupHealth(RuntimeHealthGroup::Infra,
         AggregateTargetHealth({
             AobTargetId::NativeToast,
+            AobTargetId::MinimapRegionLabels,
             AobTargetId::PostProcessLayerUpdate,
             AobTargetId::GetLayerMeta
         }, note), note);
@@ -894,6 +895,7 @@ void RestoreRuntimePatches() {
 
 bool RunAOBScan(){
     ClearRuntimeHealthState();
+    const uintptr_t moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
 
 #if defined(CW_WIND_ONLY)
     uintptr_t windOnlyAddrGetDust = ScanModule(
@@ -1266,6 +1268,16 @@ bool RunAOBScan(){
     // Time control runtime layout
     const bool timeReady = DiscoverTimeLayoutAOB();
     const bool nativeToastReady = ResolveNativeToastBridgeAOB();
+    uintptr_t addrMinimapRegionLabels = ScanModule(
+        "66 44 89 44 24 18 66 89 54 24 10 55 53 56 57 41 56 "
+        "48 8D AC 24 80 FD FF FF 48 81 EC 80 03 00 00 "
+        "41 0F B7 F8 0F B7 DA 4C 8B F1 BE FF FF 00 00"
+    );
+    if (addrMinimapRegionLabels) {
+        Log("[AOB] MinimapRegionLabels = %p\n", (void*)addrMinimapRegionLabels);
+    } else {
+        Log("[W] MinimapRegionLabels not found (game HUD region ID probe disabled)\n");
+    }
 
     g_pActivateEffect = reinterpret_cast<ActivateEffect_fn>(addrActivate);
     g_pSetIntensity   = reinterpret_cast<SetIntensity_fn>  (addrSetIntensity);
@@ -1306,15 +1318,15 @@ bool RunAOBScan(){
                         (void**)&g_pOrigWindPack,"WindPack",false);
     }
     if (kEnableGameplayHooks || kEnableFrameHooks) {
-        if(addrPPLayerUpdate)
-            InstallHook((void*)addrPPLayerUpdate,(void*)&Hooked_PPLayerUpdate,
-                        (void**)&g_pOrigPPLayerUpdate,"PostProcessLayerUpdate",false);
         if(addrWeatherFrameUpdate)
             InstallHook((void*)addrWeatherFrameUpdate,(void*)&Hooked_WeatherFrameUpdate,
                         (void**)&g_pOrigWeatherFrameUpdate,"WeatherFrameUpdate",false);
         if(addrAtmosFogBlend)
             InstallHook((void*)addrAtmosFogBlend,(void*)&Hooked_AtmosFogBlend,
                         (void**)&g_pOrigAtmosFogBlend,"AtmosFogBlend",false);
+        if(addrMinimapRegionLabels)
+            InstallHook((void*)addrMinimapRegionLabels,(void*)&Hooked_MinimapRegionLabels,
+                        (void**)&g_pOrigMinimapRegionLabels,"MinimapRegionLabels",false);
     }
     if (!kEnableGameplayHooks) {
         Log("[W] Gameplay hooks isolation flags: intensity=%d wind=%d frame=%d\n",
@@ -1391,10 +1403,9 @@ bool RunAOBScan(){
             : "hook installed");
 
     SetAobTargetHealth(AobTargetId::PostProcessLayerUpdate,
-        (addrPPLayerUpdate && g_pOrigPPLayerUpdate)
-            ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
+        RuntimeHealthState::Disabled,
         addrPPLayerUpdate,
-        (addrPPLayerUpdate && g_pOrigPPLayerUpdate) ? "optional diag hook installed" : "optional diag hook unavailable");
+        "diagnostic hook removed");
 
     SetAobTargetHealth(AobTargetId::GetLayerMeta,
         addrGetLayerMeta
@@ -1445,6 +1456,12 @@ bool RunAOBScan(){
         nativeToastReady ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
         reinterpret_cast<uintptr_t>(g_pNativeToastRootGlobal),
         nativeToastReady ? "native toast bridge ready" : "native toast bridge unavailable");
+
+    const bool minimapRegionInstalled = addrMinimapRegionLabels && g_pOrigMinimapRegionLabels;
+    SetAobTargetHealth(AobTargetId::MinimapRegionLabels,
+        minimapRegionInstalled ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
+        addrMinimapRegionLabels,
+        minimapRegionInstalled ? "game HUD region ID hook installed" : "game HUD region ID hook unavailable");
 
     RecomputeRuntimeHealthSummary();
     LogRuntimeHealthSummary();

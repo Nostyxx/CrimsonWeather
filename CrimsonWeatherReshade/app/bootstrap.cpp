@@ -10,6 +10,7 @@ namespace {
 
 std::atomic<bool> g_initialized{ false };
 std::atomic<bool> g_minHookInitialized{ false };
+std::atomic<bool> g_nextStartIsAuto{ false };
 
 bool IsTargetProcess() {
     wchar_t path[MAX_PATH] = {};
@@ -76,7 +77,8 @@ DWORD WINAPI StartThread(void*) {
     g_startupEndTick.store(0);
     StartupSetStep(StartupStepId::Config, 1, "Preparing startup");
     GUI_SetStatus("Starting Crimson Weather...");
-    Log("[i] Start requested from ReShade overlay\n");
+    const bool autoStart = g_nextStartIsAuto.exchange(false);
+    Log(autoStart ? "[i] Auto Start requested from config\n" : "[i] Start requested from ReShade overlay\n");
 
     StartupSetStep(StartupStepId::MinHook, 2, "Initializing hook engine");
     const MH_STATUS mhStatus = MH_Initialize();
@@ -144,7 +146,15 @@ DWORD WINAPI BootstrapThread(void* param) {
 
     OpenStartupLog(module);
     PrimeMinHookRelayBlock();
-    Log("[i] ReShade addon loaded; waiting for user start\n");
+    if (g_cfg.autoStart) {
+        Log("[i] ReShade addon loaded; Auto Start enabled\n");
+        StartupSetStep(StartupStepId::Idle, 0, "Auto Start enabled");
+        GUI_SetStatus("Auto Start enabled");
+        g_nextStartIsAuto.store(true);
+        RequestCrimsonWeatherStart();
+    } else {
+        Log("[i] ReShade addon loaded; waiting for user start\n");
+    }
     return 0;
 }
 

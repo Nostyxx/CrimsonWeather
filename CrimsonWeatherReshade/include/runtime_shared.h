@@ -28,10 +28,11 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_VERSION "0.5.0"
+#define MOD_VERSION "0.5.1"
 
 struct Config {
     bool logEnabled = true;
+    bool autoStart = true;
     int effectToggleVK = VK_F10;
     WORD controllerEffectToggleMask = 0;
     float uiScale = 1.0f;
@@ -122,7 +123,7 @@ namespace WN {
     constexpr ptrdiff_t TURB_LIFT = 0x68;
     constexpr ptrdiff_t SPEED = 0x88;
     constexpr ptrdiff_t GUST = 0x9C;
-    constexpr ptrdiff_t SNOW_GROUND = 0xA8;
+    constexpr ptrdiff_t CHECK_SNOW_RATE = 0x189;
     constexpr ptrdiff_t CLOTH_WIND_X = 0xB8;
     constexpr ptrdiff_t CLOTH_WIND_Z = 0xBC;
     constexpr ptrdiff_t CLOUD_SCROLL_X = 0xD0;
@@ -157,12 +158,12 @@ typedef void(__fastcall* ActivateEffect_fn)(long long self, int id, long long* s
 typedef void(__fastcall* SetIntensity_fn)(long long particleMgr, int handle, float v);
 typedef __m128(__fastcall* GetWeatherIntensity_fn)(long long weatherState);
 typedef __m128(__fastcall* GetDustIntensity_fn)(long long weatherState);
-typedef void(__fastcall* PPLayerUpdate_fn)(long long layerMgr, float dt);
 typedef long long(__fastcall* GetLayerMeta_fn)(void* layerEntry);
 typedef void(__fastcall* AtmosFogBlend_fn)(long long ctx, long long outParams);
 typedef void(__fastcall* WeatherFrameUpdate_fn)(long long* self, float dt);
 typedef void(__fastcall* ProcessWindState_fn)(long long self);
 typedef void(__fastcall* WindPack_fn)(long long* windNodePtr, float* packedOut);
+typedef long long(__fastcall* MinimapRegionLabels_fn)(long long self, unsigned short areaId, unsigned short subAreaId);
 typedef long long*(__fastcall* FogReceiverGetter_fn)(long long provider);
 typedef void(__fastcall* FogReceiverSet_fn)(long long* receiver, float value);
 typedef double(__fastcall* EnvGetTimeOfDay_fn)(void* envMgr);
@@ -177,12 +178,12 @@ inline SetIntensity_fn g_pSetIntensity = nullptr;
 inline GetWeatherIntensity_fn g_pOrigGetRainIntensity = nullptr;
 inline GetWeatherIntensity_fn g_pOrigGetSnowIntensity = nullptr;
 inline GetDustIntensity_fn g_pOrigGetDustIntensity = nullptr;
-inline PPLayerUpdate_fn g_pOrigPPLayerUpdate = nullptr;
 inline GetLayerMeta_fn g_pGetLayerMeta = nullptr;
 inline AtmosFogBlend_fn g_pOrigAtmosFogBlend = nullptr;
 inline WeatherFrameUpdate_fn g_pOrigWeatherFrameUpdate = nullptr;
 inline ProcessWindState_fn g_pOrigProcessWindState = nullptr;
 inline WindPack_fn g_pOrigWindPack = nullptr;
+inline MinimapRegionLabels_fn g_pOrigMinimapRegionLabels = nullptr;
 inline uintptr_t* g_pEnvManager = nullptr;
 inline int* g_pNullSentinel = nullptr;
 inline void** g_pWeatherTickVtableSlot = nullptr;
@@ -257,6 +258,7 @@ enum class AobTargetId : uint8_t {
     TimeStores,
     TimeDebugHandler,
     NativeToast,
+    MinimapRegionLabels,
     Count
 };
 
@@ -357,6 +359,30 @@ inline std::atomic<bool> g_forceClear{ false };
 inline std::atomic<bool> g_noWind{ false };
 inline std::atomic<bool> g_modEnabled{ true };
 inline std::atomic<bool> g_modSuspendRequested{ false };
+inline std::atomic<bool> g_regionStateValid{ false };
+inline std::atomic<int> g_regionMajorId{ 0 };
+inline std::atomic<int> g_regionLocalId{ 0 };
+inline std::atomic<int> g_regionPreviousMajorId{ 0 };
+inline std::atomic<float> g_regionTransitionSeconds{ 0.0f };
+inline std::atomic<float> g_regionPosX{ 0.0f };
+inline std::atomic<float> g_regionPosY{ 0.0f };
+inline std::atomic<float> g_regionPosZ{ 0.0f };
+inline std::atomic<bool> g_regionPreviousPosValid{ false };
+inline std::atomic<int> g_regionSectorX{ 0 };
+inline std::atomic<int> g_regionSectorZ{ 0 };
+inline std::atomic<bool> g_gameRegionHudValid{ false };
+inline std::atomic<int> g_gameRegionHudAreaId{ 0xFFFF };
+inline std::atomic<int> g_gameRegionHudSubAreaId{ 0xFFFF };
+inline std::atomic<uintptr_t> g_gameRegionHudCallerOffset{ 0 };
+inline std::atomic<int> g_gameRegionHudCallerKind{ 0 };
+inline std::atomic<unsigned long long> g_gameRegionHudLastChangeTick{ 0 };
+inline std::atomic<unsigned int> g_gameRegionHudUpdateCount{ 0 };
+inline std::atomic<bool> g_gameRegionHudStableValid{ false };
+inline std::atomic<int> g_gameRegionHudStableAreaId{ 0xFFFF };
+inline std::atomic<int> g_gameRegionHudStableSubAreaId{ 0xFFFF };
+inline std::atomic<int> g_gameRegionHudStableMajorId{ 0 };
+inline std::atomic<int> g_gameRegionHudStableLocalId{ 0 };
+inline std::atomic<unsigned int> g_gameRegionHudStableUpdateCount{ 0 };
 inline std::atomic<AddonStartupState> g_addonStartupState{ AddonStartupState::NotStarted };
 inline std::atomic<StartupStepId> g_startupStep{ StartupStepId::Idle };
 inline std::atomic<int> g_startupStepIndex{ 0 };
@@ -467,9 +493,9 @@ void RestoreRuntimePatches();
 __m128 __fastcall Hooked_GetRainIntensity(long long ws);
 __m128 __fastcall Hooked_GetSnowIntensity(long long ws);
 __m128 __fastcall Hooked_GetDustIntensity(long long ws);
-void __fastcall Hooked_PPLayerUpdate(long long layerMgr, float dt);
 void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams);
 void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt);
 void __fastcall Hooked_ProcessWindState(long long self);
 void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut);
+long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short areaId, unsigned short subAreaId);
 void __fastcall Hooked_WeatherTick(long long self, float dt);

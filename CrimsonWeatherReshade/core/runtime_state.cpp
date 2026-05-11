@@ -66,6 +66,7 @@ void WriteDefaultConfig(const char* path) {
     }
 
     WritePrivateProfileStringA("General", "LogEnabled", "0", path);
+    WritePrivateProfileStringA("General", "AutoStart", "1", path);
     WritePrivateProfileStringA("General", "HotkeyToggleEffect", "F10", path);
     WritePrivateProfileStringA(
         "General",
@@ -91,6 +92,9 @@ void PatchMissingConfigKeys(const char* path) {
     }
 
     char buf[64] = {};
+    if (GetPrivateProfileStringA("General", "AutoStart", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("General", "AutoStart", "1", path);
+    }
     if (GetPrivateProfileStringA("General", "HotkeyToggleEffect", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("General", "HotkeyToggleEffect", "F10", path);
     }
@@ -193,6 +197,8 @@ const char* AobTargetLabel(AobTargetId id) {
         return "TimeDebugHandler";
     case AobTargetId::NativeToast:
         return "NativeToast";
+    case AobTargetId::MinimapRegionLabels:
+        return "MinimapRegionLabels";
     default:
         return "UnknownTarget";
     }
@@ -435,6 +441,8 @@ void LoadConfig(const char* dir) {
     char buf[64] = {};
     GetPrivateProfileStringA("General", "LogEnabled", "1", buf, sizeof(buf), path);
     g_cfg.logEnabled = atoi(buf) != 0;
+    GetPrivateProfileStringA("General", "AutoStart", "1", buf, sizeof(buf), path);
+    g_cfg.autoStart = atoi(buf) != 0;
     GetPrivateProfileStringA("General", "HotkeyToggleEffect", "F10", buf, sizeof(buf), path);
     g_cfg.effectToggleVK = KeyNameToVK(buf);
     GetPrivateProfileStringA("Hotkeys", "ControllerToggleEffect", "dpad_down+a", buf, sizeof(buf), path);
@@ -521,6 +529,10 @@ void ResetAllSliders() {
     g_windPackBaseValid.store(false);
     g_windPackBase32Valid.store(false);
     g_windPackBase32.store(0.0f);
+    g_windPackBase2CValid.store(false);
+    g_windPackBase2C.store(0.0f);
+    g_windPackBase2DValid.store(false);
+    g_windPackBase2D.store(0.0f);
     g_windPackBase11Valid.store(false);
     g_windPackBase11.store(0.0f);
     g_windPackBase17Valid.store(false);
@@ -690,7 +702,7 @@ ResolvedEnv ResolveEnv() {
         if (r.cloudNode && !IsReadablePointer(static_cast<uintptr_t>(r.cloudNode), 0x100)) {
             r.cloudNode = 0;
         }
-        if (r.windNode && !IsReadablePointer(static_cast<uintptr_t>(r.windNode), 0x114)) {
+        if (r.windNode && !IsReadablePointer(static_cast<uintptr_t>(r.windNode), WN::CHECK_SNOW_RATE + sizeof(uint8_t))) {
             r.windNode = 0;
         }
 
