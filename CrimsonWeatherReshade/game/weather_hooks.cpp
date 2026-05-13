@@ -1112,7 +1112,9 @@ void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context) {
 
     __try {
         auto* sceneSource = *reinterpret_cast<float**>(self + 0x428);
-        ApplySceneCelestialOverrides(sceneSource);
+        if (sceneSource) {
+            ApplySceneCelestialOverrides(sceneSource);
+        }
 
         auto* sceneOwner = *reinterpret_cast<uint8_t**>(self + 0x430);
         if (!sceneOwner) return result;
@@ -1167,14 +1169,6 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
     if (!g_oExpCloud2D.active.load() && std::isfinite(packedOut[0x2D])) {
         g_windPackBase2D.store(packedOut[0x2D]);
         g_windPackBase2DValid.store(true);
-    }
-    if (!g_oExpNightSkyRot.active.load() && std::isfinite(packedOut[0x0A])) {
-        g_windPackBase0A.store(packedOut[0x0A]);
-        g_windPackBase0AValid.store(true);
-    }
-    if (!g_oExpNightSkyRot.active.load() && std::isfinite(packedOut[0x0B])) {
-        g_windPackBase0B.store(packedOut[0x0B]);
-        g_windPackBase0BValid.store(true);
     }
     if (!g_oNativeFog.active.load() && std::isfinite(packedOut[0x11])) {
         g_windPackBase11.store(packedOut[0x11]);
@@ -1749,7 +1743,8 @@ static void TickNativeLightningBridge(long long self, float dt) {
     const float rainHint = !g_noRain.load() && g_oRain.active.load() && std::isfinite(g_oRain.value.load())
         ? min(1.0f, max(0.0f, g_oRain.value.load()))
         : -1.0f;
-    if (!IsReadableTickPtr(static_cast<uintptr_t>(self), 0xF0)) {
+    if (!IsReadableTickPtr(static_cast<uintptr_t>(self), 0xF0) ||
+        !IsReadableTickPtr(reinterpret_cast<uintptr_t>(g_pWeatherEffectGateByte), sizeof(*g_pWeatherEffectGateByte))) {
         return;
     }
 

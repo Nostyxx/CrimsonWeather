@@ -547,6 +547,15 @@ void ResetAllSliders() {
     g_windNodeBaseValid.store(false);
     g_windNodeBaseSpeed.store(0.0f);
     g_windNodeBaseGust.store(0.0f);
+    g_atmoCelestialBaseValid.store(false);
+    g_atmoBaseSunSize.store(0.267f);
+    g_atmoBaseMoonSize.store(0.267f);
+    g_sceneCelestialBaseValid.store(false);
+    g_sceneBaseSunYaw.store(0.0f);
+    g_sceneBaseSunPitch.store(0.0f);
+    g_sceneBaseMoonYaw.store(0.0f);
+    g_sceneBaseMoonPitch.store(0.0f);
+    g_sceneBaseNightSkyYaw.store(0.0f);
     g_resetStopRequested.store(true);
 }
 

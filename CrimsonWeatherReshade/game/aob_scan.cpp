@@ -236,6 +236,23 @@ static uintptr_t ResolveLoadSoundBank() {
     );
 }
 
+static uintptr_t ResolveAkLoadBankById() {
+    return ScanModule(
+        "48 89 5C 24 08 48 89 7C 24 10 55 48 8D 6C 24 A9 "
+        "48 81 EC E0 00 00 00 80 3D ?? ?? ?? ?? 00 8B DA 8B F9 "
+        "75 0A B8 66 00 00 00 E9 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? "
+        "48 8D 55 A7 48 8B 01 FF 50 20"
+    );
+}
+
+static uintptr_t ResolveAkPostEventById() {
+    return ScanModule(
+        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 4C 89 70 20 "
+        "41 57 48 83 EC 70 45 33 D2 49 8B F1 41 8B E8 4C 8B F2 "
+        "44 8B F9 44 39 94 24 A8 00 00 00 74 3E"
+    );
+}
+
 static uintptr_t ResolveSpawnGameGlobalEffect() {
     return ScanModule(
         "48 89 5C 24 08 55 56 57 41 54 41 55 41 56 41 57 "
@@ -1052,7 +1069,6 @@ void RestoreRuntimePatches() {
 
 bool RunAOBScan(){
     ClearRuntimeHealthState();
-    const uintptr_t moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
 
 #if defined(CW_WIND_ONLY)
     uintptr_t windOnlyAddrGetDust = ScanModule(
@@ -1178,10 +1194,21 @@ bool RunAOBScan(){
     }
     g_pLoadSoundBank = reinterpret_cast<LoadSoundBank_fn>(addrLoadSoundBank);
 
-    g_pAkLoadBankById = reinterpret_cast<AkLoadBankById_fn>(moduleBase + 0x3B8E630);
-    g_pAkPostEventById = reinterpret_cast<AkPostEventById_fn>(moduleBase + 0x3B8FE10);
-    Log("[AOB] AK::LoadBankById = %p\n", (void*)g_pAkLoadBankById);
-    Log("[AOB] AK::PostEventById = %p\n", (void*)g_pAkPostEventById);
+    uintptr_t addrAkLoadBankById = ResolveAkLoadBankById();
+    if (addrAkLoadBankById) {
+        Log("[AOB] AK::LoadBankById = %p\n", (void*)addrAkLoadBankById);
+    } else {
+        Log("[W] AK::LoadBankById not found (thunder audio bank direct preload unavailable)\n");
+    }
+    g_pAkLoadBankById = reinterpret_cast<AkLoadBankById_fn>(addrAkLoadBankById);
+
+    uintptr_t addrAkPostEventById = ResolveAkPostEventById();
+    if (addrAkPostEventById) {
+        Log("[AOB] AK::PostEventById = %p\n", (void*)addrAkPostEventById);
+    } else {
+        Log("[W] AK::PostEventById not found (thunder audio direct post unavailable)\n");
+    }
+    g_pAkPostEventById = reinterpret_cast<AkPostEventById_fn>(addrAkPostEventById);
 
     g_pSoundManager = ResolveSoundManagerGlobalFromWeatherSoundPlayer(addrPlayWeatherSoundEvent);
     if (g_pSoundManager) {

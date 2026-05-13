@@ -53,6 +53,9 @@ int g_selectedMoonOption = 0;
 bool g_moonOptionsScanned = false;
 char g_status[192] = "Moon texture: integrated hook waiting";
 
+// Moon UI state uses g_mutex. D3D12 hook state uses g_moonHookLock.
+// If a path ever needs both, take g_mutex first, then g_moonHookLock.
+
 struct MoonSrvBinding {
     ID3D12Resource* nativeResource = nullptr;
     D3D12_CPU_DESCRIPTOR_HANDLE dest = {};
@@ -99,6 +102,7 @@ PFN_CreateCommittedResource3 g_realCreateCommittedResource3 = nullptr;
 
 CRITICAL_SECTION g_moonHookLock;
 std::atomic<bool> g_moonHookLockReady{ false };
+std::atomic<bool> g_moonHookShuttingDown{ false };
 std::atomic<bool> g_moonHookThreadStarted{ false };
 std::atomic<bool> g_d3d12CreateDeviceHooked{ false };
 std::atomic<bool> g_deviceHooksInstalled{ false };
@@ -127,7 +131,7 @@ bool g_moonSawSrgbSrv = false;
 uint32_t g_moonSourceSrvCount = 0;
 uint32_t g_moonCopiedSrvCount = 0;
 int g_lastMoonProofLevel = -99;
-bool g_moonFingerprintSummaryLogged = false;
+std::atomic<bool> g_moonFingerprintSummaryLogged{ false };
 MoonFingerprintTarget g_moonFingerprintTargets[] = {
     {
         "MoonTextureNodeApply",
@@ -314,7 +318,8 @@ bool ResolveMoonFingerprintTargets() {
 }
 
 void LogMoonFingerprintSummary() {
-    if (g_moonFingerprintSummaryLogged) {
+    bool expected = false;
+    if (!g_moonFingerprintSummaryLogged.compare_exchange_strong(expected, true)) {
         return;
     }
 
@@ -338,7 +343,6 @@ void LogMoonFingerprintSummary() {
             Log("[W] moon-main fingerprint target %-24s unresolved\n", target.name);
         }
     }
-    g_moonFingerprintSummaryLogged = true;
 }
 
 bool IsMoonTextureFileName(const std::string& name) {
@@ -646,6 +650,9 @@ HRESULT CreateCommittedResourceRaw(ID3D12Device* device,
 }
 
 ID3D12CommandQueue* EnsureUploadQueue(ID3D12Device* device) {
+    if (g_moonHookShuttingDown.load()) {
+        return nullptr;
+    }
     if (ID3D12CommandQueue* queue = g_uploadQueue.load()) {
         return queue;
     }
@@ -668,7 +675,7 @@ ID3D12CommandQueue* EnsureUploadQueue(ID3D12Device* device) {
     }
 
     ID3D12CommandQueue* expected = nullptr;
-    if (!g_uploadQueue.compare_exchange_strong(expected, queue)) {
+    if (g_moonHookShuttingDown.load() || !g_uploadQueue.compare_exchange_strong(expected, queue)) {
         queue->Release();
     }
     return g_uploadQueue.load();
@@ -1561,8 +1568,6 @@ HRESULT WINAPI HookD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimu
 }
 
 DWORD WINAPI MoonHookBootstrapThread(LPVOID) {
-    MH_STATUS initStatus = MH_Initialize();
-    Log("[moon-main] MinHook init status=%d\n", static_cast<int>(initStatus));
     ResolveMoonFingerprintTargets();
     LogMoonFingerprintSummary();
 
@@ -1608,6 +1613,7 @@ void StartIntegratedMoonHook() {
         return;
     }
 
+    g_moonHookShuttingDown.store(false);
     InitializeCriticalSection(&g_moonHookLock);
     g_moonHookLockReady.store(true);
 
@@ -1624,6 +1630,10 @@ void ReleaseMoonHookResources() {
     if (!g_moonHookLockReady.load()) {
         return;
     }
+
+    g_moonHookShuttingDown.store(true);
+    ID3D12CommandQueue* uploadQueue = g_uploadQueue.exchange(nullptr);
+    ID3D12Device* device = g_device.exchange(nullptr);
 
     EnterCriticalSection(&g_moonHookLock);
     g_selectedMoonPath.clear();
@@ -1657,10 +1667,10 @@ void ReleaseMoonHookResources() {
     }
     LeaveCriticalSection(&g_moonHookLock);
 
-    if (ID3D12CommandQueue* queue = g_uploadQueue.exchange(nullptr)) {
-        queue->Release();
+    if (uploadQueue) {
+        uploadQueue->Release();
     }
-    if (ID3D12Device* device = g_device.exchange(nullptr)) {
+    if (device) {
         device->Release();
     }
 }
@@ -1670,6 +1680,13 @@ void ReleaseMoonHookResources() {
 bool InitializeMoonTextureOverride(HMODULE module) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_module = module;
+    const MH_STATUS initStatus = MH_Initialize();
+    if (initStatus != MH_OK && initStatus != MH_ERROR_ALREADY_INITIALIZED) {
+        SetStatus("Moon texture: MinHook init failed");
+        Log("[W] moon-main MinHook init failed: %d\n", static_cast<int>(initStatus));
+        return true;
+    }
+    Log("[moon-main] MinHook ready status=%d\n", static_cast<int>(initStatus));
     ResolveMoonFingerprintTargets();
     StartIntegratedMoonHook();
     SetStatus("Moon texture: integrated hook starting");
