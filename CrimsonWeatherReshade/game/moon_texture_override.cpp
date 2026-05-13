@@ -1,5 +1,6 @@
 #include "pch.h"
 
+#include "moon_image_loader.h"
 #include "moon_texture_override.h"
 #include "runtime_shared.h"
 
@@ -27,6 +28,7 @@ bool MoonTextureReady() { return false; }
 void MoonTextureRefreshList() {}
 int MoonTextureOptionCount() { return 1; }
 const char* MoonTextureOptionName(int) { return "Native"; }
+const char* MoonTextureOptionLabel(int) { return "Native"; }
 const char* MoonTextureOptionPack(int) { return ""; }
 int MoonTextureFindOptionByName(const char*) { return 0; }
 int MoonTextureSelectedOption() { return 0; }
@@ -39,6 +41,7 @@ namespace {
 
 struct MoonTextureOption {
     std::string name;
+    std::string label;
     std::string pack;
     std::string path;
 };
@@ -106,6 +109,7 @@ std::vector<MoonSrvBinding> g_moonSrvBindings;
 std::vector<CachedMoonTexture> g_moonTextureCache;
 std::string g_selectedMoonPath;
 std::string g_activeMoonPath;
+std::string g_lastMissingMoonTextureWarning;
 DXGI_FORMAT g_fileMoonFormat = DXGI_FORMAT_UNKNOWN;
 UINT g_fileMoonMips = 0;
 UINT g_fileMoonWidth = 0;
@@ -142,6 +146,10 @@ bool StringEqualsIgnoreCase(const std::string& a, const std::string& b) {
     return _stricmp(a.c_str(), b.c_str()) == 0;
 }
 
+bool IsMoonTextureFileName(const std::string& name) {
+    return StringEqualsIgnoreCase(name, "moon.dds") || StringEqualsIgnoreCase(name, "moon.png");
+}
+
 std::string MoonTextureNameFromPath(const std::filesystem::path& root, const std::filesystem::path& path) {
     std::error_code ec;
     const std::filesystem::path relative = std::filesystem::relative(path, root, ec);
@@ -154,7 +162,7 @@ std::string MoonTextureNameFromPath(const std::filesystem::path& root, const std
 
     const size_t count = parts.size();
     if (count >= 5 &&
-        StringEqualsIgnoreCase(parts[count - 1], "moon.dds") &&
+        IsMoonTextureFileName(parts[count - 1]) &&
         StringEqualsIgnoreCase(parts[count - 2], "texture") &&
         StringEqualsIgnoreCase(parts[count - 3], "0002") &&
         StringEqualsIgnoreCase(parts[count - 4], "files")) {
@@ -184,7 +192,7 @@ std::string MoonTexturePackFromPath(const std::filesystem::path& root, const std
 
     const size_t count = parts.size();
     if (count >= 5 &&
-        StringEqualsIgnoreCase(parts[count - 1], "moon.dds") &&
+        IsMoonTextureFileName(parts[count - 1]) &&
         StringEqualsIgnoreCase(parts[count - 2], "texture") &&
         StringEqualsIgnoreCase(parts[count - 3], "0002") &&
         StringEqualsIgnoreCase(parts[count - 4], "files")) {
@@ -209,17 +217,18 @@ void RefreshMoonTextureListLocked() {
             }
 
             const std::filesystem::path path = it->path();
-            if (!StringEqualsIgnoreCase(path.filename().string(), "moon.dds")) {
+            if (!IsMoonTextureFileName(path.filename().string())) {
                 continue;
             }
 
-            std::string name = MoonTextureNameFromPath(root, path);
+            const std::string label = MoonTextureNameFromPath(root, path);
             const std::string pack = MoonTexturePackFromPath(root, path);
+            std::string name = label;
             if (!pack.empty() && !StringEqualsIgnoreCase(pack, "moon")) {
                 name += " (" + pack + ")";
             }
 
-            g_moonOptions.push_back({ name, (!pack.empty() && !StringEqualsIgnoreCase(pack, "moon")) ? pack : std::string{}, path.string() });
+            g_moonOptions.push_back({ name, label, (!pack.empty() && !StringEqualsIgnoreCase(pack, "moon")) ? pack : std::string{}, path.string() });
         }
     }
 
@@ -228,7 +237,7 @@ void RefreshMoonTextureListLocked() {
         if (packCmp != 0) {
             return packCmp < 0;
         }
-        return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
+        return _stricmp(a.label.c_str(), b.label.c_str()) < 0;
     });
 
     g_selectedMoonOption = 0;
@@ -265,6 +274,8 @@ const char* FormatName(DXGI_FORMAT format) {
     case DXGI_FORMAT_BC3_TYPELESS: return "BC3_TYPELESS";
     case DXGI_FORMAT_BC3_UNORM: return "BC3_UNORM";
     case DXGI_FORMAT_BC3_UNORM_SRGB: return "BC3_UNORM_SRGB";
+    case DXGI_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM_SRGB";
     default: return "other";
     }
 }
@@ -275,93 +286,17 @@ bool IsBc1Format(DXGI_FORMAT format) {
            format == DXGI_FORMAT_BC1_UNORM_SRGB;
 }
 
-uint32_t ReadU32(const uint8_t* p) {
-    return static_cast<uint32_t>(p[0]) |
-           (static_cast<uint32_t>(p[1]) << 8) |
-           (static_cast<uint32_t>(p[2]) << 16) |
-           (static_cast<uint32_t>(p[3]) << 24);
-}
-
-bool LoadDdsFile(std::vector<uint8_t>& pixels, UINT& width, UINT& height, UINT& mips, DXGI_FORMAT& format) {
-    const std::string path = g_selectedMoonPath;
-    if (path.empty()) {
-        SetStatus("Moon texture: Native");
-        return false;
-    }
-
-    FILE* f = nullptr;
-    fopen_s(&f, path.c_str(), "rb");
-    if (!f) {
-        SetStatus("Moon texture: selected DDS missing");
-        Log("[moon-main] selected DDS missing path=%s\n", path.c_str());
-        return false;
-    }
-
-    fseek(f, 0, SEEK_END);
-    const long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size <= 128) {
-        fclose(f);
-        SetStatus("Moon texture: DDS too small");
-        Log("[moon-main] DDS too small size=%ld path=%s\n", size, path.c_str());
-        return false;
-    }
-
-    std::vector<uint8_t> file(static_cast<size_t>(size));
-    if (fread(file.data(), 1, file.size(), f) != file.size()) {
-        fclose(f);
-        SetStatus("Moon texture: DDS read failed");
-        Log("[moon-main] DDS read failed size=%ld path=%s\n", size, path.c_str());
-        return false;
-    }
-    fclose(f);
-
-    if (memcmp(file.data(), "DDS ", 4) != 0 || ReadU32(file.data() + 4) != 124 || ReadU32(file.data() + 76) != 32) {
-        SetStatus("Moon texture: invalid DDS header");
-        Log("[moon-main] DDS header invalid path=%s\n", path.c_str());
-        return false;
-    }
-
-    width = ReadU32(file.data() + 16);
-    height = ReadU32(file.data() + 12);
-    mips = std::max(1u, ReadU32(file.data() + 28));
-    const uint32_t pfFlags = ReadU32(file.data() + 80);
-    const uint32_t fourcc = ReadU32(file.data() + 84);
-    if ((pfFlags & 4) == 0) {
-        SetStatus("Moon texture: unsupported DDS format");
-        Log("[moon-main] DDS is not FourCC compressed pfFlags=0x%X path=%s\n", pfFlags, path.c_str());
-        return false;
-    }
-
-    if (fourcc == ReadU32(reinterpret_cast<const uint8_t*>("DXT1"))) {
-        format = DXGI_FORMAT_BC1_UNORM;
-    } else if (fourcc == ReadU32(reinterpret_cast<const uint8_t*>("DXT5"))) {
-        format = DXGI_FORMAT_BC3_UNORM;
-    } else {
-        char cc[5]{ static_cast<char>(fourcc & 0xFF), static_cast<char>((fourcc >> 8) & 0xFF), static_cast<char>((fourcc >> 16) & 0xFF), static_cast<char>((fourcc >> 24) & 0xFF), 0 };
-        SetStatus("Moon texture: unsupported %s", cc);
-        Log("[moon-main] DDS unsupported fourcc=%s path=%s\n", cc, path.c_str());
-        return false;
-    }
-
-    pixels.assign(file.begin() + 128, file.end());
-    Log("[moon-main] loaded DDS %s %ux%u mips=%u fmt=%s(%u) bytes=%zu\n",
-        path.c_str(),
-        width,
-        height,
-        mips,
-        FormatName(format),
-        static_cast<unsigned>(format),
-        pixels.size());
-    return true;
-}
-
 DXGI_FORMAT SrvFormatForFileMoon(DXGI_FORMAT requested) {
     if (g_fileMoonFormat == DXGI_FORMAT_BC1_UNORM) {
         return requested == DXGI_FORMAT_BC1_UNORM_SRGB ? DXGI_FORMAT_BC1_UNORM_SRGB : DXGI_FORMAT_BC1_UNORM;
     }
     if (g_fileMoonFormat == DXGI_FORMAT_BC3_UNORM) {
         return requested == DXGI_FORMAT_BC1_UNORM_SRGB || requested == DXGI_FORMAT_BC3_UNORM_SRGB ? DXGI_FORMAT_BC3_UNORM_SRGB : DXGI_FORMAT_BC3_UNORM;
+    }
+    if (g_fileMoonFormat == DXGI_FORMAT_R8G8B8A8_UNORM) {
+        return requested == DXGI_FORMAT_BC1_UNORM_SRGB || requested == DXGI_FORMAT_BC3_UNORM_SRGB || requested == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+            ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+            : DXGI_FORMAT_R8G8B8A8_UNORM;
     }
     return requested;
 }
@@ -599,34 +534,28 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
         return cached->resource;
     }
 
-    std::vector<uint8_t> pixels;
-    UINT width = 0;
-    UINT height = 0;
-    UINT mips = 0;
-    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-    if (!LoadDdsFile(pixels, width, height, mips, format)) {
+    MoonImageData image{};
+    char loadStatus[128] = {};
+    if (!LoadMoonImageFile(requestedPath, image, loadStatus, sizeof(loadStatus))) {
+        SetStatus("Moon texture: %s", loadStatus[0] ? loadStatus : "load failed");
         LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
     }
-
-    const UINT blockBytes = format == DXGI_FORMAT_BC1_UNORM ? 8u : 16u;
-    const UINT sourceRows = std::max(1u, (height + 3u) / 4u);
-    const UINT64 sourceRowPitch = static_cast<UINT64>((width + 3u) / 4u) * blockBytes;
-    const UINT64 requiredBytes = sourceRowPitch * sourceRows;
-    if (pixels.size() < requiredBytes) {
-        SetStatus("Moon texture: DDS pixel data too small");
-        Log("[moon-main] DDS pixel data too small have=%zu need=%llu\n", pixels.size(), static_cast<unsigned long long>(requiredBytes));
+    const UINT64 requiredBytes = image.sourceRowPitch * image.sourceRows;
+    if (image.pixels.size() < requiredBytes) {
+        SetStatus("Moon texture: pixel data too small");
+        Log("[moon-main] pixel data too small have=%zu need=%llu\n", image.pixels.size(), static_cast<unsigned long long>(requiredBytes));
         LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
     }
 
     D3D12_RESOURCE_DESC texDesc{};
     texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Width = width;
-    texDesc.Height = height;
+    texDesc.Width = image.width;
+    texDesc.Height = image.height;
     texDesc.DepthOrArraySize = 1;
     texDesc.MipLevels = 1;
-    texDesc.Format = format;
+    texDesc.Format = image.format;
     texDesc.SampleDesc.Count = 1;
     texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
@@ -684,9 +613,9 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
     }
 
     uint8_t* dst = mapped + layout.Offset;
-    const uint8_t* src = pixels.data();
-    for (UINT y = 0; y < sourceRows; ++y) {
-        memcpy(dst + static_cast<size_t>(y) * layout.Footprint.RowPitch, src + static_cast<size_t>(y) * sourceRowPitch, static_cast<size_t>(sourceRowPitch));
+    const uint8_t* src = image.pixels.data();
+    for (UINT y = 0; y < image.sourceRows; ++y) {
+        memcpy(dst + static_cast<size_t>(y) * layout.Footprint.RowPitch, src + static_cast<size_t>(y) * image.sourceRowPitch, static_cast<size_t>(image.sourceRowPitch));
     }
     upload->Unmap(0, nullptr);
 
@@ -767,15 +696,15 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
     allocator->Release();
     upload->Release();
 
-    g_moonTextureCache.push_back({ requestedPath, texture, format, 1, width, height });
+    g_moonTextureCache.push_back({ requestedPath, texture, image.format, 1, image.width, image.height });
     ActivateCachedMoonTextureLocked(g_moonTextureCache.back());
-    SetStatus("Moon texture: loaded %ux%u", width, height);
+    SetStatus("Moon texture: loaded %ux%u", image.width, image.height);
     Log("[moon-main] runtime moon resource ready res=%p %ux%u fmt=%s(%u) uploadSize=%llu cached=%zu\n",
         texture,
-        width,
-        height,
-        FormatName(format),
-        static_cast<unsigned>(format),
+        image.width,
+        image.height,
+        FormatName(image.format),
+        static_cast<unsigned>(image.format),
         static_cast<unsigned long long>(uploadSize),
         g_moonTextureCache.size());
 
@@ -1581,6 +1510,20 @@ const char* MoonTextureOptionName(int index) {
     return g_moonOptions[static_cast<size_t>(index - 1)].name.c_str();
 }
 
+const char* MoonTextureOptionLabel(int index) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_moonOptionsScanned) {
+        RefreshMoonTextureListLocked();
+    }
+    if (index == 0) {
+        return "Native";
+    }
+    if (index < 0 || index > static_cast<int>(g_moonOptions.size())) {
+        return "";
+    }
+    return g_moonOptions[static_cast<size_t>(index - 1)].label.c_str();
+}
+
 const char* MoonTextureOptionPack(int index) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_moonOptionsScanned) {
@@ -1606,6 +1549,19 @@ int MoonTextureFindOptionByName(const char* name) {
         if (_stricmp(g_moonOptions[i].name.c_str(), name) == 0) {
             return static_cast<int>(i + 1);
         }
+    }
+
+    int labelMatch = -1;
+    for (size_t i = 0; i < g_moonOptions.size(); ++i) {
+        if (_stricmp(g_moonOptions[i].label.c_str(), name) == 0) {
+            if (labelMatch >= 0) {
+                return -1;
+            }
+            labelMatch = static_cast<int>(i + 1);
+        }
+    }
+    if (labelMatch >= 0) {
+        return labelMatch;
     }
     return -1;
 }
@@ -1651,7 +1607,14 @@ bool MoonTextureSelectByName(const char* name) {
         return index > 0;
     }
 
-    Log("[W] moon texture preset missing: %s\n", name ? name : "");
+    const char* missingName = name ? name : "";
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_lastMissingMoonTextureWarning != missingName) {
+            g_lastMissingMoonTextureWarning = missingName;
+            Log("[W] moon texture preset missing: %s\n", missingName);
+        }
+    }
     MoonTextureSelectOption(0);
     return false;
 }

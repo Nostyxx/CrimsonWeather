@@ -93,7 +93,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalDependencies>d3d12.lib;dxgi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;windowscodecs.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
@@ -122,6 +122,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
+    <ClInclude Include="include\moon_image_loader.h" />
     <ClInclude Include="include\moon_texture_override.h" />
     <ClInclude Include="include\overlay_bridge.h" />
     <ClInclude Include="include\preset_service.h" />
@@ -135,6 +136,7 @@
     <ClCompile Include="core\runtime_state.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="game\aob_scan.cpp" />
+    <ClCompile Include="game\moon_image_loader.cpp" />
     <ClCompile Include="game\moon_texture_override.cpp" />
     <ClCompile Include="game\weather_hooks.cpp" />
     <ClCompile Include="pch.cpp">

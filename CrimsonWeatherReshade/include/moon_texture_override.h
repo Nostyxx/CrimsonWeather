@@ -10,6 +10,7 @@ bool MoonTextureReady();
 void MoonTextureRefreshList();
 int MoonTextureOptionCount();
 const char* MoonTextureOptionName(int index);
+const char* MoonTextureOptionLabel(int index);
 const char* MoonTextureOptionPack(int index);
 int MoonTextureFindOptionByName(const char* name);
 int MoonTextureSelectedOption();

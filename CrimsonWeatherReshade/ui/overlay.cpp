@@ -2030,9 +2030,11 @@ void DrawCelestialTab() {
         int visibleCount = 0;
         for (int i = 0; i < optionCount; ++i) {
             const char* optionName = MoonTextureOptionName(i);
+            const char* optionLabel = MoonTextureOptionLabel(i);
             const bool visible = i == 0
                 ? TextContainsNoCase("Native", g_moonTextureFilter)
-                : (TextContainsNoCase(optionName, g_moonTextureFilter) ||
+                : (TextContainsNoCase(optionLabel, g_moonTextureFilter) ||
+                   TextContainsNoCase(optionName, g_moonTextureFilter) ||
                    TextContainsNoCase(MoonTextureOptionPack(i), g_moonTextureFilter));
             if (!visible) {
                 continue;
@@ -2050,7 +2052,7 @@ void DrawCelestialTab() {
             }
             ++visibleCount;
             const bool selected = i == moonTexture;
-            if (ImGui::Selectable(optionName, selected)) {
+            if (ImGui::Selectable(optionLabel, selected)) {
                 moonTexture = i;
                 if (detachedEdit) {
                     editData.moonTextureEnabled = i > 0;
