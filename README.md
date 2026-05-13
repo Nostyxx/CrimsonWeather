@@ -19,6 +19,7 @@ Main build:
 - `CrimsonWeather.ini`
 - `CrimsonWeather.log` when logging is enabled
 - Preset `.ini` files saved next to the addon
+- Optional moon textures in `CrimsonWeather/moon/{Moon Name}/moon.dds`
 
 Wind-only build:
 - `CrimsonWeather.WindOnly.addon64`
@@ -41,7 +42,7 @@ Tabs and controls:
 - **Presets**: load/save presets and reset sliders
 - **General**: rain, dust, snow, force clear sky, visual time override, wind, no wind
 - **Atmosphere**: cloud amount, cloud height, cloud density, mid clouds, high clouds, fog, no fog
-- **Celestial**: night sky tilt, night sky phase, sun size, sun yaw/pitch lock, moon size, moon yaw/pitch lock, moon rotation
+- **Celestial**: night sky tilt, night sky phase, sun size, sun yaw/pitch lock, moon texture, moon size, moon yaw/pitch lock, moon rotation
 - **Experiment**: 2C, 2D, cloud variation, legacy fog, puddle scale
 - **Status**: current effective values and whether each value comes from global preset or a region override
 
@@ -58,6 +59,8 @@ Supported regions:
 - Abyss
 
 Old preset files still load. Saving a preset rewrites it into the current format.
+
+Moon texture presets save the moon name only, not a full local path.
 
 ## Input
 

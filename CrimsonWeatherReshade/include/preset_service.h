@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 struct WeatherPresetData {
     bool forceClearSky = false;
     bool noRain = false;
@@ -45,6 +47,8 @@ struct WeatherPresetData {
     float moonPitch = 0.0f;
     bool moonRollEnabled = false;
     float moonRoll = 0.0f;
+    bool moonTextureEnabled = false;
+    std::string moonTexture;
     bool fogEnabled = false;
     float fogPercent = 0.0f;
     bool nativeFogEnabled = false;
@@ -92,6 +96,7 @@ struct WeatherPresetSourceMask {
     bool moonYaw = false;
     bool moonPitch = false;
     bool moonRoll = false;
+    bool moonTexture = false;
     bool fog = false;
     bool nativeFog = false;
     bool noFog = false;

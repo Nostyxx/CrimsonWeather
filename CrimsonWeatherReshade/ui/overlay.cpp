@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "overlay_bridge.h"
+#include "moon_texture_override.h"
 #include "preset_service.h"
 #include "runtime_shared.h"
 
@@ -18,12 +19,12 @@ HMODULE g_overlayModule = nullptr;
 bool g_overlayRegistered = false;
 char g_newPresetName[128] = "NewPreset.ini";
 char g_presetFilter[96] = "";
+char g_moonTextureFilter[96] = "";
 char g_timeEditText[32] = "";
 int g_timeEditLastMinute = -1;
 bool g_timeEditActive = false;
 bool g_timeEditFocusRequest = false;
 bool g_timeEditHadFocus = false;
-
 int HourToMinuteOfDay(float hour) {
     const float normalized = NormalizeHour24(hour);
     int minutes = static_cast<int>(std::lround(normalized * 60.0f));
@@ -753,6 +754,12 @@ void DrawStatusTab() {
         DrawStatusRowEnabledFloat(snapshot, "Moon Yaw Lock", snapshot.effective.moonYawEnabled, snapshot.effective.moonYaw, "%.2f", snapshot.regionSource.moonYaw, "Crimson Weather currently locks moon yaw to %s, overriding natural moon movement.");
         DrawStatusRowEnabledFloat(snapshot, "Moon Pitch Lock", snapshot.effective.moonPitchEnabled, snapshot.effective.moonPitch, "%.2f", snapshot.regionSource.moonPitch, "Crimson Weather currently locks moon pitch to %s, overriding natural moon movement.");
         DrawStatusRowEnabledFloat(snapshot, "Moon Rotation", snapshot.effective.moonRollEnabled, snapshot.effective.moonRoll, "%.2f", snapshot.regionSource.moonRoll, "Crimson Weather currently rotates the moon disc to %s.");
+        DrawStatusRowText(
+            snapshot,
+            "Moon Texture",
+            (snapshot.effective.moonTextureEnabled && !snapshot.effective.moonTexture.empty()) ? snapshot.effective.moonTexture.c_str() : "NATIVE",
+            snapshot.regionSource.moonTexture,
+            "Crimson Weather currently swaps the moon texture.");
 
         const bool fogForcedZero = snapshot.effective.forceClearSky || snapshot.effective.noFog;
         const bool fogForceSource = snapshot.effective.forceClearSky ? snapshot.regionSource.forceClearSky : snapshot.regionSource.noFog;
@@ -1978,6 +1985,97 @@ void DrawCelestialTab() {
 
     ImGui::Spacing();
     ImGui::SeparatorText("Moon");
+    int moonTexture = detachedEdit
+        ? (editData.moonTextureEnabled ? MoonTextureFindOptionByName(editData.moonTexture.c_str()) : 0)
+        : MoonTextureSelectedOption();
+    if (moonTexture < 0) {
+        moonTexture = 0;
+    }
+    const bool moonTextureReady = MoonTextureReady();
+    const bool moonTextureOverrideChanged = DrawOverrideToggle(regionScoped ? &overrideMask.moonTexture : nullptr);
+    const bool moonTextureRegionOverride = !regionScoped || overrideMask.moonTexture;
+    if (!moonTextureRegionOverride) {
+        ImGui::BeginDisabled();
+    }
+    ImGui::TextUnformatted("Moon Texture");
+    if (!moonTextureRegionOverride) {
+        ImGui::EndDisabled();
+    }
+    if (regionScoped) {
+        DrawOverrideBadge(overrideMask.moonTexture);
+    }
+    ImGui::SameLine();
+    const float refreshWidth = 64.0f;
+    const float refreshX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - refreshWidth;
+    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), refreshX));
+    if (ImGui::Button("Refresh", ImVec2(refreshWidth, 0.0f))) {
+        MoonTextureRefreshList();
+    }
+    char inheritedMoonTexture[192] = {};
+    const char* moonTexturePreview = MoonTextureOptionName(moonTexture);
+    if (!moonTextureRegionOverride) {
+        sprintf_s(inheritedMoonTexture, sizeof(inheritedMoonTexture), "G: %s", moonTexturePreview);
+        moonTexturePreview = inheritedMoonTexture;
+    }
+    ImGui::TextDisabled("Selected: %s", moonTexturePreview);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##moon_texture_filter", "Search moon textures", g_moonTextureFilter, IM_ARRAYSIZE(g_moonTextureFilter));
+    if (!moonTextureReady || !moonTextureRegionOverride) {
+        ImGui::BeginDisabled();
+    }
+    const float moonListHeight = min(220.0f, max(112.0f, ImGui::GetTextLineHeightWithSpacing() * 9.0f));
+    if (ImGui::BeginChild("MoonTextureLibrary", ImVec2(0.0f, moonListHeight), true)) {
+        const int optionCount = MoonTextureOptionCount();
+        const char* currentPack = nullptr;
+        int visibleCount = 0;
+        for (int i = 0; i < optionCount; ++i) {
+            const char* optionName = MoonTextureOptionName(i);
+            const bool visible = i == 0
+                ? TextContainsNoCase("Native", g_moonTextureFilter)
+                : (TextContainsNoCase(optionName, g_moonTextureFilter) ||
+                   TextContainsNoCase(MoonTextureOptionPack(i), g_moonTextureFilter));
+            if (!visible) {
+                continue;
+            }
+            if (i > 0) {
+                const char* pack = MoonTextureOptionPack(i);
+                const char* group = (pack && pack[0]) ? pack : "Loose";
+                if (!currentPack || strcmp(currentPack, group) != 0) {
+                    if (visibleCount > 0) {
+                        ImGui::Separator();
+                    }
+                    ImGui::TextDisabled("%s", group);
+                    currentPack = group;
+                }
+            }
+            ++visibleCount;
+            const bool selected = i == moonTexture;
+            if (ImGui::Selectable(optionName, selected)) {
+                moonTexture = i;
+                if (detachedEdit) {
+                    editData.moonTextureEnabled = i > 0;
+                    editData.moonTexture = i > 0 ? optionName : "";
+                    if (regionScoped) overrideMask.moonTexture = true;
+                    editChanged = true;
+                } else {
+                    MoonTextureSelectOption(i);
+                }
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        if (visibleCount == 0) {
+            ImGui::TextDisabled("No moon texture matches");
+        }
+    }
+    ImGui::EndChild();
+    if (!moonTextureReady || !moonTextureRegionOverride) {
+        ImGui::EndDisabled();
+    }
+    if (moonTextureOverrideChanged) {
+        editChanged = true;
+    }
 
     float moonSize = detachedEdit
         ? (editData.moonSizeEnabled ? editData.moonSize : nativeMoonSize)
