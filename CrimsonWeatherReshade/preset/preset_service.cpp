@@ -1831,6 +1831,46 @@ bool WritePresetPackageInternal(const char* path, const WeatherPresetPackage& pa
     return ok;
 }
 
+bool SanitizeMissingMoonTexture(WeatherPresetData& data, const char* scopeLabel) {
+    if (!data.moonTextureEnabled || data.moonTexture.empty()) {
+        return false;
+    }
+
+    if (MoonTextureFindOptionByName(data.moonTexture.c_str()) >= 0) {
+        return false;
+    }
+
+    Log("[preset] missing moon texture in %s: %s -> Native\n", scopeLabel, data.moonTexture.c_str());
+    data.moonTextureEnabled = false;
+    data.moonTexture.clear();
+    return true;
+}
+
+bool SanitizeMissingMoonTexturesInPackage(WeatherPresetPackage& package) {
+    MoonTextureRefreshList();
+
+    bool changed = SanitizeMissingMoonTexture(package.global, "Global");
+    for (int regionId = 1; regionId < kPresetRegionCount; ++regionId) {
+        if (!package.regionEnabled[regionId] || !package.regionMask[regionId].moonTexture) {
+            continue;
+        }
+        changed = SanitizeMissingMoonTexture(package.region[regionId], RegionDisplayName(regionId)) || changed;
+    }
+    return changed;
+}
+
+void SanitizeAndPersistPresetPackageIfNeeded(const PresetListItem& item, WeatherPresetPackage& package) {
+    if (!SanitizeMissingMoonTexturesInPackage(package)) {
+        return;
+    }
+
+    if (WritePresetPackageInternal(item.fullPath.c_str(), package)) {
+        Log("[preset] repaired missing moon texture entries in %s\n", item.fileName.c_str());
+    } else {
+        Log("[W] failed to repair missing moon texture entries in %s\n", item.fileName.c_str());
+    }
+}
+
 bool IsValidUserPresetName(const std::string& rawName, std::string& outFileName) {
     std::string trimmed = TrimCopy(rawName);
     if (trimmed.empty()) return false;
@@ -1896,6 +1936,7 @@ void RefreshSelectedPresetBaselineFromDisk() {
         ClearSelectedPresetBaseline();
         return;
     }
+    SanitizeAndPersistPresetPackageIfNeeded(g_presetItems[g_selectedPresetIndex], package);
     SetSelectedPresetBaseline(package);
 }
 } // namespace
@@ -2105,6 +2146,7 @@ bool Preset_SelectIndex(int index) {
         Log("[preset] failed to load %s\n", g_presetItems[index].fileName.c_str());
         return false;
     }
+    SanitizeAndPersistPresetPackageIfNeeded(g_presetItems[index], package);
     ApplyDetectedRegionFromPackage(package);
     g_selectedPresetIndex = index;
     SetSelectedPresetBaseline(package);

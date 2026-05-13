@@ -70,6 +70,13 @@ struct CachedMoonTexture {
     UINT height = 0;
 };
 
+struct MoonFingerprintTarget {
+    const char* name = "";
+    const char* pattern = "";
+    uintptr_t start = 0;
+    size_t range = 0;
+};
+
 using PFN_D3D12CreateDevice = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
 using PFN_CreateCommandQueue = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, const D3D12_COMMAND_QUEUE_DESC*, REFIID, void**);
 using PFN_CreateShaderResourceView = void(STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Resource*, const D3D12_SHADER_RESOURCE_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
@@ -98,6 +105,7 @@ std::atomic<bool> g_deviceHooksInstalled{ false };
 std::atomic<bool> g_nativeMoonLocked{ false };
 std::atomic<uint32_t> g_nativeCandidateLogCount{ 0 };
 std::atomic<uint32_t> g_nativeRejectLogCount{ 0 };
+std::atomic<uint32_t> g_nativeFingerprintRejectCount{ 0 };
 std::atomic<uint32_t> g_descriptorCopyLogCount{ 0 };
 std::atomic<ID3D12Device*> g_device{ nullptr };
 std::atomic<ID3D12CommandQueue*> g_uploadQueue{ nullptr };
@@ -119,6 +127,43 @@ bool g_moonSawSrgbSrv = false;
 uint32_t g_moonSourceSrvCount = 0;
 uint32_t g_moonCopiedSrvCount = 0;
 int g_lastMoonProofLevel = -99;
+bool g_moonFingerprintSummaryLogged = false;
+MoonFingerprintTarget g_moonFingerprintTargets[] = {
+    {
+        "MoonTextureNodeApply",
+        "40 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 78 "
+        "48 8B FA 4C 8B F1 8B 81 60 01 00 00 45 32 E4 "
+        "44 88 A4 24 C0 00 00 00 48 8B D1 48 8D 8C 24 C8 00 00 00 "
+        "E8 ?? ?? ?? ?? 90 65 48 8B 04 25 58 00 00 00",
+        0,
+        0x500
+    },
+    {
+        "MoonTextureWorkerUpdate",
+        "40 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 38 "
+        "48 8B E9 40 32 FF 40 88 BC 24 88 00 00 00 "
+        "0F B6 81 08 03 00 00 88 84 24 90 00 00 00 8B 99 20 03 00 00",
+        0,
+        0x800
+    },
+    {
+        "MoonTextureWorkerLoop",
+        "48 89 5C 24 20 56 57 41 56 48 83 EC 20 48 8B F9 "
+        "48 8D 4C 24 50 E8 ?? ?? ?? ?? 44 0F B6 B7 08 03 00 00 "
+        "41 80 FE FF 0F 84 ?? ?? ?? ?? 48 8B 4F 10 B2 03 E8",
+        0,
+        0x300
+    },
+    {
+        "MoonTextureThreadStart",
+        "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 40 "
+        "65 48 8B 04 25 58 00 00 00 48 8B F9 B9 70 02 00 00 "
+        "48 8B 10 48 8B 07 48 89 04 11 48 8D 4C 24 50 E8 ?? ?? ?? ??",
+        0,
+        0x200
+    },
+};
+bool g_moonFingerprintResolved = false;
 
 void SetStatus(const char* fmt, ...) {
     va_list args;
@@ -144,6 +189,156 @@ std::string MoonRootDirectory() {
 
 bool StringEqualsIgnoreCase(const std::string& a, const std::string& b) {
     return _stricmp(a.c_str(), b.c_str()) == 0;
+}
+
+int HexNibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+bool ParseBytePattern(const char* pattern, std::vector<uint8_t>& bytes, std::vector<uint8_t>& mask) {
+    bytes.clear();
+    mask.clear();
+    if (!pattern) {
+        return false;
+    }
+
+    const char* p = pattern;
+    while (*p) {
+        while (*p == ' ') {
+            ++p;
+        }
+        if (!*p) {
+            break;
+        }
+
+        if (p[0] == '?' && p[1] == '?') {
+            bytes.push_back(0);
+            mask.push_back(0);
+            p += 2;
+            continue;
+        }
+
+        const int hi = HexNibble(p[0]);
+        const int lo = HexNibble(p[1]);
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
+
+        bytes.push_back(static_cast<uint8_t>((hi << 4) | lo));
+        mask.push_back(0xFF);
+        p += 2;
+    }
+
+    return !bytes.empty() && bytes.size() == mask.size();
+}
+
+uintptr_t ScanExecutableModulePattern(const char* pattern) {
+    std::vector<uint8_t> bytes;
+    std::vector<uint8_t> mask;
+    if (!ParseBytePattern(pattern, bytes, mask)) {
+        return 0;
+    }
+
+    auto* module = reinterpret_cast<uint8_t*>(GetModuleHandleA(nullptr));
+    if (!module) {
+        return 0;
+    }
+
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        return 0;
+    }
+
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(module + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) {
+        return 0;
+    }
+
+    auto* section = IMAGE_FIRST_SECTION(nt);
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
+        if ((section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0) {
+            continue;
+        }
+
+        const size_t size = section->Misc.VirtualSize;
+        if (size < bytes.size()) {
+            continue;
+        }
+
+        const uintptr_t base = reinterpret_cast<uintptr_t>(module) + section->VirtualAddress;
+        auto* mem = reinterpret_cast<const uint8_t*>(base);
+        for (size_t j = 0; j <= size - bytes.size(); ++j) {
+            bool match = true;
+            for (size_t k = 0; k < bytes.size(); ++k) {
+                if (mask[k] && mem[j + k] != bytes[k]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return base + j;
+            }
+        }
+    }
+
+    return 0;
+}
+
+bool ResolveMoonFingerprintTargets() {
+    if (g_moonFingerprintResolved) {
+        return true;
+    }
+
+    HMODULE exe = GetModuleHandleA(nullptr);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(exe);
+    bool allFound = base != 0;
+    for (MoonFingerprintTarget& target : g_moonFingerprintTargets) {
+        target.start = ScanExecutableModulePattern(target.pattern);
+        if (target.start) {
+            Log("[moon-main] fingerprint %s = %p rva=0x%llX range=0x%zX\n",
+                target.name,
+                reinterpret_cast<void*>(target.start),
+                static_cast<unsigned long long>(target.start - base),
+                target.range);
+        } else {
+            allFound = false;
+            Log("[W] moon-main fingerprint %s AOB not found\n", target.name);
+        }
+    }
+
+    g_moonFingerprintResolved = allFound;
+    return allFound;
+}
+
+void LogMoonFingerprintSummary() {
+    if (g_moonFingerprintSummaryLogged) {
+        return;
+    }
+
+    HMODULE exe = GetModuleHandleA(nullptr);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(exe);
+    int ready = 0;
+    for (const MoonFingerprintTarget& target : g_moonFingerprintTargets) {
+        if (target.start) {
+            ++ready;
+        }
+    }
+
+    Log("[moon-main] fingerprint summary ready=%d/%zu\n", ready, std::size(g_moonFingerprintTargets));
+    for (const MoonFingerprintTarget& target : g_moonFingerprintTargets) {
+        if (target.start && base) {
+            Log("[moon-main] fingerprint target %-24s rva=0x%llX range=0x%llX\n",
+                target.name,
+                static_cast<unsigned long long>(target.start - base),
+                static_cast<unsigned long long>(target.range));
+        } else {
+            Log("[W] moon-main fingerprint target %-24s unresolved\n", target.name);
+        }
+    }
+    g_moonFingerprintSummaryLogged = true;
 }
 
 bool IsMoonTextureFileName(const std::string& name) {
@@ -210,6 +405,11 @@ void RefreshMoonTextureListLocked() {
     g_moonOptions.clear();
     const std::filesystem::path root = MoonRootDirectory();
     std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    if (ec) {
+        Log("[W] moon-ui failed to create moon texture folder %s error=%d\n", root.string().c_str(), ec.value());
+        ec.clear();
+    }
     if (std::filesystem::exists(root, ec)) {
         for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec)) {
             if (ec || !it->is_regular_file(ec)) {
@@ -322,31 +522,24 @@ bool IsNativeMoonDesc1(const D3D12_RESOURCE_DESC1* desc) {
 }
 
 bool CurrentStackHasMoonLoaderFingerprint() {
-    HMODULE exe = GetModuleHandleA(nullptr);
-    if (!exe) {
+    if (!ResolveMoonFingerprintTargets()) {
         return false;
     }
 
     void* frames[48]{};
     const USHORT count = CaptureStackBackTrace(0, 48, frames, nullptr);
-    const uintptr_t base = reinterpret_cast<uintptr_t>(exe);
     int hits = 0;
-    const uintptr_t targets[] = {
-        0x105FFC2,
-        0x106A0BD,
-        0x1069368,
-        0x1080E72,
-    };
+    bool matchedTargets[std::size(g_moonFingerprintTargets)]{};
 
     for (USHORT i = 0; i < count; ++i) {
         const uintptr_t addr = reinterpret_cast<uintptr_t>(frames[i]);
-        if (addr < base) {
-            continue;
-        }
-
-        const uintptr_t rva = addr - base;
-        for (uintptr_t target : targets) {
-            if (rva >= target && rva <= target + 0x40) {
+        for (size_t targetIndex = 0; targetIndex < std::size(g_moonFingerprintTargets); ++targetIndex) {
+            const MoonFingerprintTarget& target = g_moonFingerprintTargets[targetIndex];
+            if (!target.start || matchedTargets[targetIndex]) {
+                continue;
+            }
+            if (addr >= target.start && addr < target.start + target.range) {
+                matchedTargets[targetIndex] = true;
                 ++hits;
                 break;
             }
@@ -360,14 +553,28 @@ bool ShouldTrackNativeMoonDesc(const D3D12_RESOURCE_DESC* desc) {
     if (!IsNativeMoonDesc(desc) || g_nativeMoonLocked.load()) {
         return false;
     }
-    return CurrentStackHasMoonLoaderFingerprint();
+    const bool matched = CurrentStackHasMoonLoaderFingerprint();
+    if (!matched) {
+        const uint32_t count = g_nativeFingerprintRejectCount.fetch_add(1) + 1;
+        if (count == 128) {
+            Log("[moon-main] unmatched 512x512 BC1/10mip allocation count=%u; if moon never proves, fingerprint AOB may need a game-patch update\n", count);
+        }
+    }
+    return matched;
 }
 
 bool ShouldTrackNativeMoonDesc1(const D3D12_RESOURCE_DESC1* desc) {
     if (!IsNativeMoonDesc1(desc) || g_nativeMoonLocked.load()) {
         return false;
     }
-    return CurrentStackHasMoonLoaderFingerprint();
+    const bool matched = CurrentStackHasMoonLoaderFingerprint();
+    if (!matched) {
+        const uint32_t count = g_nativeFingerprintRejectCount.fetch_add(1) + 1;
+        if (count == 128) {
+            Log("[moon-main] unmatched 512x512 BC1/10mip allocation count=%u; if moon never proves, fingerprint AOB may need a game-patch update\n", count);
+        }
+    }
+    return matched;
 }
 
 const char* MoonProofNameLocked() {
@@ -438,7 +645,7 @@ HRESULT CreateCommittedResourceRaw(ID3D12Device* device,
     return device->CreateCommittedResource(heapProperties, heapFlags, desc, initialState, nullptr, riid, resource);
 }
 
-ID3D12CommandQueue* EnsureUploadQueueLocked(ID3D12Device* device) {
+ID3D12CommandQueue* EnsureUploadQueue(ID3D12Device* device) {
     if (ID3D12CommandQueue* queue = g_uploadQueue.load()) {
         return queue;
     }
@@ -497,6 +704,28 @@ void DeactivateFileMoonResourceLocked() {
     g_fileMoonHeight = 0;
 }
 
+void EnforceMoonTextureCacheLimitLocked() {
+    constexpr size_t kMoonTextureCacheLimit = 4;
+    while (g_moonTextureCache.size() > kMoonTextureCacheLimit) {
+        auto evict = g_moonTextureCache.end();
+        for (auto it = g_moonTextureCache.begin(); it != g_moonTextureCache.end(); ++it) {
+            if (!StringEqualsIgnoreCase(it->path, g_activeMoonPath)) {
+                evict = it;
+                break;
+            }
+        }
+        if (evict == g_moonTextureCache.end()) {
+            return;
+        }
+
+        if (evict->resource) {
+            evict->resource->Release();
+        }
+        Log("[moon-main] cache evicted path=%s cached=%zu\n", evict->path.c_str(), g_moonTextureCache.size() - 1);
+        g_moonTextureCache.erase(evict);
+    }
+}
+
 int RewriteTrackedMoonDescriptorsLocked(ID3D12Resource* replacement);
 
 ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
@@ -509,8 +738,9 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
         return nullptr;
     }
 
+    std::string requestedPath;
     EnterCriticalSection(&g_moonHookLock);
-    const std::string requestedPath = g_selectedMoonPath;
+    requestedPath = g_selectedMoonPath;
     if (requestedPath.empty()) {
         LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
@@ -533,19 +763,18 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
         LeaveCriticalSection(&g_moonHookLock);
         return cached->resource;
     }
+    LeaveCriticalSection(&g_moonHookLock);
 
     MoonImageData image{};
     char loadStatus[128] = {};
     if (!LoadMoonImageFile(requestedPath, image, loadStatus, sizeof(loadStatus))) {
         SetStatus("Moon texture: %s", loadStatus[0] ? loadStatus : "load failed");
-        LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
     }
     const UINT64 requiredBytes = image.sourceRowPitch * image.sourceRows;
     if (image.pixels.size() < requiredBytes) {
         SetStatus("Moon texture: pixel data too small");
         Log("[moon-main] pixel data too small have=%zu need=%llu\n", image.pixels.size(), static_cast<unsigned long long>(requiredBytes));
-        LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
     }
 
@@ -570,7 +799,6 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
     if (FAILED(hr) || !texture) {
         SetStatus("Moon texture: create texture failed");
         Log("[moon-main] create selected moon texture failed hr=0x%08X\n", static_cast<unsigned>(hr));
-        LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
     }
 
@@ -596,7 +824,6 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
         SetStatus("Moon texture: create upload failed");
         Log("[moon-main] create upload buffer failed hr=0x%08X\n", static_cast<unsigned>(hr));
         texture->Release();
-        LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
     }
 
@@ -608,7 +835,6 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
         Log("[moon-main] upload map failed hr=0x%08X\n", static_cast<unsigned>(hr));
         upload->Release();
         texture->Release();
-        LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
     }
 
@@ -619,12 +845,11 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
     }
     upload->Unmap(0, nullptr);
 
-    ID3D12CommandQueue* queue = EnsureUploadQueueLocked(device);
+    ID3D12CommandQueue* queue = EnsureUploadQueue(device);
     if (!queue) {
         SetStatus("Moon texture: upload queue failed");
         upload->Release();
         texture->Release();
-        LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
     }
 
@@ -643,7 +868,6 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
         if (allocator) allocator->Release();
         upload->Release();
         texture->Release();
-        LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
     }
 
@@ -672,7 +896,6 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
         allocator->Release();
         upload->Release();
         texture->Release();
-        LeaveCriticalSection(&g_moonHookLock);
         return nullptr;
     }
 
@@ -696,8 +919,32 @@ ID3D12Resource* EnsureFileMoonResource(ID3D12Device* device) {
     allocator->Release();
     upload->Release();
 
+    EnterCriticalSection(&g_moonHookLock);
+    if (!StringEqualsIgnoreCase(g_selectedMoonPath, requestedPath)) {
+        Log("[moon-main] discard loaded moon because selection changed path=%s current=%s\n", requestedPath.c_str(), g_selectedMoonPath.c_str());
+        texture->Release();
+        LeaveCriticalSection(&g_moonHookLock);
+        return nullptr;
+    }
+    if (CachedMoonTexture* cached = FindCachedMoonTextureLocked(requestedPath)) {
+        texture->Release();
+        ActivateCachedMoonTextureLocked(*cached);
+        SetStatus("Moon texture: cached %ux%u", cached->width, cached->height);
+        Log("[moon-main] cache won race path=%s res=%p %ux%u fmt=%s(%u) cached=%zu\n",
+            requestedPath.c_str(),
+            cached->resource,
+            cached->width,
+            cached->height,
+            FormatName(cached->format),
+            static_cast<unsigned>(cached->format),
+            g_moonTextureCache.size());
+        LeaveCriticalSection(&g_moonHookLock);
+        return cached->resource;
+    }
+
     g_moonTextureCache.push_back({ requestedPath, texture, image.format, 1, image.width, image.height });
     ActivateCachedMoonTextureLocked(g_moonTextureCache.back());
+    EnforceMoonTextureCacheLimitLocked();
     SetStatus("Moon texture: loaded %ux%u", image.width, image.height);
     Log("[moon-main] runtime moon resource ready res=%p %ux%u fmt=%s(%u) uploadSize=%llu cached=%zu\n",
         texture,
@@ -798,7 +1045,7 @@ void ApplyMoonTexturePath(const char* path) {
     EnterCriticalSection(&g_moonHookLock);
     g_selectedMoonPath = path;
     DeactivateFileMoonResourceLocked();
-    SetStatus("Moon texture: loading selected DDS");
+    SetStatus("Moon texture: loading selected texture");
     Log("[moon-main] selected path=%s trackedBindings=%zu proof=%s\n", g_selectedMoonPath.c_str(), g_moonSrvBindings.size(), MoonProofNameLocked());
     LeaveCriticalSection(&g_moonHookLock);
 
@@ -957,15 +1204,6 @@ void TrackMoonBindingLocked(ID3D12Resource* nativeResource,
         }
     }
 
-    if (isNew) {
-        Log("[moon-main] tracked moon descriptor=0x%llX bindings=%zu copied=%u fmt=%s(%u)\n",
-            static_cast<unsigned long long>(dest.ptr),
-            g_moonSrvBindings.size(),
-            copied ? 1u : 0u,
-            desc ? FormatName(desc->Format) : "null",
-            desc ? static_cast<unsigned>(desc->Format) : 0u);
-    }
-
     UpdateMoonProofStateLocked(copied ? "copied-srv" : "source-srv");
 }
 
@@ -1032,12 +1270,12 @@ void MaybeTrackCopiedMoonDescriptor(ID3D12Device* device,
         }
 
         const uint32_t index = g_descriptorCopyLogCount.fetch_add(1);
-        if (index < 40) {
+        if (index < 4) {
             Log("[moon-main] %s copied moon descriptor src=0x%llX dst=0x%llX\n",
                 tag,
                 static_cast<unsigned long long>(source.ptr),
                 static_cast<unsigned long long>(dest.ptr));
-        } else if (index == 40) {
+        } else if (index == 4) {
             Log("[moon-main] moon descriptor copy log cap reached\n");
         }
     }
@@ -1064,7 +1302,6 @@ HRESULT STDMETHODCALLTYPE HookCreateCommittedResource(ID3D12Device* self,
         EnterCriticalSection(&g_moonHookLock);
         AddMoonCandidateResourceLocked(reinterpret_cast<ID3D12Resource*>(*resource), "CreateCommittedResource native");
         LeaveCriticalSection(&g_moonHookLock);
-        Log("[moon-main] CreateCommittedResource native hr=0x%08X res=%p\n", static_cast<unsigned>(hr), *resource);
     }
     return hr;
 }
@@ -1084,7 +1321,6 @@ HRESULT STDMETHODCALLTYPE HookCreateCommittedResource1(ID3D12Device4* self,
         EnterCriticalSection(&g_moonHookLock);
         AddMoonCandidateResourceLocked(reinterpret_cast<ID3D12Resource*>(*resource), "CreateCommittedResource1 native");
         LeaveCriticalSection(&g_moonHookLock);
-        Log("[moon-main] CreateCommittedResource1 native hr=0x%08X res=%p\n", static_cast<unsigned>(hr), *resource);
     }
     return hr;
 }
@@ -1104,7 +1340,6 @@ HRESULT STDMETHODCALLTYPE HookCreateCommittedResource2(ID3D12Device8* self,
         EnterCriticalSection(&g_moonHookLock);
         AddMoonCandidateResourceLocked(reinterpret_cast<ID3D12Resource*>(*resource), "CreateCommittedResource2 native");
         LeaveCriticalSection(&g_moonHookLock);
-        Log("[moon-main] CreateCommittedResource2 native hr=0x%08X res=%p\n", static_cast<unsigned>(hr), *resource);
     }
     return hr;
 }
@@ -1126,11 +1361,6 @@ HRESULT STDMETHODCALLTYPE HookCreateCommittedResource3(ID3D12Device10* self,
         EnterCriticalSection(&g_moonHookLock);
         AddMoonCandidateResourceLocked(reinterpret_cast<ID3D12Resource*>(*resource), "CreateCommittedResource3 native");
         LeaveCriticalSection(&g_moonHookLock);
-        Log("[moon-main] CreateCommittedResource3 native hr=0x%08X res=%p layout=%u castable=%u\n",
-            static_cast<unsigned>(hr),
-            *resource,
-            static_cast<unsigned>(initialLayout),
-            numCastableFormats);
     }
     return hr;
 }
@@ -1166,6 +1396,14 @@ void STDMETHODCALLTYPE HookCreateShaderResourceView(ID3D12Device* self,
     g_realCreateShaderResourceView(self, srvResource, srvDesc, destDescriptor);
 
     if (hit) {
+        static std::atomic<uint32_t> s_srvLogCount{ 0 };
+        const uint32_t srvLogIndex = s_srvLogCount.fetch_add(1);
+        if (srvLogIndex >= 4) {
+            if (srvLogIndex == 4) {
+                Log("[moon-main] CreateShaderResourceView moon log cap reached\n");
+            }
+            return;
+        }
         Log("[moon-main] CreateShaderResourceView moon res=%p %llux%u mips=%u fmt=%s(%u) srvFmt=%s(%u) desc=0x%llX replaced=%u\n",
             resource,
             static_cast<unsigned long long>(resourceDesc.Width),
@@ -1309,6 +1547,7 @@ void InstallDeviceHooks(ID3D12Device* device) {
 }
 
 HRESULT WINAPI HookD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid, void** device) {
+    LogMoonFingerprintSummary();
     HRESULT hr = g_realD3D12CreateDevice(adapter, minimumFeatureLevel, riid, device);
     Log("[moon-main] D3D12CreateDevice adapter=%p feature=0x%X hr=0x%08X device=%p\n",
         adapter,
@@ -1324,6 +1563,8 @@ HRESULT WINAPI HookD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimu
 DWORD WINAPI MoonHookBootstrapThread(LPVOID) {
     MH_STATUS initStatus = MH_Initialize();
     Log("[moon-main] MinHook init status=%d\n", static_cast<int>(initStatus));
+    ResolveMoonFingerprintTargets();
+    LogMoonFingerprintSummary();
 
     HMODULE d3d12 = nullptr;
     for (int i = 0; i < 300 && !d3d12; ++i) {
@@ -1429,6 +1670,7 @@ void ReleaseMoonHookResources() {
 bool InitializeMoonTextureOverride(HMODULE module) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_module = module;
+    ResolveMoonFingerprintTargets();
     StartIntegratedMoonHook();
     SetStatus("Moon texture: integrated hook starting");
     Log("[moon-main] integrated moon proof hook starting module=%p\n", module);
@@ -1448,17 +1690,25 @@ void ShutdownMoonTextureOverride() {
 }
 
 void MoonTextureReload() {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    RefreshMoonTextureListLocked();
+    std::string selectedName;
+    std::string selectedPath;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        RefreshMoonTextureListLocked();
+        if (const MoonTextureOption* selected = SelectedMoonTextureLocked()) {
+            selectedName = selected->name;
+            selectedPath = selected->path;
+        }
+    }
 
-    if (const MoonTextureOption* selected = SelectedMoonTextureLocked()) {
-        Log("[moon-ui] reload selected %s (%s)\n", selected->name.c_str(), selected->path.c_str());
+    if (!selectedPath.empty()) {
+        Log("[moon-ui] reload selected %s (%s)\n", selectedName.c_str(), selectedPath.c_str());
         if (g_moonHookLockReady.load()) {
             EnterCriticalSection(&g_moonHookLock);
-            InvalidateCachedMoonTextureLocked(selected->path);
+            InvalidateCachedMoonTextureLocked(selectedPath);
             LeaveCriticalSection(&g_moonHookLock);
         }
-        ApplyMoonTexturePath(selected->path.c_str());
+        ApplyMoonTexturePath(selectedPath.c_str());
     } else {
         Log("[moon-ui] reload selected Native\n");
         ClearMoonTextureSelection();
@@ -1467,7 +1717,9 @@ void MoonTextureReload() {
 
 const char* MoonTextureStatus() {
     std::lock_guard<std::mutex> lock(g_mutex);
-    return g_status;
+    thread_local char statusCopy[sizeof(g_status)]{};
+    strcpy_s(statusCopy, g_status);
+    return statusCopy;
 }
 
 bool MoonTextureReady() {
@@ -1578,22 +1830,31 @@ int MoonTextureSelectedOption() {
 }
 
 void MoonTextureSelectOption(int index) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_moonOptionsScanned) {
-        RefreshMoonTextureListLocked();
-    }
-    if (index < 0 || index > static_cast<int>(g_moonOptions.size())) {
-        index = 0;
-    }
-    if (g_selectedMoonOption == index) {
-        return;
+    std::string selectedName;
+    std::string selectedPath;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (!g_moonOptionsScanned) {
+            RefreshMoonTextureListLocked();
+        }
+        if (index < 0 || index > static_cast<int>(g_moonOptions.size())) {
+            index = 0;
+        }
+        if (g_selectedMoonOption == index) {
+            return;
+        }
+
+        g_selectedMoonOption = index;
+
+        if (const MoonTextureOption* selected = SelectedMoonTextureLocked()) {
+            selectedName = selected->name;
+            selectedPath = selected->path;
+        }
     }
 
-    g_selectedMoonOption = index;
-
-    if (const MoonTextureOption* selected = SelectedMoonTextureLocked()) {
-        Log("[moon-ui] selected %s (%s)\n", selected->name.c_str(), selected->path.c_str());
-        ApplyMoonTexturePath(selected->path.c_str());
+    if (!selectedPath.empty()) {
+        Log("[moon-ui] selected %s (%s)\n", selectedName.c_str(), selectedPath.c_str());
+        ApplyMoonTexturePath(selectedPath.c_str());
     } else {
         Log("[moon-ui] selected Native\n");
         ClearMoonTextureSelection();

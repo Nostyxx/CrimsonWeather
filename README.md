@@ -19,7 +19,7 @@ Main build:
 - `CrimsonWeather.ini`
 - `CrimsonWeather.log` when logging is enabled
 - Preset `.ini` files saved next to the addon
-- Optional moon textures in `CrimsonWeather/moon/{Moon Name}/moon.dds`
+- Optional moon textures in `CrimsonWeather/moon/{Pack Name}/{Moon Name}/moon.dds` or `moon.png`
 
 Wind-only build:
 - `CrimsonWeather.WindOnly.addon64`
@@ -60,7 +60,7 @@ Supported regions:
 
 Old preset files still load. Saving a preset rewrites it into the current format.
 
-Moon texture presets save the moon name only, not a full local path.
+Moon texture presets save the moon name only, not a full local path. If a saved moon texture is missing, Crimson Weather resets that preset entry back to Native.
 
 ## Input
 

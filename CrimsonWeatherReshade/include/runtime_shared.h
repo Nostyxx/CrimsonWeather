@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_VERSION "0.5.6"
+#define MOD_VERSION "0.5.7"
 
 struct Config {
     bool logEnabled = true;
