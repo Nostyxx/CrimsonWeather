@@ -49,6 +49,8 @@ struct WeatherPresetData {
     float moonRoll = 0.0f;
     bool moonTextureEnabled = false;
     std::string moonTexture;
+    bool milkywayTextureEnabled = false;
+    std::string milkywayTexture;
     bool fogEnabled = false;
     float fogPercent = 0.0f;
     bool nativeFogEnabled = false;
@@ -97,6 +99,7 @@ struct WeatherPresetSourceMask {
     bool moonPitch = false;
     bool moonRoll = false;
     bool moonTexture = false;
+    bool milkywayTexture = false;
     bool fog = false;
     bool nativeFog = false;
     bool noFog = false;

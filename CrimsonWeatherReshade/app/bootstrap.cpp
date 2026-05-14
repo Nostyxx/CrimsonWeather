@@ -1,6 +1,6 @@
 #include "pch.h"
 
-#include "moon_texture_override.h"
+#include "sky_texture_override.h"
 #include "overlay_bridge.h"
 #include "preset_service.h"
 #include "runtime_shared.h"
@@ -180,7 +180,7 @@ bool InitializeCrimsonWeather(HMODULE module) {
         MarkStartupFailed("ReShade addon registration failed");
         return false;
     }
-    InitializeMoonTextureOverride(module);
+    InitializeSkyTextureOverride(module);
     g_addonStartupState.store(AddonStartupState::NotStarted);
     StartupSetStep(StartupStepId::Idle, 0, "Click Start to initialize");
     GUI_SetStatus("Click Start to initialize");
@@ -198,7 +198,7 @@ void ShutdownCrimsonWeather() {
     if (!g_initialized.exchange(false)) {
         RestoreRuntimePatches();
         StopHotkeyService();
-        ShutdownMoonTextureOverride();
+        ShutdownSkyTextureOverride();
         ShutdownOverlayBridge();
         if (g_minHookInitialized.exchange(false)) {
             MH_Uninitialize();
@@ -209,7 +209,7 @@ void ShutdownCrimsonWeather() {
     SuspendTimeControl();
     RestoreRuntimePatches();
     StopHotkeyService();
-    ShutdownMoonTextureOverride();
+    ShutdownSkyTextureOverride();
     ShutdownOverlayBridge();
     if (g_minHookInitialized.exchange(false)) {
         MH_Uninitialize();

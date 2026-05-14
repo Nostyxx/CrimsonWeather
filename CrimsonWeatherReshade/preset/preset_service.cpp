@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "runtime_shared.h"
 #include "preset_service.h"
-#include "moon_texture_override.h"
+#include "sky_texture_override.h"
 
 #include <algorithm>
 #include <array>
@@ -49,6 +49,7 @@ struct WeatherPresetMask {
     bool moonPitch = false;
     bool moonRoll = false;
     bool moonTexture = false;
+    bool milkywayTexture = false;
     bool fog = false;
     bool nativeFog = false;
     bool noFog = false;
@@ -183,6 +184,7 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         EnabledFloatNearlyEqual(a.moonPitchEnabled, a.moonPitch, b.moonPitchEnabled, b.moonPitch) &&
         EnabledFloatNearlyEqual(a.moonRollEnabled, a.moonRoll, b.moonRollEnabled, b.moonRoll) &&
         EnabledStringEquals(a.moonTextureEnabled, a.moonTexture, b.moonTextureEnabled, b.moonTexture) &&
+        EnabledStringEquals(a.milkywayTextureEnabled, a.milkywayTexture, b.milkywayTextureEnabled, b.milkywayTexture) &&
         EnabledFloatNearlyEqual(a.fogEnabled, a.fogPercent, b.fogEnabled, b.fogPercent) &&
         EnabledFloatNearlyEqual(a.nativeFogEnabled, a.nativeFog, b.nativeFogEnabled, b.nativeFog) &&
         a.noFog == b.noFog &&
@@ -196,7 +198,7 @@ bool PresetMaskAny(const WeatherPresetMask& mask) {
         mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds ||
         mask.highClouds || mask.exp2C || mask.exp2D || mask.cloudVariation ||
         mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunYaw || mask.sunPitch ||
-        mask.moonSize || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture ||
+        mask.moonSize || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture ||
         mask.fog || mask.nativeFog || mask.noFog || mask.wind ||
         mask.noWind || mask.puddleScale;
 }
@@ -230,6 +232,7 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.moonPitch = mask.moonPitch;
     out.moonRoll = mask.moonRoll;
     out.moonTexture = mask.moonTexture;
+    out.milkywayTexture = mask.milkywayTexture;
     out.fog = mask.fog;
     out.nativeFog = mask.nativeFog;
     out.noFog = mask.noFog;
@@ -268,6 +271,7 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.moonPitch = source.moonPitch;
     mask.moonRoll = source.moonRoll;
     mask.moonTexture = source.moonTexture;
+    mask.milkywayTexture = source.milkywayTexture;
     mask.fog = source.fog;
     mask.nativeFog = source.nativeFog;
     mask.noFog = source.noFog;
@@ -305,6 +309,7 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.moonPitch == b.moonPitch &&
         a.moonRoll == b.moonRoll &&
         a.moonTexture == b.moonTexture &&
+        a.milkywayTexture == b.milkywayTexture &&
         a.fog == b.fog &&
         a.nativeFog == b.nativeFog &&
         a.noFog == b.noFog &&
@@ -342,6 +347,7 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.moonPitch = true;
     mask.moonRoll = true;
     mask.moonTexture = true;
+    mask.milkywayTexture = true;
     mask.fog = true;
     mask.nativeFog = true;
     mask.noFog = true;
@@ -380,6 +386,7 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.moonPitch = !EnabledFloatNearlyEqual(base.moonPitchEnabled, base.moonPitch, value.moonPitchEnabled, value.moonPitch);
     mask.moonRoll = !EnabledFloatNearlyEqual(base.moonRollEnabled, base.moonRoll, value.moonRollEnabled, value.moonRoll);
     mask.moonTexture = !EnabledStringEquals(base.moonTextureEnabled, base.moonTexture, value.moonTextureEnabled, value.moonTexture);
+    mask.milkywayTexture = !EnabledStringEquals(base.milkywayTextureEnabled, base.milkywayTexture, value.milkywayTextureEnabled, value.milkywayTexture);
     mask.fog = !EnabledFloatNearlyEqual(base.fogEnabled, base.fogPercent, value.fogEnabled, value.fogPercent);
     mask.nativeFog = !EnabledFloatNearlyEqual(base.nativeFogEnabled, base.nativeFog, value.nativeFogEnabled, value.nativeFog);
     mask.noFog = base.noFog != value.noFog;
@@ -473,6 +480,10 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
     if (mask.moonTexture) {
         target.moonTextureEnabled = source.moonTextureEnabled;
         target.moonTexture = source.moonTexture;
+    }
+    if (mask.milkywayTexture) {
+        target.milkywayTextureEnabled = source.milkywayTextureEnabled;
+        target.milkywayTexture = source.milkywayTexture;
     }
     if (mask.fog) {
         target.fogEnabled = source.fogEnabled;
@@ -573,6 +584,8 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.moonRoll = LerpPresetDegrees180(a.moonRoll, b.moonRoll, t);
     out.moonTextureEnabled = ChoosePresetBool(a.moonTextureEnabled, b.moonTextureEnabled, t);
     out.moonTexture = t >= 0.5f ? b.moonTexture : a.moonTexture;
+    out.milkywayTextureEnabled = ChoosePresetBool(a.milkywayTextureEnabled, b.milkywayTextureEnabled, t);
+    out.milkywayTexture = t >= 0.5f ? b.milkywayTexture : a.milkywayTexture;
     out.fogEnabled = a.fogEnabled || b.fogEnabled;
     out.fogPercent = LerpPresetFloat(a.fogPercent, b.fogPercent, t);
     out.nativeFogEnabled = a.nativeFogEnabled || b.nativeFogEnabled;
@@ -671,6 +684,7 @@ std::string PresetMaskSummary(const WeatherPresetMask& mask) {
     AppendMaskField(out, mask.moonPitch, "moonPitch");
     AppendMaskField(out, mask.moonRoll, "moonRoll");
     AppendMaskField(out, mask.moonTexture, "moonTexture");
+    AppendMaskField(out, mask.milkywayTexture, "milkywayTexture");
     AppendMaskField(out, mask.fog, "fog");
     AppendMaskField(out, mask.nativeFog, "nativeFog");
     AppendMaskField(out, mask.noFog, "noFog");
@@ -981,6 +995,7 @@ struct PresetParseState {
     bool moonPitchEnabledSeen = false;
     bool moonRollEnabledSeen = false;
     bool moonTextureEnabledSeen = false;
+    bool milkywayTextureEnabledSeen = false;
     bool fogEnabledSeen = false;
     bool nativeFogEnabledSeen = false;
     bool puddleScaleEnabledSeen = false;
@@ -1022,6 +1037,7 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "MoonPitchEnabled") || KeyEquals(key, "MoonPitch")) mask.moonPitch = true;
     else if (KeyEquals(key, "MoonRollEnabled") || KeyEquals(key, "MoonRoll")) mask.moonRoll = true;
     else if (KeyEquals(key, "MoonTextureEnabled") || KeyEquals(key, "MoonTexture")) mask.moonTexture = true;
+    else if (KeyEquals(key, "MilkywayTextureEnabled") || KeyEquals(key, "MilkywayTexture")) mask.milkywayTexture = true;
     else if (KeyEquals(key, "FogEnabled") || KeyEquals(key, "Fog")) mask.fog = true;
     else if (KeyEquals(key, "NativeFogEnabled") || KeyEquals(key, "NativeFog") ||
              KeyEquals(key, "PlainFogEnabled") || KeyEquals(key, "PlainFog")) mask.nativeFog = true;
@@ -1193,6 +1209,13 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "MoonTexture")) {
         data.moonTexture = TrimCopy(value);
+    } else if (KeyEquals(key, "MilkywayTextureEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.milkywayTextureEnabled = boolValue;
+            state.milkywayTextureEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MilkywayTexture")) {
+        data.milkywayTexture = TrimCopy(value);
     } else if (KeyEquals(key, "FogEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.fogEnabled = boolValue;
@@ -1250,6 +1273,14 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     }
     if (!data.moonTextureEnabled) {
         data.moonTexture.clear();
+    }
+    if (!state.milkywayTextureEnabledSeen) data.milkywayTextureEnabled = !data.milkywayTexture.empty();
+    if (EqualsNoCase(data.milkywayTexture, "Native")) {
+        data.milkywayTexture.clear();
+        data.milkywayTextureEnabled = false;
+    }
+    if (!data.milkywayTextureEnabled) {
+        data.milkywayTexture.clear();
     }
     if (!state.fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
     if (!state.puddleScaleEnabledSeen) data.puddleScaleEnabled = !FloatNearlyEqual(data.puddleScale, 0.0f);
@@ -1401,6 +1432,8 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "MoonRoll", FormatPresetFloat(ClampPresetFloat(data.moonRoll, -180.0f, 180.0f)));
     AppendPresetKeyValue(out, "MoonTextureEnabled", FormatPresetBool(data.moonTextureEnabled && !data.moonTexture.empty()));
     AppendPresetKeyValue(out, "MoonTexture", data.moonTextureEnabled ? FormatPresetString(data.moonTexture) : "");
+    AppendPresetKeyValue(out, "MilkywayTextureEnabled", FormatPresetBool(data.milkywayTextureEnabled && !data.milkywayTexture.empty()));
+    AppendPresetKeyValue(out, "MilkywayTexture", data.milkywayTextureEnabled ? FormatPresetString(data.milkywayTexture) : "");
     out += '\n';
 
     AppendPresetLine(out, "[Atmosphere]");
@@ -1490,7 +1523,7 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         out += '\n';
     }
 
-    if (mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunYaw || mask.sunPitch || mask.moonSize || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture) {
+    if (mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunYaw || mask.sunPitch || mask.moonSize || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture) {
         AppendRegionSectionHeader(out, regionId, "Celestial");
         if (mask.nightSkyRotation) {
             AppendPresetKeyValue(out, "NightSkyTiltEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
@@ -1531,6 +1564,10 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         if (mask.moonTexture) {
             AppendPresetKeyValue(out, "MoonTextureEnabled", FormatPresetBool(data.moonTextureEnabled && !data.moonTexture.empty()));
             AppendPresetKeyValue(out, "MoonTexture", data.moonTextureEnabled ? FormatPresetString(data.moonTexture) : "");
+        }
+        if (mask.milkywayTexture) {
+            AppendPresetKeyValue(out, "MilkywayTextureEnabled", FormatPresetBool(data.milkywayTextureEnabled && !data.milkywayTexture.empty()));
+            AppendPresetKeyValue(out, "MilkywayTexture", data.milkywayTextureEnabled ? FormatPresetString(data.milkywayTexture) : "");
         }
         out += '\n';
     }
@@ -1632,6 +1669,9 @@ WeatherPresetData CaptureCurrentPresetData() {
     const int moonTextureOption = MoonTextureSelectedOption();
     data.moonTextureEnabled = moonTextureOption > 0;
     data.moonTexture = data.moonTextureEnabled ? MoonTextureOptionName(moonTextureOption) : "";
+    const int milkywayTextureOption = MilkywayTextureSelectedOption();
+    data.milkywayTextureEnabled = milkywayTextureOption > 0;
+    data.milkywayTexture = data.milkywayTextureEnabled ? MilkywayTextureOptionName(milkywayTextureOption) : "";
     data.fogEnabled = g_oFog.active.load();
     if (data.fogEnabled) {
         const float fogN = sqrtf(min(1.0f, max(0.0f, g_oFog.value.load() / 100.0f)));
@@ -1692,6 +1732,7 @@ void ApplyPresetData(const WeatherPresetData& data) {
     ApplyEnabledOverride(g_oMoonDirY, data.moonPitchEnabled, data.moonPitch, -89.0f, 89.0f);
     ApplyEnabledOverride(g_oMoonRoll, data.moonRollEnabled, data.moonRoll, -180.0f, 180.0f);
     MoonTextureSelectByName(data.moonTextureEnabled ? data.moonTexture.c_str() : nullptr);
+    MilkywayTextureSelectByName(data.milkywayTextureEnabled ? data.milkywayTexture.c_str() : nullptr);
 
     const float fogPct = ClampPresetFloat(data.fogPercent, 0.0f, 100.0f);
     if (data.fogEnabled) {
@@ -1848,13 +1889,28 @@ bool SanitizeMissingMoonTexture(WeatherPresetData& data, const char* scopeLabel)
 
 bool SanitizeMissingMoonTexturesInPackage(WeatherPresetPackage& package) {
     MoonTextureRefreshList();
+    MilkywayTextureRefreshList();
 
     bool changed = SanitizeMissingMoonTexture(package.global, "Global");
+    if (package.global.milkywayTextureEnabled && !package.global.milkywayTexture.empty() &&
+        MilkywayTextureFindOptionByName(package.global.milkywayTexture.c_str()) < 0) {
+        Log("[preset] missing milkyway texture in Global: %s -> Native\n", package.global.milkywayTexture.c_str());
+        package.global.milkywayTextureEnabled = false;
+        package.global.milkywayTexture.clear();
+        changed = true;
+    }
     for (int regionId = 1; regionId < kPresetRegionCount; ++regionId) {
-        if (!package.regionEnabled[regionId] || !package.regionMask[regionId].moonTexture) {
-            continue;
+        if (package.regionEnabled[regionId] && package.regionMask[regionId].moonTexture) {
+            changed = SanitizeMissingMoonTexture(package.region[regionId], RegionDisplayName(regionId)) || changed;
         }
-        changed = SanitizeMissingMoonTexture(package.region[regionId], RegionDisplayName(regionId)) || changed;
+        if (package.regionEnabled[regionId] && package.regionMask[regionId].milkywayTexture &&
+            package.region[regionId].milkywayTextureEnabled && !package.region[regionId].milkywayTexture.empty() &&
+            MilkywayTextureFindOptionByName(package.region[regionId].milkywayTexture.c_str()) < 0) {
+            Log("[preset] missing milkyway texture in %s: %s -> Native\n", RegionDisplayName(regionId), package.region[regionId].milkywayTexture.c_str());
+            package.region[regionId].milkywayTextureEnabled = false;
+            package.region[regionId].milkywayTexture.clear();
+            changed = true;
+        }
     }
     return changed;
 }

@@ -21,10 +21,10 @@
     <ClInclude Include="pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="include\moon_texture_override.h">
+    <ClInclude Include="include\sky_texture_override.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="include\moon_image_loader.h">
+    <ClInclude Include="include\sky_image_loader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -35,10 +35,10 @@
     <ClCompile Include="pch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="game\moon_texture_override.cpp">
+    <ClCompile Include="game\sky_texture_override.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="game\moon_image_loader.cpp">
+    <ClCompile Include="game\sky_image_loader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

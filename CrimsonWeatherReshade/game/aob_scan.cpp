@@ -557,7 +557,9 @@ static void RecomputeRuntimeHealthSummary() {
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::ExperimentControls,
         AggregateTargetHealth({
-            AobTargetId::WindPack
+            AobTargetId::ProcessWindState,
+            AobTargetId::WindPack,
+            AobTargetId::EnvManagerPtr
         }, note), note);
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::CelestialControls,

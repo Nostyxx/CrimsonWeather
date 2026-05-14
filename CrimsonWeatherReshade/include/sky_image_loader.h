@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-struct MoonImageData {
+struct SkyImageData {
     std::vector<uint8_t> pixels;
     UINT width = 0;
     UINT height = 0;
@@ -17,4 +17,4 @@ struct MoonImageData {
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 };
 
-bool LoadMoonImageFile(const std::string& path, MoonImageData& outImage, char* status, size_t statusSize);
+bool LoadSkyImageFile(const std::string& path, SkyImageData& outImage, char* status, size_t statusSize);

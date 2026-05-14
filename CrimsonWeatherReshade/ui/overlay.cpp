@@ -1,7 +1,7 @@
 #include "pch.h"
 
 #include "overlay_bridge.h"
-#include "moon_texture_override.h"
+#include "sky_texture_override.h"
 #include "preset_service.h"
 #include "runtime_shared.h"
 
@@ -20,11 +20,45 @@ bool g_overlayRegistered = false;
 char g_newPresetName[128] = "NewPreset.ini";
 char g_presetFilter[96] = "";
 char g_moonTextureFilter[96] = "";
+char g_milkywayTextureFilter[96] = "";
 char g_timeEditText[32] = "";
 int g_timeEditLastMinute = -1;
 bool g_timeEditActive = false;
 bool g_timeEditFocusRequest = false;
 bool g_timeEditHadFocus = false;
+std::string g_sliderEditId;
+bool g_sliderEditFocusRequest = false;
+
+const char* NumericInputFormat(const char* format, char* out, size_t outSize) {
+    if (!out || outSize == 0) {
+        return "%.3f";
+    }
+    strcpy_s(out, outSize, "%.3f");
+    if (!format || !format[0]) {
+        return out;
+    }
+
+    const char* percent = strchr(format, '%');
+    while (percent && percent[1] == '%') {
+        percent = strchr(percent + 2, '%');
+    }
+    if (!percent) {
+        return out;
+    }
+
+    size_t len = 1;
+    while (percent[len]) {
+        const char c = percent[len++];
+        if (c == 'f' || c == 'F' || c == 'e' || c == 'E' || c == 'g' || c == 'G') {
+            break;
+        }
+    }
+    len = min(len, outSize - 1);
+    memcpy(out, percent, len);
+    out[len] = '\0';
+    return out;
+}
+
 int HourToMinuteOfDay(float hour) {
     const float normalized = NormalizeHour24(hour);
     int minutes = static_cast<int>(std::lround(normalized * 60.0f));
@@ -185,6 +219,26 @@ void DrawOverrideBadge(bool regionOverride) {
     ImGui::PopStyleColor();
 }
 
+void DrawTexturePackHeader(const char* packName) {
+    const char* pack = (packName && packName[0]) ? packName : "Loose";
+    char header[192] = {};
+    sprintf_s(header, sizeof(header), "%s", pack);
+
+    ImGui::Spacing();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float height = ImGui::GetTextLineHeightWithSpacing() + 2.0f;
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImU32 bg = ImGui::GetColorU32(ImVec4(0.13f, 0.17f, 0.22f, 1.0f));
+    const ImU32 accent = ImGui::GetColorU32(ImVec4(0.34f, 0.52f, 0.78f, 1.0f));
+    const ImU32 text = ImGui::GetColorU32(ImVec4(0.66f, 0.76f, 0.88f, 1.0f));
+
+    drawList->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), bg);
+    drawList->AddRectFilled(pos, ImVec2(pos.x + 3.0f, pos.y + height), accent);
+    drawList->AddText(ImVec2(pos.x + 8.0f, pos.y + 2.0f), text, header);
+    ImGui::Dummy(ImVec2(width, height));
+}
+
 bool DrawSliderFloatRow(
     const char* label,
     const char* id,
@@ -232,9 +286,46 @@ bool DrawSliderFloatRow(
         displayFormat = inheritedFormat;
         ImGui::BeginDisabled();
     }
-    const bool valueChanged = ImGui::SliderFloat("##value", value, minValue, maxValue, displayFormat);
+    bool valueChanged = false;
+    const bool editing = g_sliderEditId == id;
+    if (editing) {
+        char inputFormat[24] = {};
+        if (g_sliderEditFocusRequest) {
+            ImGui::SetKeyboardFocusHere();
+            g_sliderEditFocusRequest = false;
+        }
+        valueChanged = ImGui::InputFloat(
+            "##value",
+            value,
+            0.0f,
+            0.0f,
+            NumericInputFormat(format, inputFormat, sizeof(inputFormat)),
+            ImGuiInputTextFlags_AutoSelectAll);
+        if (valueChanged) {
+            *value = min(maxValue, max(minValue, *value));
+        }
+
+        const bool finishEdit = ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                                ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) ||
+                                ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+                                ImGui::IsItemDeactivated();
+        if (finishEdit) {
+            g_sliderEditId.clear();
+            g_sliderEditFocusRequest = false;
+        }
+    } else {
+        valueChanged = ImGui::SliderFloat("##value", value, minValue, maxValue, displayFormat);
+        if (!sliderDisabled && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+            g_sliderEditId = id;
+            g_sliderEditFocusRequest = true;
+        }
+    }
     if (sliderDisabled) {
         ImGui::EndDisabled();
+    }
+    if (reset && g_sliderEditId == id) {
+        g_sliderEditId.clear();
+        g_sliderEditFocusRequest = false;
     }
     if (outValueChanged) {
         *outValueChanged = valueChanged;
@@ -760,6 +851,12 @@ void DrawStatusTab() {
             (snapshot.effective.moonTextureEnabled && !snapshot.effective.moonTexture.empty()) ? snapshot.effective.moonTexture.c_str() : "NATIVE",
             snapshot.regionSource.moonTexture,
             "Crimson Weather currently swaps the moon texture.");
+        DrawStatusRowText(
+            snapshot,
+            "Milky Way Texture",
+            (snapshot.effective.milkywayTextureEnabled && !snapshot.effective.milkywayTexture.empty()) ? snapshot.effective.milkywayTexture.c_str() : "NATIVE",
+            snapshot.regionSource.milkywayTexture,
+            "Crimson Weather currently swaps the Milky Way texture.");
 
         const bool fogForcedZero = snapshot.effective.forceClearSky || snapshot.effective.noFog;
         const bool fogForceSource = snapshot.effective.forceClearSky ? snapshot.regionSource.forceClearSky : snapshot.regionSource.noFog;
@@ -838,7 +935,7 @@ void DrawPresetTab() {
     ImGui::Spacing();
     ImGui::SeparatorText("Presets");
     ImGui::SetNextItemWidth(-92.0f);
-    ImGui::InputTextWithHint("##preset_filter", "Search presets", g_presetFilter, IM_ARRAYSIZE(g_presetFilter));
+    ImGui::InputTextWithHint("##preset_filter", "Search...", g_presetFilter, IM_ARRAYSIZE(g_presetFilter));
     ImGui::SameLine();
     if (ImGui::Button("Refresh")) {
         Preset_Refresh();
@@ -1255,7 +1352,7 @@ void DrawGeneralTab() {
         if (ImGui::IsItemHovered()) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
         }
-        if (ImGui::IsItemClicked()) {
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
             strcpy_s(g_timeEditText, targetClock);
             g_timeEditActive = true;
             g_timeEditFocusRequest = true;
@@ -1835,6 +1932,103 @@ void DrawCelestialTab() {
     const float nativeMoonPitch = g_sceneBaseMoonPitch.load();
     const float nativeMoonRoll = 0.0f;
 
+    int milkywayTexture = detachedEdit
+        ? (editData.milkywayTextureEnabled ? MilkywayTextureFindOptionByName(editData.milkywayTexture.c_str()) : 0)
+        : MilkywayTextureSelectedOption();
+    if (milkywayTexture < 0) {
+        milkywayTexture = 0;
+    }
+    const bool milkywayTextureReady = MilkywayTextureReady();
+    const bool milkywayTextureOverrideChanged = DrawOverrideToggle(regionScoped ? &overrideMask.milkywayTexture : nullptr);
+    const bool milkywayTextureRegionOverride = !regionScoped || overrideMask.milkywayTexture;
+    if (!milkywayTextureRegionOverride) {
+        ImGui::BeginDisabled();
+    }
+    ImGui::TextUnformatted("Milky Way Texture");
+    if (!milkywayTextureRegionOverride) {
+        ImGui::EndDisabled();
+    }
+    if (regionScoped) {
+        DrawOverrideBadge(overrideMask.milkywayTexture);
+    }
+    ImGui::SameLine();
+    const float milkywayRefreshWidth = 64.0f;
+    const float milkywayRefreshX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - milkywayRefreshWidth;
+    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), milkywayRefreshX));
+    if (ImGui::Button("Refresh##milkyway", ImVec2(milkywayRefreshWidth, 0.0f))) {
+        MilkywayTextureRefreshList();
+    }
+    char inheritedMilkywayTexture[192] = {};
+    const char* milkywayTexturePreview = MilkywayTextureOptionName(milkywayTexture);
+    if (!milkywayTextureRegionOverride) {
+        sprintf_s(inheritedMilkywayTexture, sizeof(inheritedMilkywayTexture), "G: %s", milkywayTexturePreview);
+        milkywayTexturePreview = inheritedMilkywayTexture;
+    }
+    ImGui::TextDisabled("Selected: %s", milkywayTexturePreview);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##milkyway_texture_filter", "Search...", g_milkywayTextureFilter, IM_ARRAYSIZE(g_milkywayTextureFilter));
+    if (!milkywayTextureReady || !milkywayTextureRegionOverride) {
+        ImGui::BeginDisabled();
+    }
+    const float milkywayListHeight = min(220.0f, max(112.0f, ImGui::GetTextLineHeightWithSpacing() * 9.0f));
+    if (ImGui::BeginChild("MilkywayTextureLibrary", ImVec2(0.0f, milkywayListHeight), true)) {
+        const int optionCount = MilkywayTextureOptionCount();
+        const char* currentPack = nullptr;
+        int visibleCount = 0;
+        for (int i = 0; i < optionCount; ++i) {
+            const char* optionName = MilkywayTextureOptionName(i);
+            const char* optionLabel = MilkywayTextureOptionLabel(i);
+            const bool visible = i == 0
+                ? TextContainsNoCase("Native", g_milkywayTextureFilter)
+                : (TextContainsNoCase(optionLabel, g_milkywayTextureFilter) ||
+                   TextContainsNoCase(optionName, g_milkywayTextureFilter) ||
+                   TextContainsNoCase(MilkywayTextureOptionPack(i), g_milkywayTextureFilter));
+            if (!visible) {
+                continue;
+            }
+            if (i > 0) {
+                const char* pack = MilkywayTextureOptionPack(i);
+                const char* group = (pack && pack[0]) ? pack : "Loose";
+                if (!currentPack || strcmp(currentPack, group) != 0) {
+                    DrawTexturePackHeader(group);
+                    currentPack = group;
+                }
+            }
+            ++visibleCount;
+            const bool selected = i == milkywayTexture;
+            if (i > 0) {
+                ImGui::Indent(12.0f);
+            }
+            if (ImGui::Selectable(optionLabel, selected)) {
+                milkywayTexture = i;
+                if (detachedEdit) {
+                    editData.milkywayTextureEnabled = i > 0;
+                    editData.milkywayTexture = i > 0 ? optionName : "";
+                    if (regionScoped) overrideMask.milkywayTexture = true;
+                    editChanged = true;
+                } else {
+                    MilkywayTextureSelectOption(i);
+                }
+            }
+            if (i > 0) {
+                ImGui::Unindent(12.0f);
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        if (visibleCount == 0) {
+            ImGui::TextDisabled("No Milky Way texture matches");
+        }
+    }
+    ImGui::EndChild();
+    if (!milkywayTextureReady || !milkywayTextureRegionOverride) {
+        ImGui::EndDisabled();
+    }
+    if (milkywayTextureOverrideChanged) {
+        editChanged = true;
+    }
+
     float nightSkyPitch = detachedEdit
         ? (editData.nightSkyRotationEnabled ? editData.nightSkyRotation : nativeNightSkyPitch)
         : (g_oExpNightSkyRot.active.load() ? g_oExpNightSkyRot.value.load() : nativeNightSkyPitch);
@@ -2019,7 +2213,7 @@ void DrawCelestialTab() {
     }
     ImGui::TextDisabled("Selected: %s", moonTexturePreview);
     ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputTextWithHint("##moon_texture_filter", "Search moon textures", g_moonTextureFilter, IM_ARRAYSIZE(g_moonTextureFilter));
+    ImGui::InputTextWithHint("##moon_texture_filter", "Search...", g_moonTextureFilter, IM_ARRAYSIZE(g_moonTextureFilter));
     if (!moonTextureReady || !moonTextureRegionOverride) {
         ImGui::BeginDisabled();
     }
@@ -2043,15 +2237,15 @@ void DrawCelestialTab() {
                 const char* pack = MoonTextureOptionPack(i);
                 const char* group = (pack && pack[0]) ? pack : "Loose";
                 if (!currentPack || strcmp(currentPack, group) != 0) {
-                    if (visibleCount > 0) {
-                        ImGui::Separator();
-                    }
-                    ImGui::TextDisabled("%s", group);
+                    DrawTexturePackHeader(group);
                     currentPack = group;
                 }
             }
             ++visibleCount;
             const bool selected = i == moonTexture;
+            if (i > 0) {
+                ImGui::Indent(12.0f);
+            }
             if (ImGui::Selectable(optionLabel, selected)) {
                 moonTexture = i;
                 if (detachedEdit) {
@@ -2062,6 +2256,9 @@ void DrawCelestialTab() {
                 } else {
                     MoonTextureSelectOption(i);
                 }
+            }
+            if (i > 0) {
+                ImGui::Unindent(12.0f);
             }
             if (selected) {
                 ImGui::SetItemDefaultFocus();
@@ -2223,12 +2420,6 @@ void DrawOverlay(reshade::api::effect_runtime*) {
         return;
     }
 
-    const char* nexusLabel = "nexusmods";
-    const float nexusWidth = ImGui::CalcTextSize(nexusLabel).x;
-    const float rightEdge = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
-    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), rightEdge - nexusWidth));
-    ImGui::TextLinkOpenURL(nexusLabel, "https://www.nexusmods.com/crimsondesert/mods/632");
-
     ImGui::Text("%s %s", MOD_NAME, MOD_VERSION);
     ImGui::SameLine();
     DrawEditScopeCombo();
@@ -2268,6 +2459,12 @@ void DrawOverlay(reshade::api::effect_runtime*) {
 
     ImGui::Separator();
     ImGui::Text("Unsaved changes: %s", Preset_HasUnsavedChanges() ? "Yes" : "No");
+    const char* nexusLabel = "nexusmods";
+    const float nexusWidth = ImGui::CalcTextSize(nexusLabel).x;
+    const float rightEdge = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), rightEdge - nexusWidth));
+    ImGui::TextLinkOpenURL(nexusLabel, "https://www.nexusmods.com/crimsondesert/mods/632");
     ImGui::End();
 #endif
 }
