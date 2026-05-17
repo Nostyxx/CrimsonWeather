@@ -2,18 +2,20 @@
 
 ReShade `.addon64` weather-control mod for `CrimsonDesert.exe`.
 
-Current stable release: `0.6.0`.
+Current stable release: `0.6.1`.
 
 The current main branch is the ReShade addon rewrite. The older DXGI/ImGui build is kept on the `legacy` branch.
 
 ## Highlights
 
-Version `0.6.0` expands Crimson Weather from core weather sliders into a broader atmosphere preset tool:
+Version `0.6.1` expands Crimson Weather from core weather sliders into a broader atmosphere preset tool:
 
 - Per-region preset overrides for supported world regions
+- Time-based preset schedule with AM/PM ranges, gap rows, and preset blend durations
+- Optional INI-only AutoSaved mode for saving selected preset edits after slider/dial interactions stop
 - Thunder control with visual lightning and weather SFX scheduling
 - Milky Way texture override support alongside moon textures
-- Advanced atmosphere controls for Rayleigh color, cloud alpha, cloud phase, cloud scattering, aerosol/fog fields, and volume fog scatter color
+- Advanced atmosphere controls for Rayleigh height/color, ozone, cloud alpha/fade/detail/flow/phase/scattering, aerosol/fog fields, Mie scatter color, and volume fog scatter color
 - Sun and moon light intensity controls
 - Startup, hook, preset, and status diagnostics in the overlay
 - Full, WindOnly, and DEV build flavors
@@ -61,7 +63,7 @@ Open the ReShade overlay and use the `Crimson Weather` addon tab.
 The edit scope selector is always visible at the top of the overlay. Use it to edit global preset values or per-region overrides from any tab.
 
 Tabs and controls:
-- **Presets**: load/save presets, save-as, reset sliders, and edit global or per-region preset scopes
+- **Presets**: load/save presets, save-as, reset sliders, edit global or per-region preset scopes, and configure the optional Time Schedule
 - **General**: rain, thunder, dust, snow, force clear sky, no rain, no dust, no snow, visual time override, progress visual time, advance interval, wind, and no wind
 - **Atmosphere**: Rayleigh scattering color, cloud amount, cloud height, cloud density, mid clouds, high clouds, cloud alpha, cloud phase, cloud scattering, native fog, volume fog scatter color, aerosol height, aerosol density, aerosol absorption, fog height baseline, fog height falloff, and no fog
 - **Celestial**: moon texture, Milky Way texture, night sky tilt, night sky phase, sun light intensity, sun size, sun yaw/pitch lock, moon light intensity, moon size, moon yaw/pitch lock, and moon rotation
@@ -87,6 +89,16 @@ Moon and Milky Way texture presets save the texture name only, not a full local 
 
 Region overrides are saved only for values that differ from the global preset. The Status tab shows which values are inherited and which are region-specific.
 
+## Time Schedule
+
+The Time Schedule is global and disabled by default. It lives in `CrimsonWeather.ini`, not inside preset files.
+
+When enabled, Crimson Weather selects presets by detected visual in-game time. Schedule entries use AM/PM time ranges and can cross midnight. Gaps are generated automatically; a gap with no preset leaves the current/manual/last scheduled preset active.
+
+Each schedule entry can blend from the current effective state into the target preset over a real-time duration. Region overrides still apply during scheduled preset use.
+
+Manual preset selection disables the schedule. Manually changing Visual Time Override also disables the schedule, because the scheduler and manual visual-time editing intentionally do not co-own the clock.
+
 ## Input
 
 Default effect toggle hotkeys:
@@ -101,6 +113,7 @@ Default effect toggle hotkeys:
 [General]
 LogEnabled=0
 AutoStart=1
+AutoSaved=0
 ExtendedSliderRange=0
 HotkeyToggleEffect=F10
 _HotkeyOptions=F1-F12, INSERT, DELETE, HOME, END, PGUP, PGDN, or single letter A-Z
@@ -112,9 +125,15 @@ _ControllerHotkeyOptions=Use dpad_up/down/left/right + a/b/x/y/lb/rb/start/back
 [Preset]
 LastPreset=
 
+[TimeSchedule]
+Enabled=0
+EntryCount=0
+
 [Wind]
 Multiplier=1.0000
 ```
+
+`AutoSaved=1` automatically saves edits to the currently selected preset shortly after the active UI interaction ends. It does not create new preset files; use `Create Preset` or `Save As` first.
 
 WindOnly uses `CrimsonWeather.WindOnly.ini`. DEV uses `CrimsonWeather.DEV.ini`.
 

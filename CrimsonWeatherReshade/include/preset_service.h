@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 struct WeatherPresetColor {
     float r = 1.0f;
@@ -34,10 +35,20 @@ struct WeatherPresetData {
     float highClouds = 1.0f;
     bool cloudAlphaEnabled = false;
     float cloudAlpha = 1.0f;
+    bool cloudFadeRangeEnabled = false;
+    float cloudFadeRange = 0.0f;
+    bool cloudDetailRatioEnabled = false;
+    float cloudDetailRatio = 0.0f;
     bool cloudPhaseFrontEnabled = false;
     float cloudPhaseFront = 0.0f;
     bool cloudScatteringCoefficientEnabled = false;
     float cloudScatteringCoefficient = 0.0f;
+    bool cloudFlowEnabled = false;
+    float cloudFlow = 1.0f;
+    bool rayleighHeightEnabled = false;
+    float rayleighHeight = 1200.0f;
+    bool ozoneRatioEnabled = false;
+    float ozoneRatio = 0.0f;
     bool rayleighScatteringColorEnabled = false;
     WeatherPresetColor rayleighScatteringColor{};
     bool exp2CEnabled = false;
@@ -78,6 +89,8 @@ struct WeatherPresetData {
     float nativeFog = 1.0f;
     bool volumeFogScatterColorEnabled = false;
     WeatherPresetColor volumeFogScatterColor{};
+    bool mieScatterColorEnabled = false;
+    WeatherPresetColor mieScatterColor{};
     bool mieScaleHeightEnabled = false;
     float mieScaleHeight = 1200.0f;
     bool mieAerosolDensityEnabled = false;
@@ -120,8 +133,13 @@ struct WeatherPresetSourceMask {
     bool midClouds = false;
     bool highClouds = false;
     bool cloudAlpha = false;
+    bool cloudFadeRange = false;
+    bool cloudDetailRatio = false;
     bool cloudPhaseFront = false;
     bool cloudScatteringCoefficient = false;
+    bool cloudFlow = false;
+    bool rayleighHeight = false;
+    bool ozoneRatio = false;
     bool rayleighScatteringColor = false;
     bool exp2C = false;
     bool exp2D = false;
@@ -142,6 +160,7 @@ struct WeatherPresetSourceMask {
     bool fog = false;
     bool nativeFog = false;
     bool volumeFogScatterColor = false;
+    bool mieScatterColor = false;
     bool mieScaleHeight = false;
     bool mieAerosolDensity = false;
     bool mieAerosolAbsorption = false;
@@ -164,10 +183,41 @@ struct WeatherPresetStatusSnapshot {
     WeatherPresetSourceMask regionSource{};
 };
 
+struct PresetScheduleEntry {
+    int startMinute = 0;
+    int endMinute = 0;
+    std::string presetFile;
+    int blendSeconds = 120;
+};
+
+struct PresetScheduleRow {
+    bool gap = false;
+    int startMinute = 0;
+    int endMinute = 0;
+    int entryIndex = -1;
+    std::string presetFile;
+    std::string displayName;
+    bool presetMissing = false;
+    int blendSeconds = 0;
+};
+
+struct PresetScheduleStatus {
+    bool enabled = false;
+    bool active = false;
+    int activeEntryIndex = -1;
+    std::string activePresetFile;
+    std::string activeDisplayName;
+    bool blending = false;
+    std::string blendFromDisplayName;
+    std::string blendToDisplayName;
+    int blendRemainingSeconds = 0;
+};
+
 void Preset_EnsureInitialized();
 void Preset_Refresh();
 int Preset_GetCount();
 const char* Preset_GetDisplayName(int index);
+const char* Preset_GetFileName(int index);
 int Preset_GetSelectedIndex();
 bool Preset_HasSelection();
 const char* Preset_GetSelectedDisplayName();
@@ -185,6 +235,7 @@ void Preset_SelectNew();
 bool Preset_SelectIndex(int index);
 bool Preset_HasUnsavedChanges();
 bool Preset_CanSaveCurrent();
+void Preset_AutoSaveTick(bool uiEditActive);
 WeatherPresetStatusSnapshot Preset_GetStatusSnapshot();
 void Preset_ArmAutoApplyRemembered();
 bool Preset_NeedsWorldTick();
@@ -192,3 +243,15 @@ void Preset_OnWorldTick(bool worldReady, float dt);
 void Preset_TryAutoApplyRemembered();
 bool Preset_SaveSelected();
 bool Preset_SaveAs(const char* fileName);
+
+bool PresetSchedule_IsEnabled();
+void PresetSchedule_SetEnabled(bool enabled);
+std::vector<PresetScheduleEntry> PresetSchedule_GetEntries();
+std::vector<PresetScheduleRow> PresetSchedule_BuildRows();
+PresetScheduleStatus PresetSchedule_GetStatus();
+bool PresetSchedule_AddEntry(const PresetScheduleEntry& entry);
+bool PresetSchedule_UpdateEntry(int index, const PresetScheduleEntry& entry);
+bool PresetSchedule_DeleteEntry(int index);
+bool PresetSchedule_ParseAmPm(const char* text, int& outMinute);
+std::string PresetSchedule_FormatAmPm(int minute);
+int PresetSchedule_DefaultBlendSeconds();

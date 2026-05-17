@@ -347,10 +347,34 @@ TextureSlot g_milkywaySlot(
 TextureSlot* g_textureSlots[] = { &g_moonSlot, &g_milkywaySlot };
 
 void SetTextureStatus(TextureSlot& slot, const char* fmt, ...) {
+    char status[sizeof(slot.status)] = {};
     va_list args;
     va_start(args, fmt);
-    vsnprintf(slot.status, sizeof(slot.status), fmt, args);
+    vsnprintf(status, sizeof(status), fmt, args);
     va_end(args);
+
+    const bool lockReady = g_hookLockReady.load();
+    if (lockReady) {
+        EnterCriticalSection(&g_hookLock);
+    }
+    strcpy_s(slot.status, status);
+    if (lockReady) {
+        LeaveCriticalSection(&g_hookLock);
+    }
+}
+
+void CopyTextureStatus(TextureSlot& slot, char* out, size_t outSize) {
+    if (!out || outSize == 0) {
+        return;
+    }
+    const bool lockReady = g_hookLockReady.load();
+    if (lockReady) {
+        EnterCriticalSection(&g_hookLock);
+    }
+    strcpy_s(out, outSize, slot.status);
+    if (lockReady) {
+        LeaveCriticalSection(&g_hookLock);
+    }
 }
 
 std::string ModuleDirectory() {
@@ -771,10 +795,6 @@ void LogNativeStack(TextureSlot& slot, const char* tag) {
     Log("[%s] stack %s:%s\n", slot.logTag, tag, used ? line : " <no game frames>");
 }
 
-void LogMilkywayStack(const char* tag) {
-    LogNativeStack(g_milkywaySlot, tag);
-}
-
 bool CurrentStackHasLoaderFingerprint(TextureSlot& slot) {
     if (!ResolveFingerprintTargets(slot)) {
         return false;
@@ -901,15 +921,15 @@ bool MoonSwapReadyLocked() {
     return MoonProofLevelLocked() >= 4;
 }
 
-bool MilkywaySwapReadyLocked() {
-    if (g_milkywaySlot.requireContentProof && !g_milkywaySlot.contentProofHit) {
+bool NonProofSwapReadyLocked(const TextureSlot& slot) {
+    if (slot.requireContentProof && !slot.contentProofHit) {
         return false;
     }
-    return !g_milkywaySlot.nativeResources.empty() && !g_milkywaySlot.bindings.empty();
+    return !slot.nativeResources.empty() && !slot.bindings.empty();
 }
 
-bool TextureSwapReadyLocked(TextureSlot& slot) {
-    return slot.useProof ? MoonSwapReadyLocked() : MilkywaySwapReadyLocked();
+bool TextureSwapReadyLocked(const TextureSlot& slot) {
+    return slot.useProof ? MoonSwapReadyLocked() : NonProofSwapReadyLocked(slot);
 }
 
 HRESULT CreateCommittedResourceRaw(ID3D12Device* device,
@@ -2376,59 +2396,21 @@ void ReleaseMoonHookResources() {
     ID3D12Device* device = g_device.exchange(nullptr);
 
     EnterCriticalSection(&g_hookLock);
-    g_moonSlot.selectedPath.clear();
-    g_milkywaySlot.selectedPath.clear();
-    DeactivateFileResourceLocked(g_moonSlot);
-    DeactivateFileResourceLocked(g_milkywaySlot);
-    for (CachedTexture& cached : g_moonSlot.cache) {
-        if (cached.resource) {
-            cached.resource->Release();
-            cached.resource = nullptr;
+    for (TextureSlot* slot : g_textureSlots) {
+        if (!slot) {
+            continue;
         }
-    }
-    g_moonSlot.cache.clear();
-    for (CachedTexture& cached : g_milkywaySlot.cache) {
-        if (cached.resource) {
-            cached.resource->Release();
-            cached.resource = nullptr;
+        slot->selectedPath.clear();
+        DeactivateFileResourceLocked(*slot);
+        for (CachedTexture& cached : slot->cache) {
+            if (cached.resource) {
+                cached.resource->Release();
+                cached.resource = nullptr;
+            }
         }
+        slot->cache.clear();
+        ClearTrackedNativeStateLocked(*slot);
     }
-    g_milkywaySlot.cache.clear();
-
-    for (SrvBinding& binding : g_moonSlot.bindings) {
-        if (binding.nativeResource) {
-            binding.nativeResource->Release();
-            binding.nativeResource = nullptr;
-        }
-    }
-    g_moonSlot.bindings.clear();
-    for (SrvBinding& binding : g_milkywaySlot.bindings) {
-        if (binding.nativeResource) {
-            binding.nativeResource->Release();
-            binding.nativeResource = nullptr;
-        }
-    }
-    g_milkywaySlot.bindings.clear();
-
-    for (ID3D12Resource* resource : g_moonSlot.nativeResources) {
-        if (resource) {
-            resource->Release();
-        }
-    }
-    g_moonSlot.nativeResources.clear();
-    for (ID3D12Resource* resource : g_milkywaySlot.nativeResources) {
-        if (resource) {
-            resource->Release();
-        }
-    }
-    g_milkywaySlot.nativeResources.clear();
-
-    if (g_moonSlot.primaryNativeResource) {
-        g_moonSlot.primaryNativeResource->Release();
-        g_moonSlot.primaryNativeResource = nullptr;
-    }
-    g_moonSlot.nativeLocked.store(false);
-    g_moonSlot.contentProofHit = false;
     g_commandListHooksInstalled.store(false);
     LeaveCriticalSection(&g_hookLock);
 
@@ -2535,14 +2517,14 @@ void MilkywayTextureReload() {
 const char* MoonTextureStatus() {
     StateLockGuard lock;
     thread_local char statusCopy[sizeof(g_moonSlot.status)]{};
-    strcpy_s(statusCopy, g_moonSlot.status);
+    CopyTextureStatus(g_moonSlot, statusCopy, sizeof(statusCopy));
     return statusCopy;
 }
 
 const char* MilkywayTextureStatus() {
     StateLockGuard lock;
     thread_local char statusCopy[sizeof(g_milkywaySlot.status)]{};
-    strcpy_s(statusCopy, g_milkywaySlot.status);
+    CopyTextureStatus(g_milkywaySlot, statusCopy, sizeof(statusCopy));
     return statusCopy;
 }
 
@@ -2561,7 +2543,7 @@ bool MilkywayTextureReady() {
         return false;
     }
     EnterCriticalSection(&g_hookLock);
-    const bool ready = MilkywaySwapReadyLocked();
+    const bool ready = NonProofSwapReadyLocked(g_milkywaySlot);
     LeaveCriticalSection(&g_hookLock);
     return ready;
 }

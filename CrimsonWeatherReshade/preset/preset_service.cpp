@@ -9,8 +9,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
+
+bool SelectPresetIndexInternal(int index, bool applyImmediately, const char* statusPrefix, const char* toastPrefix, const char* logVerb);
 
 namespace {
 constexpr const char* kPresetHeader = "[CrimsonWeatherPreset]";
@@ -38,8 +41,13 @@ struct WeatherPresetMask {
     bool midClouds = false;
     bool highClouds = false;
     bool cloudAlpha = false;
+    bool cloudFadeRange = false;
+    bool cloudDetailRatio = false;
     bool cloudPhaseFront = false;
     bool cloudScatteringCoefficient = false;
+    bool cloudFlow = false;
+    bool rayleighHeight = false;
+    bool ozoneRatio = false;
     bool rayleighScatteringColor = false;
     bool exp2C = false;
     bool exp2D = false;
@@ -60,6 +68,7 @@ struct WeatherPresetMask {
     bool fog = false;
     bool nativeFog = false;
     bool volumeFogScatterColor = false;
+    bool mieScatterColor = false;
     bool mieScaleHeight = false;
     bool mieAerosolDensity = false;
     bool mieAerosolAbsorption = false;
@@ -93,18 +102,31 @@ bool g_lastRuntimeAppliedDataValid = false;
 int g_regionBlendFrom = -1;
 int g_regionBlendTo = -1;
 int g_regionBlendLogBucket = -1;
+bool g_autoSavePending = false;
+ULONGLONG g_autoSaveLastEditTick = 0;
 
 constexpr float kPresetFloatEpsilon = 0.0005f;
 constexpr float kRegionTransitionDurationSeconds = 6.0f;
+constexpr ULONGLONG kAutoSaveDebounceMs = 350;
 constexpr bool kPresetVerboseTestLog = false;
 constexpr const char* kNewPresetDisplayName = "[New Preset]";
 constexpr const char* kPresetConfigSection = "Preset";
 constexpr const char* kPresetConfigKeyLastPreset = "LastPreset";
-constexpr int kPresetFormatVersion = 5;
+constexpr const char* kTimeScheduleConfigSection = "TimeSchedule";
+constexpr int kTimeScheduleDefaultBlendSeconds = 120;
+constexpr int kPresetFormatVersion = 6;
 std::string TrimCopy(const std::string& value);
 bool EqualsNoCase(const std::string& a, const std::string& b);
 WeatherPresetData CaptureCurrentPresetData();
 void ApplyPresetData(const WeatherPresetData& data);
+void EnsureTimeScheduleLoaded();
+bool TimeScheduleRuntimeTick(bool worldReady);
+void TimeScheduleDisableForManualSelection();
+void TimeScheduleCancelBlendForUserEdit();
+void TimeSchedulePinCurrentEntryForUserEdit();
+void TimeScheduleClearUserEditPin();
+void TimeScheduleClearSelfVisualGuard();
+bool SaveSelectedDraftInternal(const char* statusPrefix, const char* logVerb, bool applyAfterSave);
 
 float ClampPresetFloat(float value, float lo, float hi) {
     return min(hi, max(lo, value));
@@ -139,8 +161,13 @@ float ClampPresetMieAbsorption(float value) { return ClampExtendedPresetFloat(va
 float ClampPresetHeightFogBaseline(float value) { return ClampExtendedPresetFloat(value, -5000.0f, 5000.0f, -50000.0f, 50000.0f); }
 float ClampPresetHeightFogFalloff(float value) { return ClampExtendedPresetFloat(value, 0.0f, 5.0f, 0.0f, 100.0f); }
 float ClampPresetCloudAlpha(float value) { return ClampExtendedPresetFloat(value, 0.0f, 50.0f, 0.0f, 100.0f); }
+float ClampPresetCloudFadeRange(float value) { return ClampExtendedPresetFloat(value, 0.0f, 100000.0f, 0.0f, 200000.0f); }
+float ClampPresetCloudDetailRatio(float value) { return ClampPresetFloat(value, 0.0f, 1.5f); }
 float ClampPresetCloudPhaseFront(float value) { return ClampExtendedPresetFloat(value, -1.0f, 1.0f, -1.0f, 1.0f); }
 float ClampPresetCloudScatteringCoefficient(float value) { return ClampExtendedPresetFloat(value, kCloudScatteringCoefficientMin, 1.0f, kCloudScatteringCoefficientMin, 100.0f); }
+float ClampPresetCloudFlow(float value) { return ClampExtendedPresetFloat(value, 0.0f, 10.0f, 0.0f, 50.0f); }
+float ClampPresetRayleighHeight(float value) { return ClampExtendedPresetFloat(value, 10.0f, 20000.0f, 1.0f, 200000.0f); }
+float ClampPresetOzoneRatio(float value) { return ClampExtendedPresetFloat(value, 0.0f, 10.0f, 0.0f, 100.0f); }
 float ClampPresetColorComponent(float value) { return ClampPresetFloat(value, 0.0f, 10.0f); }
 
 WeatherPresetColor ClampPresetColor(WeatherPresetColor color, bool includeAlpha) {
@@ -167,6 +194,8 @@ void ClearSelectedPresetBaseline() {
     g_regionBlendFrom = -1;
     g_regionBlendTo = -1;
     g_regionBlendLogBucket = -1;
+    g_autoSavePending = false;
+    g_autoSaveLastEditTick = 0;
 }
 
 void SetSelectedPresetBaseline(const WeatherPresetPackage& package) {
@@ -175,6 +204,8 @@ void SetSelectedPresetBaseline(const WeatherPresetPackage& package) {
     g_editDraftPackage = package;
     g_editDraftValid = true;
     g_newPresetDraftActive = false;
+    g_autoSavePending = false;
+    g_autoSaveLastEditTick = 0;
 }
 
 bool FloatNearlyEqual(float a, float b, float epsilon = kPresetFloatEpsilon) {
@@ -194,13 +225,6 @@ bool EnabledFloatNearlyEqual(bool aEnabled, float a, bool bEnabled, float b) {
         return false;
     }
     return !aEnabled || FloatNearlyEqual(a, b);
-}
-
-bool EnabledHourNearlyEqual(bool aEnabled, float a, bool bEnabled, float b) {
-    if (aEnabled != bEnabled) {
-        return false;
-    }
-    return !aEnabled || HourNearlyEqual(a, b);
 }
 
 bool TimePresetNearlyEqual(const WeatherPresetData& a, const WeatherPresetData& b) {
@@ -259,8 +283,13 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         EnabledFloatNearlyEqual(a.midCloudsEnabled, a.midClouds, b.midCloudsEnabled, b.midClouds) &&
         EnabledFloatNearlyEqual(a.highCloudsEnabled, a.highClouds, b.highCloudsEnabled, b.highClouds) &&
         EnabledFloatNearlyEqual(a.cloudAlphaEnabled, a.cloudAlpha, b.cloudAlphaEnabled, b.cloudAlpha) &&
+        EnabledFloatNearlyEqual(a.cloudFadeRangeEnabled, a.cloudFadeRange, b.cloudFadeRangeEnabled, b.cloudFadeRange) &&
+        EnabledFloatNearlyEqual(a.cloudDetailRatioEnabled, a.cloudDetailRatio, b.cloudDetailRatioEnabled, b.cloudDetailRatio) &&
         EnabledFloatNearlyEqual(a.cloudPhaseFrontEnabled, a.cloudPhaseFront, b.cloudPhaseFrontEnabled, b.cloudPhaseFront) &&
         EnabledFloatNearlyEqual(a.cloudScatteringCoefficientEnabled, a.cloudScatteringCoefficient, b.cloudScatteringCoefficientEnabled, b.cloudScatteringCoefficient) &&
+        EnabledFloatNearlyEqual(a.cloudFlowEnabled, a.cloudFlow, b.cloudFlowEnabled, b.cloudFlow) &&
+        EnabledFloatNearlyEqual(a.rayleighHeightEnabled, a.rayleighHeight, b.rayleighHeightEnabled, b.rayleighHeight) &&
+        EnabledFloatNearlyEqual(a.ozoneRatioEnabled, a.ozoneRatio, b.ozoneRatioEnabled, b.ozoneRatio) &&
         EnabledColorNearlyEqual(a.rayleighScatteringColorEnabled, a.rayleighScatteringColor, b.rayleighScatteringColorEnabled, b.rayleighScatteringColor, false) &&
         EnabledFloatNearlyEqual(a.exp2CEnabled, a.exp2C, b.exp2CEnabled, b.exp2C) &&
         EnabledFloatNearlyEqual(a.exp2DEnabled, a.exp2D, b.exp2DEnabled, b.exp2D) &&
@@ -281,6 +310,7 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         EnabledFloatNearlyEqual(a.fogEnabled, a.fogPercent, b.fogEnabled, b.fogPercent) &&
         EnabledFloatNearlyEqual(a.nativeFogEnabled, a.nativeFog, b.nativeFogEnabled, b.nativeFog) &&
         EnabledColorNearlyEqual(a.volumeFogScatterColorEnabled, a.volumeFogScatterColor, b.volumeFogScatterColorEnabled, b.volumeFogScatterColor, true) &&
+        EnabledColorNearlyEqual(a.mieScatterColorEnabled, a.mieScatterColor, b.mieScatterColorEnabled, b.mieScatterColor, true) &&
         EnabledFloatNearlyEqual(a.mieScaleHeightEnabled, a.mieScaleHeight, b.mieScaleHeightEnabled, b.mieScaleHeight) &&
         EnabledFloatNearlyEqual(a.mieAerosolDensityEnabled, a.mieAerosolDensity, b.mieAerosolDensityEnabled, b.mieAerosolDensity) &&
         EnabledFloatNearlyEqual(a.mieAerosolAbsorptionEnabled, a.mieAerosolAbsorption, b.mieAerosolAbsorptionEnabled, b.mieAerosolAbsorption) &&
@@ -295,11 +325,12 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
 bool PresetMaskAny(const WeatherPresetMask& mask) {
     return mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow || mask.time ||
         mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds ||
-        mask.highClouds || mask.cloudAlpha || mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.rayleighScatteringColor ||
+        mask.highClouds || mask.cloudAlpha || mask.cloudFadeRange || mask.cloudDetailRatio ||
+        mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.cloudFlow || mask.rayleighHeight || mask.ozoneRatio || mask.rayleighScatteringColor ||
         mask.exp2C || mask.exp2D || mask.cloudVariation ||
         mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunLightIntensity || mask.sunYaw || mask.sunPitch ||
         mask.moonSize || mask.moonLightIntensity || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture ||
-        mask.fog || mask.nativeFog || mask.volumeFogScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
+        mask.fog || mask.nativeFog || mask.volumeFogScatterColor || mask.mieScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
         mask.mieAerosolAbsorption || mask.heightFogBaseline || mask.heightFogFalloff || mask.noFog || mask.wind ||
         mask.noWind || mask.puddleScale;
 }
@@ -321,8 +352,13 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.midClouds = mask.midClouds;
     out.highClouds = mask.highClouds;
     out.cloudAlpha = mask.cloudAlpha;
+    out.cloudFadeRange = mask.cloudFadeRange;
+    out.cloudDetailRatio = mask.cloudDetailRatio;
     out.cloudPhaseFront = mask.cloudPhaseFront;
     out.cloudScatteringCoefficient = mask.cloudScatteringCoefficient;
+    out.cloudFlow = mask.cloudFlow;
+    out.rayleighHeight = mask.rayleighHeight;
+    out.ozoneRatio = mask.ozoneRatio;
     out.rayleighScatteringColor = mask.rayleighScatteringColor;
     out.exp2C = mask.exp2C;
     out.exp2D = mask.exp2D;
@@ -343,6 +379,7 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.fog = mask.fog;
     out.nativeFog = mask.nativeFog;
     out.volumeFogScatterColor = mask.volumeFogScatterColor;
+    out.mieScatterColor = mask.mieScatterColor;
     out.mieScaleHeight = mask.mieScaleHeight;
     out.mieAerosolDensity = mask.mieAerosolDensity;
     out.mieAerosolAbsorption = mask.mieAerosolAbsorption;
@@ -372,8 +409,13 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.midClouds = source.midClouds;
     mask.highClouds = source.highClouds;
     mask.cloudAlpha = source.cloudAlpha;
+    mask.cloudFadeRange = source.cloudFadeRange;
+    mask.cloudDetailRatio = source.cloudDetailRatio;
     mask.cloudPhaseFront = source.cloudPhaseFront;
     mask.cloudScatteringCoefficient = source.cloudScatteringCoefficient;
+    mask.cloudFlow = source.cloudFlow;
+    mask.rayleighHeight = source.rayleighHeight;
+    mask.ozoneRatio = source.ozoneRatio;
     mask.rayleighScatteringColor = source.rayleighScatteringColor;
     mask.exp2C = source.exp2C;
     mask.exp2D = source.exp2D;
@@ -394,6 +436,7 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.fog = source.fog;
     mask.nativeFog = source.nativeFog;
     mask.volumeFogScatterColor = source.volumeFogScatterColor;
+    mask.mieScatterColor = source.mieScatterColor;
     mask.mieScaleHeight = source.mieScaleHeight;
     mask.mieAerosolDensity = source.mieAerosolDensity;
     mask.mieAerosolAbsorption = source.mieAerosolAbsorption;
@@ -422,8 +465,13 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.midClouds == b.midClouds &&
         a.highClouds == b.highClouds &&
         a.cloudAlpha == b.cloudAlpha &&
+        a.cloudFadeRange == b.cloudFadeRange &&
+        a.cloudDetailRatio == b.cloudDetailRatio &&
         a.cloudPhaseFront == b.cloudPhaseFront &&
         a.cloudScatteringCoefficient == b.cloudScatteringCoefficient &&
+        a.cloudFlow == b.cloudFlow &&
+        a.rayleighHeight == b.rayleighHeight &&
+        a.ozoneRatio == b.ozoneRatio &&
         a.rayleighScatteringColor == b.rayleighScatteringColor &&
         a.exp2C == b.exp2C &&
         a.exp2D == b.exp2D &&
@@ -444,6 +492,7 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.fog == b.fog &&
         a.nativeFog == b.nativeFog &&
         a.volumeFogScatterColor == b.volumeFogScatterColor &&
+        a.mieScatterColor == b.mieScatterColor &&
         a.mieScaleHeight == b.mieScaleHeight &&
         a.mieAerosolDensity == b.mieAerosolDensity &&
         a.mieAerosolAbsorption == b.mieAerosolAbsorption &&
@@ -472,8 +521,13 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.midClouds = true;
     mask.highClouds = true;
     mask.cloudAlpha = true;
+    mask.cloudFadeRange = true;
+    mask.cloudDetailRatio = true;
     mask.cloudPhaseFront = true;
     mask.cloudScatteringCoefficient = true;
+    mask.cloudFlow = true;
+    mask.rayleighHeight = true;
+    mask.ozoneRatio = true;
     mask.rayleighScatteringColor = true;
     mask.exp2C = true;
     mask.exp2D = true;
@@ -494,6 +548,7 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.fog = true;
     mask.nativeFog = true;
     mask.volumeFogScatterColor = true;
+    mask.mieScatterColor = true;
     mask.mieScaleHeight = true;
     mask.mieAerosolDensity = true;
     mask.mieAerosolAbsorption = true;
@@ -523,8 +578,13 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.midClouds = !EnabledFloatNearlyEqual(base.midCloudsEnabled, base.midClouds, value.midCloudsEnabled, value.midClouds);
     mask.highClouds = !EnabledFloatNearlyEqual(base.highCloudsEnabled, base.highClouds, value.highCloudsEnabled, value.highClouds);
     mask.cloudAlpha = !EnabledFloatNearlyEqual(base.cloudAlphaEnabled, base.cloudAlpha, value.cloudAlphaEnabled, value.cloudAlpha);
+    mask.cloudFadeRange = !EnabledFloatNearlyEqual(base.cloudFadeRangeEnabled, base.cloudFadeRange, value.cloudFadeRangeEnabled, value.cloudFadeRange);
+    mask.cloudDetailRatio = !EnabledFloatNearlyEqual(base.cloudDetailRatioEnabled, base.cloudDetailRatio, value.cloudDetailRatioEnabled, value.cloudDetailRatio);
     mask.cloudPhaseFront = !EnabledFloatNearlyEqual(base.cloudPhaseFrontEnabled, base.cloudPhaseFront, value.cloudPhaseFrontEnabled, value.cloudPhaseFront);
     mask.cloudScatteringCoefficient = !EnabledFloatNearlyEqual(base.cloudScatteringCoefficientEnabled, base.cloudScatteringCoefficient, value.cloudScatteringCoefficientEnabled, value.cloudScatteringCoefficient);
+    mask.cloudFlow = !EnabledFloatNearlyEqual(base.cloudFlowEnabled, base.cloudFlow, value.cloudFlowEnabled, value.cloudFlow);
+    mask.rayleighHeight = !EnabledFloatNearlyEqual(base.rayleighHeightEnabled, base.rayleighHeight, value.rayleighHeightEnabled, value.rayleighHeight);
+    mask.ozoneRatio = !EnabledFloatNearlyEqual(base.ozoneRatioEnabled, base.ozoneRatio, value.ozoneRatioEnabled, value.ozoneRatio);
     mask.rayleighScatteringColor = !EnabledColorNearlyEqual(base.rayleighScatteringColorEnabled, base.rayleighScatteringColor, value.rayleighScatteringColorEnabled, value.rayleighScatteringColor, false);
     mask.exp2C = !EnabledFloatNearlyEqual(base.exp2CEnabled, base.exp2C, value.exp2CEnabled, value.exp2C);
     mask.exp2D = !EnabledFloatNearlyEqual(base.exp2DEnabled, base.exp2D, value.exp2DEnabled, value.exp2D);
@@ -545,6 +605,7 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.fog = !EnabledFloatNearlyEqual(base.fogEnabled, base.fogPercent, value.fogEnabled, value.fogPercent);
     mask.nativeFog = !EnabledFloatNearlyEqual(base.nativeFogEnabled, base.nativeFog, value.nativeFogEnabled, value.nativeFog);
     mask.volumeFogScatterColor = !EnabledColorNearlyEqual(base.volumeFogScatterColorEnabled, base.volumeFogScatterColor, value.volumeFogScatterColorEnabled, value.volumeFogScatterColor, true);
+    mask.mieScatterColor = !EnabledColorNearlyEqual(base.mieScatterColorEnabled, base.mieScatterColor, value.mieScatterColorEnabled, value.mieScatterColor, true);
     mask.mieScaleHeight = !EnabledFloatNearlyEqual(base.mieScaleHeightEnabled, base.mieScaleHeight, value.mieScaleHeightEnabled, value.mieScaleHeight);
     mask.mieAerosolDensity = !EnabledFloatNearlyEqual(base.mieAerosolDensityEnabled, base.mieAerosolDensity, value.mieAerosolDensityEnabled, value.mieAerosolDensity);
     mask.mieAerosolAbsorption = !EnabledFloatNearlyEqual(base.mieAerosolAbsorptionEnabled, base.mieAerosolAbsorption, value.mieAerosolAbsorptionEnabled, value.mieAerosolAbsorption);
@@ -596,6 +657,14 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
         target.cloudAlphaEnabled = source.cloudAlphaEnabled;
         target.cloudAlpha = source.cloudAlpha;
     }
+    if (mask.cloudFadeRange) {
+        target.cloudFadeRangeEnabled = source.cloudFadeRangeEnabled;
+        target.cloudFadeRange = source.cloudFadeRange;
+    }
+    if (mask.cloudDetailRatio) {
+        target.cloudDetailRatioEnabled = source.cloudDetailRatioEnabled;
+        target.cloudDetailRatio = source.cloudDetailRatio;
+    }
     if (mask.cloudPhaseFront) {
         target.cloudPhaseFrontEnabled = source.cloudPhaseFrontEnabled;
         target.cloudPhaseFront = source.cloudPhaseFront;
@@ -603,6 +672,18 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
     if (mask.cloudScatteringCoefficient) {
         target.cloudScatteringCoefficientEnabled = source.cloudScatteringCoefficientEnabled;
         target.cloudScatteringCoefficient = source.cloudScatteringCoefficient;
+    }
+    if (mask.cloudFlow) {
+        target.cloudFlowEnabled = source.cloudFlowEnabled;
+        target.cloudFlow = source.cloudFlow;
+    }
+    if (mask.rayleighHeight) {
+        target.rayleighHeightEnabled = source.rayleighHeightEnabled;
+        target.rayleighHeight = source.rayleighHeight;
+    }
+    if (mask.ozoneRatio) {
+        target.ozoneRatioEnabled = source.ozoneRatioEnabled;
+        target.ozoneRatio = source.ozoneRatio;
     }
     if (mask.rayleighScatteringColor) {
         target.rayleighScatteringColorEnabled = source.rayleighScatteringColorEnabled;
@@ -683,6 +764,10 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
     if (mask.volumeFogScatterColor) {
         target.volumeFogScatterColorEnabled = source.volumeFogScatterColorEnabled;
         target.volumeFogScatterColor = source.volumeFogScatterColor;
+    }
+    if (mask.mieScatterColor) {
+        target.mieScatterColorEnabled = source.mieScatterColorEnabled;
+        target.mieScatterColor = source.mieScatterColor;
     }
     if (mask.mieScaleHeight) {
         target.mieScaleHeightEnabled = source.mieScaleHeightEnabled;
@@ -782,10 +867,20 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.highClouds = LerpPresetFloat(a.highClouds, b.highClouds, t);
     out.cloudAlphaEnabled = a.cloudAlphaEnabled || b.cloudAlphaEnabled;
     out.cloudAlpha = LerpPresetFloat(a.cloudAlpha, b.cloudAlpha, t);
+    out.cloudFadeRangeEnabled = a.cloudFadeRangeEnabled || b.cloudFadeRangeEnabled;
+    out.cloudFadeRange = LerpPresetFloat(a.cloudFadeRange, b.cloudFadeRange, t);
+    out.cloudDetailRatioEnabled = a.cloudDetailRatioEnabled || b.cloudDetailRatioEnabled;
+    out.cloudDetailRatio = LerpPresetFloat(a.cloudDetailRatio, b.cloudDetailRatio, t);
     out.cloudPhaseFrontEnabled = a.cloudPhaseFrontEnabled || b.cloudPhaseFrontEnabled;
     out.cloudPhaseFront = LerpPresetFloat(a.cloudPhaseFront, b.cloudPhaseFront, t);
     out.cloudScatteringCoefficientEnabled = a.cloudScatteringCoefficientEnabled || b.cloudScatteringCoefficientEnabled;
     out.cloudScatteringCoefficient = LerpPresetFloat(a.cloudScatteringCoefficient, b.cloudScatteringCoefficient, t);
+    out.cloudFlowEnabled = a.cloudFlowEnabled || b.cloudFlowEnabled;
+    out.cloudFlow = LerpPresetFloat(a.cloudFlow, b.cloudFlow, t);
+    out.rayleighHeightEnabled = a.rayleighHeightEnabled || b.rayleighHeightEnabled;
+    out.rayleighHeight = LerpPresetFloat(a.rayleighHeight, b.rayleighHeight, t);
+    out.ozoneRatioEnabled = a.ozoneRatioEnabled || b.ozoneRatioEnabled;
+    out.ozoneRatio = LerpPresetFloat(a.ozoneRatio, b.ozoneRatio, t);
     out.rayleighScatteringColorEnabled = a.rayleighScatteringColorEnabled || b.rayleighScatteringColorEnabled;
     out.rayleighScatteringColor = LerpPresetColor(a.rayleighScatteringColor, b.rayleighScatteringColor, t);
     out.exp2CEnabled = a.exp2CEnabled || b.exp2CEnabled;
@@ -826,6 +921,8 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.nativeFog = LerpPresetFloat(a.nativeFog, b.nativeFog, t);
     out.volumeFogScatterColorEnabled = a.volumeFogScatterColorEnabled || b.volumeFogScatterColorEnabled;
     out.volumeFogScatterColor = LerpPresetColor(a.volumeFogScatterColor, b.volumeFogScatterColor, t);
+    out.mieScatterColorEnabled = a.mieScatterColorEnabled || b.mieScatterColorEnabled;
+    out.mieScatterColor = LerpPresetColor(a.mieScatterColor, b.mieScatterColor, t);
     out.mieScaleHeightEnabled = a.mieScaleHeightEnabled || b.mieScaleHeightEnabled;
     out.mieScaleHeight = LerpPresetFloat(a.mieScaleHeight, b.mieScaleHeight, t);
     out.mieAerosolDensityEnabled = a.mieAerosolDensityEnabled || b.mieAerosolDensityEnabled;
@@ -1075,6 +1172,32 @@ bool g_autoApplyRememberedArmed = false;
 ULONGLONG g_worldReadyStableStartTick = 0;
 constexpr ULONGLONG kWorldReadyAutoApplyDelayMs = 1000;
 
+bool g_timeScheduleLoaded = false;
+bool g_timeScheduleEnabled = false;
+std::vector<PresetScheduleEntry> g_timeScheduleEntries;
+std::string g_timeScheduleActivePresetFile;
+int g_timeScheduleActiveEntryIndex = -1;
+int g_timeScheduleLastAppliedEntryIndex = -1;
+std::string g_timeScheduleLastMissingPresetFile;
+bool g_timeScheduleBlendActive = false;
+WeatherPresetData g_timeScheduleBlendFrom{};
+WeatherPresetPackage g_timeScheduleBlendTargetPackage{};
+std::string g_timeScheduleBlendPresetFile;
+std::string g_timeScheduleBlendFromPresetFile;
+ULONGLONG g_timeScheduleBlendStartTick = 0;
+int g_timeScheduleBlendSeconds = 0;
+int g_timeScheduleBlendLogBucket = -1;
+bool g_timeScheduleUserEditPinned = false;
+int g_timeScheduleUserEditPinnedEntryIndex = -1;
+std::string g_timeScheduleUserEditPinnedPresetFile;
+bool g_timeScheduleSelfVisualGuard = false;
+float g_timeScheduleSelfVisualGuardHour = -1.0f;
+std::string g_timeScheduleSelfVisualGuardPresetFile;
+bool g_timeScheduleSelfVisualGuardSkipLogged = false;
+int g_timeScheduleLastDiagMinute = -1;
+int g_timeScheduleLastDiagEntryIndex = -9999;
+bool g_timeScheduleLastDiagPinned = false;
+
 void LoadRememberedPresetNameOnce() {
     if (g_rememberedPresetLoaded) return;
     g_rememberedPresetLoaded = true;
@@ -1231,8 +1354,13 @@ struct PresetParseState {
     bool midCloudsEnabledSeen = false;
     bool highCloudsEnabledSeen = false;
     bool cloudAlphaEnabledSeen = false;
+    bool cloudFadeRangeEnabledSeen = false;
+    bool cloudDetailRatioEnabledSeen = false;
     bool cloudPhaseFrontEnabledSeen = false;
     bool cloudScatteringCoefficientEnabledSeen = false;
+    bool cloudFlowEnabledSeen = false;
+    bool rayleighHeightEnabledSeen = false;
+    bool ozoneRatioEnabledSeen = false;
     bool rayleighScatteringColorEnabledSeen = false;
     bool exp2CEnabledSeen = false;
     bool exp2DEnabledSeen = false;
@@ -1253,6 +1381,7 @@ struct PresetParseState {
     bool fogEnabledSeen = false;
     bool nativeFogEnabledSeen = false;
     bool volumeFogScatterColorEnabledSeen = false;
+    bool mieScatterColorEnabledSeen = false;
     bool mieScaleHeightEnabledSeen = false;
     bool mieAerosolDensityEnabledSeen = false;
     bool mieAerosolAbsorptionEnabledSeen = false;
@@ -1284,8 +1413,13 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
              KeyEquals(key, "CloudScrollEnabled") || KeyEquals(key, "CloudScroll")) mask.midClouds = true;
     else if (KeyEquals(key, "HighCloudLayerEnabled") || KeyEquals(key, "HighCloudLayer")) mask.highClouds = true;
     else if (KeyEquals(key, "CloudAlphaEnabled") || KeyEquals(key, "CloudAlpha")) mask.cloudAlpha = true;
+    else if (KeyEquals(key, "CloudFadeRangeEnabled") || KeyEquals(key, "CloudFadeRange")) mask.cloudFadeRange = true;
+    else if (KeyEquals(key, "CloudDetailRatioEnabled") || KeyEquals(key, "CloudDetailRatio")) mask.cloudDetailRatio = true;
     else if (KeyEquals(key, "CloudPhaseFrontEnabled") || KeyEquals(key, "CloudPhaseFront")) mask.cloudPhaseFront = true;
     else if (KeyEquals(key, "CloudScatteringCoefficientEnabled") || KeyEquals(key, "CloudScatteringCoefficient")) mask.cloudScatteringCoefficient = true;
+    else if (KeyEquals(key, "CloudFlowEnabled") || KeyEquals(key, "CloudFlow")) mask.cloudFlow = true;
+    else if (KeyEquals(key, "RayleighHeightEnabled") || KeyEquals(key, "RayleighHeight")) mask.rayleighHeight = true;
+    else if (KeyEquals(key, "OzoneRatioEnabled") || KeyEquals(key, "OzoneRatio")) mask.ozoneRatio = true;
     else if (KeyEquals(key, "RayleighScatteringColorEnabled") ||
              KeyEquals(key, "RayleighScatteringColorR") ||
              KeyEquals(key, "RayleighScatteringColorG") ||
@@ -1315,6 +1449,11 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
              KeyEquals(key, "VolumeFogScatterColorG") ||
              KeyEquals(key, "VolumeFogScatterColorB") ||
              KeyEquals(key, "VolumeFogScatterColorA")) mask.volumeFogScatterColor = true;
+    else if (KeyEquals(key, "MieScatterColorEnabled") ||
+             KeyEquals(key, "MieScatterColorR") ||
+             KeyEquals(key, "MieScatterColorG") ||
+             KeyEquals(key, "MieScatterColorB") ||
+             KeyEquals(key, "MieScatterColorA")) mask.mieScatterColor = true;
     else if (KeyEquals(key, "MieScaleHeightEnabled") || KeyEquals(key, "MieScaleHeight")) mask.mieScaleHeight = true;
     else if (KeyEquals(key, "MieAerosolDensityEnabled") || KeyEquals(key, "MieAerosolDensity")) mask.mieAerosolDensity = true;
     else if (KeyEquals(key, "MieAerosolAbsorptionEnabled") || KeyEquals(key, "MieAerosolAbsorption")) mask.mieAerosolAbsorption = true;
@@ -1406,6 +1545,20 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "CloudAlpha")) {
         if (TryParseFloat(value, floatValue)) data.cloudAlpha = floatValue;
+    } else if (KeyEquals(key, "CloudFadeRangeEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.cloudFadeRangeEnabled = boolValue;
+            state.cloudFadeRangeEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "CloudFadeRange")) {
+        if (TryParseFloat(value, floatValue)) data.cloudFadeRange = floatValue;
+    } else if (KeyEquals(key, "CloudDetailRatioEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.cloudDetailRatioEnabled = boolValue;
+            state.cloudDetailRatioEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "CloudDetailRatio")) {
+        if (TryParseFloat(value, floatValue)) data.cloudDetailRatio = floatValue;
     } else if (KeyEquals(key, "CloudPhaseFrontEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.cloudPhaseFrontEnabled = boolValue;
@@ -1420,6 +1573,27 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "CloudScatteringCoefficient")) {
         if (TryParseFloat(value, floatValue)) data.cloudScatteringCoefficient = floatValue;
+    } else if (KeyEquals(key, "CloudFlowEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.cloudFlowEnabled = boolValue;
+            state.cloudFlowEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "CloudFlow")) {
+        if (TryParseFloat(value, floatValue)) data.cloudFlow = floatValue;
+    } else if (KeyEquals(key, "RayleighHeightEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.rayleighHeightEnabled = boolValue;
+            state.rayleighHeightEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "RayleighHeight")) {
+        if (TryParseFloat(value, floatValue)) data.rayleighHeight = floatValue;
+    } else if (KeyEquals(key, "OzoneRatioEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.ozoneRatioEnabled = boolValue;
+            state.ozoneRatioEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "OzoneRatio")) {
+        if (TryParseFloat(value, floatValue)) data.ozoneRatio = floatValue;
     } else if (KeyEquals(key, "RayleighScatteringColorEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.rayleighScatteringColorEnabled = boolValue;
@@ -1572,6 +1746,19 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         if (TryParseFloat(value, floatValue)) data.volumeFogScatterColor.b = floatValue;
     } else if (KeyEquals(key, "VolumeFogScatterColorA")) {
         if (TryParseFloat(value, floatValue)) data.volumeFogScatterColor.a = floatValue;
+    } else if (KeyEquals(key, "MieScatterColorEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.mieScatterColorEnabled = boolValue;
+            state.mieScatterColorEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MieScatterColorR")) {
+        if (TryParseFloat(value, floatValue)) data.mieScatterColor.r = floatValue;
+    } else if (KeyEquals(key, "MieScatterColorG")) {
+        if (TryParseFloat(value, floatValue)) data.mieScatterColor.g = floatValue;
+    } else if (KeyEquals(key, "MieScatterColorB")) {
+        if (TryParseFloat(value, floatValue)) data.mieScatterColor.b = floatValue;
+    } else if (KeyEquals(key, "MieScatterColorA")) {
+        if (TryParseFloat(value, floatValue)) data.mieScatterColor.a = floatValue;
     } else if (KeyEquals(key, "MieScaleHeightEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.mieScaleHeightEnabled = boolValue;
@@ -1632,8 +1819,13 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     if (!state.midCloudsEnabledSeen) data.midCloudsEnabled = !FloatNearlyEqual(data.midClouds, 1.0f);
     if (!state.highCloudsEnabledSeen) data.highCloudsEnabled = !FloatNearlyEqual(data.highClouds, 1.0f);
     if (!state.cloudAlphaEnabledSeen) data.cloudAlphaEnabled = false;
+    if (!state.cloudFadeRangeEnabledSeen) data.cloudFadeRangeEnabled = false;
+    if (!state.cloudDetailRatioEnabledSeen) data.cloudDetailRatioEnabled = false;
     if (!state.cloudPhaseFrontEnabledSeen) data.cloudPhaseFrontEnabled = false;
     if (!state.cloudScatteringCoefficientEnabledSeen) data.cloudScatteringCoefficientEnabled = false;
+    if (!state.cloudFlowEnabledSeen) data.cloudFlowEnabled = false;
+    if (!state.rayleighHeightEnabledSeen) data.rayleighHeightEnabled = false;
+    if (!state.ozoneRatioEnabledSeen) data.ozoneRatioEnabled = false;
     if (!state.rayleighScatteringColorEnabledSeen) data.rayleighScatteringColorEnabled = false;
     if (!state.exp2CEnabledSeen) data.exp2CEnabled = false;
     if (!state.exp2DEnabledSeen) data.exp2DEnabled = false;
@@ -1667,6 +1859,7 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     }
     if (!state.fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
     if (!state.volumeFogScatterColorEnabledSeen) data.volumeFogScatterColorEnabled = false;
+    if (!state.mieScatterColorEnabledSeen) data.mieScatterColorEnabled = false;
     if (!state.mieScaleHeightEnabledSeen) data.mieScaleHeightEnabled = false;
     if (!state.mieAerosolDensityEnabledSeen) data.mieAerosolDensityEnabled = false;
     if (!state.mieAerosolAbsorptionEnabledSeen) data.mieAerosolAbsorptionEnabled = false;
@@ -1684,12 +1877,18 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     data.nativeFog = ClampPresetNativeFog(data.nativeFog);
     if (!state.nativeFogEnabledSeen) data.nativeFogEnabled = !FloatNearlyEqual(data.nativeFog, 1.0f);
     data.cloudAlpha = ClampPresetCloudAlpha(data.cloudAlpha);
+    data.cloudFadeRange = ClampPresetCloudFadeRange(data.cloudFadeRange);
+    data.cloudDetailRatio = ClampPresetCloudDetailRatio(data.cloudDetailRatio);
     data.cloudPhaseFront = ClampPresetCloudPhaseFront(data.cloudPhaseFront);
     data.cloudScatteringCoefficient = ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient);
+    data.cloudFlow = ClampPresetCloudFlow(data.cloudFlow);
+    data.rayleighHeight = ClampPresetRayleighHeight(data.rayleighHeight);
+    data.ozoneRatio = ClampPresetOzoneRatio(data.ozoneRatio);
     data.rayleighScatteringColor = ClampPresetColor(data.rayleighScatteringColor, false);
     data.sunLightIntensity = ClampPresetLightIntensity(data.sunLightIntensity);
     data.moonLightIntensity = ClampPresetLightIntensity(data.moonLightIntensity);
     data.volumeFogScatterColor = ClampPresetColor(data.volumeFogScatterColor, true);
+    data.mieScatterColor = ClampPresetColor(data.mieScatterColor, true);
     data.mieScaleHeight = ClampPresetMieScaleHeight(data.mieScaleHeight);
     data.mieAerosolDensity = ClampPresetMieDensity(data.mieAerosolDensity);
     data.mieAerosolAbsorption = ClampPresetMieAbsorption(data.mieAerosolAbsorption);
@@ -1844,10 +2043,20 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "HighCloudLayer", FormatPresetFloat(ClampPresetCloudWide(data.highClouds)));
     AppendPresetKeyValue(out, "CloudAlphaEnabled", FormatPresetBool(data.cloudAlphaEnabled));
     AppendPresetKeyValue(out, "CloudAlpha", FormatPresetFloat(ClampPresetCloudAlpha(data.cloudAlpha)));
+    AppendPresetKeyValue(out, "CloudFadeRangeEnabled", FormatPresetBool(data.cloudFadeRangeEnabled));
+    AppendPresetKeyValue(out, "CloudFadeRange", FormatPresetFloat(ClampPresetCloudFadeRange(data.cloudFadeRange)));
+    AppendPresetKeyValue(out, "CloudDetailRatioEnabled", FormatPresetBool(data.cloudDetailRatioEnabled));
+    AppendPresetKeyValue(out, "CloudDetailRatio", FormatPresetFloat(ClampPresetCloudDetailRatio(data.cloudDetailRatio)));
     AppendPresetKeyValue(out, "CloudPhaseFrontEnabled", FormatPresetBool(data.cloudPhaseFrontEnabled));
     AppendPresetKeyValue(out, "CloudPhaseFront", FormatPresetFloat(ClampPresetCloudPhaseFront(data.cloudPhaseFront)));
     AppendPresetKeyValue(out, "CloudScatteringCoefficientEnabled", FormatPresetBool(data.cloudScatteringCoefficientEnabled));
     AppendPresetKeyValue(out, "CloudScatteringCoefficient", FormatPresetFloat(ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient)));
+    AppendPresetKeyValue(out, "CloudFlowEnabled", FormatPresetBool(data.cloudFlowEnabled));
+    AppendPresetKeyValue(out, "CloudFlow", FormatPresetFloat(ClampPresetCloudFlow(data.cloudFlow)));
+    AppendPresetKeyValue(out, "RayleighHeightEnabled", FormatPresetBool(data.rayleighHeightEnabled));
+    AppendPresetKeyValue(out, "RayleighHeight", FormatPresetFloat(ClampPresetRayleighHeight(data.rayleighHeight)));
+    AppendPresetKeyValue(out, "OzoneRatioEnabled", FormatPresetBool(data.ozoneRatioEnabled));
+    AppendPresetKeyValue(out, "OzoneRatio", FormatPresetFloat(ClampPresetOzoneRatio(data.ozoneRatio)));
     AppendPresetKeyValue(out, "RayleighScatteringColorEnabled", FormatPresetBool(data.rayleighScatteringColorEnabled));
     const WeatherPresetColor rayleigh = ClampPresetColor(data.rayleighScatteringColor, false);
     AppendPresetKeyValue(out, "RayleighScatteringColorR", FormatPresetFloat(rayleigh.r));
@@ -1906,6 +2115,12 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "VolumeFogScatterColorG", FormatPresetFloat(volumeFog.g));
     AppendPresetKeyValue(out, "VolumeFogScatterColorB", FormatPresetFloat(volumeFog.b));
     AppendPresetKeyValue(out, "VolumeFogScatterColorA", FormatPresetFloat(volumeFog.a));
+    AppendPresetKeyValue(out, "MieScatterColorEnabled", FormatPresetBool(data.mieScatterColorEnabled));
+    const WeatherPresetColor mieScatter = ClampPresetColor(data.mieScatterColor, true);
+    AppendPresetKeyValue(out, "MieScatterColorR", FormatPresetFloat(mieScatter.r));
+    AppendPresetKeyValue(out, "MieScatterColorG", FormatPresetFloat(mieScatter.g));
+    AppendPresetKeyValue(out, "MieScatterColorB", FormatPresetFloat(mieScatter.b));
+    AppendPresetKeyValue(out, "MieScatterColorA", FormatPresetFloat(mieScatter.a));
     AppendPresetKeyValue(out, "MieScaleHeightEnabled", FormatPresetBool(data.mieScaleHeightEnabled));
     AppendPresetKeyValue(out, "MieScaleHeight", FormatPresetFloat(ClampPresetMieScaleHeight(data.mieScaleHeight)));
     AppendPresetKeyValue(out, "MieAerosolDensityEnabled", FormatPresetBool(data.mieAerosolDensityEnabled));
@@ -1955,7 +2170,8 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
     }
 
     if (mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds || mask.highClouds ||
-        mask.cloudAlpha || mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.rayleighScatteringColor) {
+        mask.cloudAlpha || mask.cloudFadeRange || mask.cloudDetailRatio ||
+        mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.cloudFlow || mask.rayleighHeight || mask.ozoneRatio || mask.rayleighScatteringColor) {
         AppendRegionSectionHeader(out, regionId, "Cloud");
         if (mask.cloudAmount) {
             AppendPresetKeyValue(out, "CloudAmountEnabled", FormatPresetBool(data.cloudAmountEnabled));
@@ -1981,6 +2197,14 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
             AppendPresetKeyValue(out, "CloudAlphaEnabled", FormatPresetBool(data.cloudAlphaEnabled));
             AppendPresetKeyValue(out, "CloudAlpha", FormatPresetFloat(ClampPresetCloudAlpha(data.cloudAlpha)));
         }
+        if (mask.cloudFadeRange) {
+            AppendPresetKeyValue(out, "CloudFadeRangeEnabled", FormatPresetBool(data.cloudFadeRangeEnabled));
+            AppendPresetKeyValue(out, "CloudFadeRange", FormatPresetFloat(ClampPresetCloudFadeRange(data.cloudFadeRange)));
+        }
+        if (mask.cloudDetailRatio) {
+            AppendPresetKeyValue(out, "CloudDetailRatioEnabled", FormatPresetBool(data.cloudDetailRatioEnabled));
+            AppendPresetKeyValue(out, "CloudDetailRatio", FormatPresetFloat(ClampPresetCloudDetailRatio(data.cloudDetailRatio)));
+        }
         if (mask.cloudPhaseFront) {
             AppendPresetKeyValue(out, "CloudPhaseFrontEnabled", FormatPresetBool(data.cloudPhaseFrontEnabled));
             AppendPresetKeyValue(out, "CloudPhaseFront", FormatPresetFloat(ClampPresetCloudPhaseFront(data.cloudPhaseFront)));
@@ -1988,6 +2212,18 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         if (mask.cloudScatteringCoefficient) {
             AppendPresetKeyValue(out, "CloudScatteringCoefficientEnabled", FormatPresetBool(data.cloudScatteringCoefficientEnabled));
             AppendPresetKeyValue(out, "CloudScatteringCoefficient", FormatPresetFloat(ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient)));
+        }
+        if (mask.cloudFlow) {
+            AppendPresetKeyValue(out, "CloudFlowEnabled", FormatPresetBool(data.cloudFlowEnabled));
+            AppendPresetKeyValue(out, "CloudFlow", FormatPresetFloat(ClampPresetCloudFlow(data.cloudFlow)));
+        }
+        if (mask.rayleighHeight) {
+            AppendPresetKeyValue(out, "RayleighHeightEnabled", FormatPresetBool(data.rayleighHeightEnabled));
+            AppendPresetKeyValue(out, "RayleighHeight", FormatPresetFloat(ClampPresetRayleighHeight(data.rayleighHeight)));
+        }
+        if (mask.ozoneRatio) {
+            AppendPresetKeyValue(out, "OzoneRatioEnabled", FormatPresetBool(data.ozoneRatioEnabled));
+            AppendPresetKeyValue(out, "OzoneRatio", FormatPresetFloat(ClampPresetOzoneRatio(data.ozoneRatio)));
         }
         if (mask.rayleighScatteringColor) {
             const WeatherPresetColor rayleigh = ClampPresetColor(data.rayleighScatteringColor, false);
@@ -2078,7 +2314,7 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         out += '\n';
     }
 
-    if (mask.fog || mask.nativeFog || mask.volumeFogScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
+    if (mask.fog || mask.nativeFog || mask.volumeFogScatterColor || mask.mieScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
         mask.mieAerosolAbsorption || mask.heightFogBaseline || mask.heightFogFalloff || mask.noFog || mask.wind || mask.noWind) {
         AppendRegionSectionHeader(out, regionId, "Atmosphere");
         if (mask.fog) {
@@ -2096,6 +2332,14 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
             AppendPresetKeyValue(out, "VolumeFogScatterColorG", FormatPresetFloat(volumeFog.g));
             AppendPresetKeyValue(out, "VolumeFogScatterColorB", FormatPresetFloat(volumeFog.b));
             AppendPresetKeyValue(out, "VolumeFogScatterColorA", FormatPresetFloat(volumeFog.a));
+        }
+        if (mask.mieScatterColor) {
+            const WeatherPresetColor mieScatter = ClampPresetColor(data.mieScatterColor, true);
+            AppendPresetKeyValue(out, "MieScatterColorEnabled", FormatPresetBool(data.mieScatterColorEnabled));
+            AppendPresetKeyValue(out, "MieScatterColorR", FormatPresetFloat(mieScatter.r));
+            AppendPresetKeyValue(out, "MieScatterColorG", FormatPresetFloat(mieScatter.g));
+            AppendPresetKeyValue(out, "MieScatterColorB", FormatPresetFloat(mieScatter.b));
+            AppendPresetKeyValue(out, "MieScatterColorA", FormatPresetFloat(mieScatter.a));
         }
         if (mask.mieScaleHeight) {
             AppendPresetKeyValue(out, "MieScaleHeightEnabled", FormatPresetBool(data.mieScaleHeightEnabled));
@@ -2178,10 +2422,20 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.highClouds = OverrideValueIf(data.highCloudsEnabled, g_oAtmoAlpha, 1.0f);
     data.cloudAlphaEnabled = g_oCloudAlpha.active.load();
     data.cloudAlpha = OverrideValueIf(data.cloudAlphaEnabled, g_oCloudAlpha, g_windPackBase1E.load());
+    data.cloudFadeRangeEnabled = g_oCloudFadeRange.active.load();
+    data.cloudFadeRange = OverrideValueIf(data.cloudFadeRangeEnabled, g_oCloudFadeRange, g_windPackBase27.load());
+    data.cloudDetailRatioEnabled = g_oCloudDetailRatio.active.load();
+    data.cloudDetailRatio = OverrideValueIf(data.cloudDetailRatioEnabled, g_oCloudDetailRatio, g_windPackBase28.load());
     data.cloudPhaseFrontEnabled = g_oCloudPhaseFront.active.load();
     data.cloudPhaseFront = OverrideValueIf(data.cloudPhaseFrontEnabled, g_oCloudPhaseFront, g_windPackBase21.load());
     data.cloudScatteringCoefficientEnabled = g_oCloudScatteringCoefficient.active.load();
     data.cloudScatteringCoefficient = OverrideValueIf(data.cloudScatteringCoefficientEnabled, g_oCloudScatteringCoefficient, g_windPackBase20.load());
+    data.cloudFlowEnabled = g_oCloudFlow.active.load();
+    data.cloudFlow = OverrideValueIf(data.cloudFlowEnabled, g_oCloudFlow, g_windPackBase1F.load());
+    data.rayleighHeightEnabled = g_oRayleighHeight.active.load();
+    data.rayleighHeight = OverrideValueIf(data.rayleighHeightEnabled, g_oRayleighHeight, g_windPackBase0E.load());
+    data.ozoneRatioEnabled = g_oOzoneRatio.active.load();
+    data.ozoneRatio = OverrideValueIf(data.ozoneRatioEnabled, g_oOzoneRatio, g_windPackBase14.load());
     data.rayleighScatteringColorEnabled = g_oRayleighScatteringColor.active.load();
     data.rayleighScatteringColor = ActiveColorOverrideValue(g_oRayleighScatteringColor, RayleighColorFromBits(g_windPackBase0FBits.load()));
     data.exp2CEnabled = g_oExpCloud2C.active.load();
@@ -2237,6 +2491,13 @@ WeatherPresetData CaptureCurrentPresetData() {
         g_windPackBase36.load(),
         g_windPackBase37.load(),
     });
+    data.mieScatterColorEnabled = g_oMieScatterColor.active.load();
+    data.mieScatterColor = ActiveColorOverrideValue(g_oMieScatterColor, {
+        g_windPackBase38.load(),
+        g_windPackBase39.load(),
+        g_windPackBase3A.load(),
+        g_windPackBase3B.load(),
+    });
     data.mieScaleHeightEnabled = g_oMieScaleHeight.active.load();
     data.mieScaleHeight = OverrideValueIf(data.mieScaleHeightEnabled, g_oMieScaleHeight, g_windPackBase10.load());
     data.mieAerosolDensityEnabled = g_oMieAerosolDensity.active.load();
@@ -2266,24 +2527,34 @@ void ApplyPresetData(const WeatherPresetData& data) {
     ApplyPositiveOverride(g_oDust, ClampPresetDust(data.dust), 0.0f, 10.0f);
     ApplyPositiveOverride(g_oSnow, ClampPresetSnow(data.snow), 0.0f, 5.0f);
 
-    const bool progressVisualTime = data.visualTimeOverride && data.progressVisualTime;
-    g_timeProgressCadenceMs.store(ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f));
-    g_timeTargetHour.store(NormalizeHour24(data.timeHour));
-    g_timeProgressVisualTime.store(progressVisualTime);
-    g_timeProgressLastTick.store(progressVisualTime ? GetTickCount64() : 0);
-    if (data.visualTimeOverride && g_timeLayoutReady.load()) {
-        g_timeCtrlActive.store(true);
-        g_timeFreeze.store(true);
-        g_timeApplyRequest.store(true);
-    } else {
-        g_timeFreeze.store(false);
-        g_timeCtrlActive.store(false);
-        g_timeProgressVisualTime.store(false);
-        g_timeProgressLastTick.store(0);
-        g_timeApplyRequest.store(true);
-        if (data.visualTimeOverride && !g_timeLayoutReady.load()) {
-            Log("[W] preset visual time skipped: time layout unresolved\n");
+    const float nextTimeCadence = ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f);
+    const float nextTimeHour = NormalizeHour24(data.timeHour);
+    const bool nextTimeCtrlActive = data.visualTimeOverride && g_timeLayoutReady.load();
+    const bool nextTimeFreeze = nextTimeCtrlActive;
+    const bool nextProgressVisualTime = nextTimeCtrlActive && data.progressVisualTime;
+    const bool prevProgressVisualTime = g_timeProgressVisualTime.load();
+    const bool timeStateChanged =
+        g_timeCtrlActive.load() != nextTimeCtrlActive ||
+        g_timeFreeze.load() != nextTimeFreeze ||
+        prevProgressVisualTime != nextProgressVisualTime ||
+        !HourNearlyEqual(g_timeTargetHour.load(), nextTimeHour) ||
+        !FloatNearlyEqual(g_timeProgressCadenceMs.load(), nextTimeCadence);
+
+    if (timeStateChanged) {
+        g_timeProgressCadenceMs.store(nextTimeCadence);
+        g_timeTargetHour.store(nextTimeHour);
+        g_timeProgressVisualTime.store(nextProgressVisualTime);
+        g_timeFreeze.store(nextTimeFreeze);
+        g_timeCtrlActive.store(nextTimeCtrlActive);
+        if (nextProgressVisualTime && !prevProgressVisualTime) {
+            g_timeProgressLastTick.store(GetTickCount64());
+        } else if (!nextProgressVisualTime) {
+            g_timeProgressLastTick.store(0);
         }
+        g_timeApplyRequest.store(true);
+    }
+    if (timeStateChanged && data.visualTimeOverride && !g_timeLayoutReady.load()) {
+        Log("[W] preset visual time skipped: time layout unresolved\n");
     }
 
     ApplyEnabledOverride(g_oCloudAmount, data.cloudAmountEnabled, ClampPresetCloudAmount(data.cloudAmount), 0.0f, 50.0f);
@@ -2292,8 +2563,13 @@ void ApplyPresetData(const WeatherPresetData& data) {
     ApplyEnabledOverride(g_oHighClouds, data.midCloudsEnabled, ClampPresetCloudWide(data.midClouds), 0.0f, 50.0f);
     ApplyEnabledOverride(g_oAtmoAlpha, data.highCloudsEnabled, ClampPresetCloudWide(data.highClouds), 0.0f, 50.0f);
     ApplyEnabledOverride(g_oCloudAlpha, data.cloudAlphaEnabled, ClampPresetCloudAlpha(data.cloudAlpha), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oCloudFadeRange, data.cloudFadeRangeEnabled, ClampPresetCloudFadeRange(data.cloudFadeRange), 0.0f, 200000.0f);
+    ApplyEnabledOverride(g_oCloudDetailRatio, data.cloudDetailRatioEnabled, ClampPresetCloudDetailRatio(data.cloudDetailRatio), 0.0f, 1.5f);
     ApplyEnabledOverride(g_oCloudPhaseFront, data.cloudPhaseFrontEnabled, ClampPresetCloudPhaseFront(data.cloudPhaseFront), -1.0f, 1.0f);
     ApplyEnabledOverride(g_oCloudScatteringCoefficient, data.cloudScatteringCoefficientEnabled, ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient), kCloudScatteringCoefficientMin, 100.0f);
+    ApplyEnabledOverride(g_oCloudFlow, data.cloudFlowEnabled, ClampPresetCloudFlow(data.cloudFlow), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oRayleighHeight, data.rayleighHeightEnabled, ClampPresetRayleighHeight(data.rayleighHeight), 1.0f, 200000.0f);
+    ApplyEnabledOverride(g_oOzoneRatio, data.ozoneRatioEnabled, ClampPresetOzoneRatio(data.ozoneRatio), 0.0f, 100.0f);
     ApplyEnabledColorOverride(g_oRayleighScatteringColor, data.rayleighScatteringColorEnabled, data.rayleighScatteringColor, false);
     ApplyEnabledOverride(g_oExpCloud2C, data.exp2CEnabled, ClampPresetCloudWide(data.exp2C), 0.0f, 50.0f);
     ApplyEnabledOverride(g_oExpCloud2D, data.exp2DEnabled, ClampPresetCloudWide(data.exp2D), 0.0f, 50.0f);
@@ -2324,6 +2600,7 @@ void ApplyPresetData(const WeatherPresetData& data) {
     else g_oNativeFog.clear();
 
     ApplyEnabledColorOverride(g_oVolumeFogScatterColor, data.volumeFogScatterColorEnabled, data.volumeFogScatterColor, true);
+    ApplyEnabledColorOverride(g_oMieScatterColor, data.mieScatterColorEnabled, data.mieScatterColor, true);
     ApplyEnabledOverride(g_oMieScaleHeight, data.mieScaleHeightEnabled, ClampPresetMieScaleHeight(data.mieScaleHeight), 1.0f, 200000.0f);
     ApplyEnabledOverride(g_oMieAerosolDensity, data.mieAerosolDensityEnabled, ClampPresetMieDensity(data.mieAerosolDensity), 0.0f, 100.0f);
     ApplyEnabledOverride(g_oMieAerosolAbsorption, data.mieAerosolAbsorptionEnabled, ClampPresetMieAbsorption(data.mieAerosolAbsorption), 0.0f, 100.0f);
@@ -2580,11 +2857,616 @@ void RefreshSelectedPresetBaselineFromDisk() {
     SanitizeAndPersistPresetPackageIfNeeded(g_presetItems[g_selectedPresetIndex], package);
     SetSelectedPresetBaseline(package);
 }
+
+int NormalizeScheduleMinute(int minute) {
+    minute %= 24 * 60;
+    if (minute < 0) {
+        minute += 24 * 60;
+    }
+    return minute;
+}
+
+PresetScheduleEntry SanitizeScheduleEntry(PresetScheduleEntry entry) {
+    entry.startMinute = NormalizeScheduleMinute(entry.startMinute);
+    entry.endMinute = NormalizeScheduleMinute(entry.endMinute);
+    entry.presetFile = EnsureIniExtension(TrimCopy(entry.presetFile));
+    entry.blendSeconds = max(0, entry.blendSeconds);
+    return entry;
+}
+
+bool IsScheduleEntryUsable(const PresetScheduleEntry& entry) {
+    return entry.startMinute != entry.endMinute && !TrimCopy(entry.presetFile).empty();
+}
+
+struct ScheduleSegment {
+    int start = 0;
+    int end = 0;
+};
+
+std::vector<ScheduleSegment> ExpandScheduleRange(int startMinute, int endMinute) {
+    startMinute = NormalizeScheduleMinute(startMinute);
+    endMinute = NormalizeScheduleMinute(endMinute);
+    if (startMinute == endMinute) {
+        return {};
+    }
+    if (startMinute < endMinute) {
+        return { { startMinute, endMinute } };
+    }
+    return { { startMinute, 24 * 60 }, { 0, endMinute } };
+}
+
+std::vector<ScheduleSegment> SubtractScheduleSegment(ScheduleSegment source, ScheduleSegment cut) {
+    if (cut.end <= source.start || cut.start >= source.end) {
+        return { source };
+    }
+
+    std::vector<ScheduleSegment> out;
+    if (cut.start > source.start) {
+        out.push_back({ source.start, min(cut.start, source.end) });
+    }
+    if (cut.end < source.end) {
+        out.push_back({ max(cut.end, source.start), source.end });
+    }
+    return out;
+}
+
+std::vector<ScheduleSegment> SubtractScheduleSegments(std::vector<ScheduleSegment> source, const std::vector<ScheduleSegment>& cuts) {
+    for (const ScheduleSegment& cut : cuts) {
+        std::vector<ScheduleSegment> next;
+        for (const ScheduleSegment& segment : source) {
+            std::vector<ScheduleSegment> pieces = SubtractScheduleSegment(segment, cut);
+            next.insert(next.end(), pieces.begin(), pieces.end());
+        }
+        source.swap(next);
+        if (source.empty()) {
+            break;
+        }
+    }
+    return source;
+}
+
+void SortScheduleEntries(std::vector<PresetScheduleEntry>& entries) {
+    std::sort(entries.begin(), entries.end(), [](const PresetScheduleEntry& a, const PresetScheduleEntry& b) {
+        if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
+        return a.endMinute < b.endMinute;
+    });
+}
+
+int FindPresetIndexByFileName(const std::string& rawFileName) {
+    const std::string fileName = EnsureIniExtension(TrimCopy(rawFileName));
+    if (fileName.empty()) {
+        return -1;
+    }
+    for (int i = 0; i < static_cast<int>(g_presetItems.size()); ++i) {
+        if (EqualsNoCase(g_presetItems[i].fileName, fileName)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void SaveTimeScheduleConfig() {
+    char iniPath[MAX_PATH] = {};
+    BuildIniPath(iniPath, sizeof(iniPath));
+
+    const int oldCount = GetPrivateProfileIntA(kTimeScheduleConfigSection, "EntryCount", 0, iniPath);
+    WritePrivateProfileStringA(kTimeScheduleConfigSection, "Enabled", g_timeScheduleEnabled ? "1" : "0", iniPath);
+
+    char value[64] = {};
+    sprintf_s(value, "%d", static_cast<int>(g_timeScheduleEntries.size()));
+    WritePrivateProfileStringA(kTimeScheduleConfigSection, "EntryCount", value, iniPath);
+
+    for (int i = 0; i < static_cast<int>(g_timeScheduleEntries.size()); ++i) {
+        const PresetScheduleEntry& entry = g_timeScheduleEntries[i];
+        char key[64] = {};
+        sprintf_s(key, "Entry%dStartMinute", i);
+        sprintf_s(value, "%d", entry.startMinute);
+        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, value, iniPath);
+
+        sprintf_s(key, "Entry%dEndMinute", i);
+        sprintf_s(value, "%d", entry.endMinute);
+        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, value, iniPath);
+
+        sprintf_s(key, "Entry%dPreset", i);
+        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, entry.presetFile.c_str(), iniPath);
+
+        sprintf_s(key, "Entry%dBlendSeconds", i);
+        sprintf_s(value, "%d", entry.blendSeconds);
+        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, value, iniPath);
+    }
+
+    for (int i = static_cast<int>(g_timeScheduleEntries.size()); i < oldCount; ++i) {
+        char key[64] = {};
+        sprintf_s(key, "Entry%dStartMinute", i);
+        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, nullptr, iniPath);
+        sprintf_s(key, "Entry%dEndMinute", i);
+        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, nullptr, iniPath);
+        sprintf_s(key, "Entry%dPreset", i);
+        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, nullptr, iniPath);
+        sprintf_s(key, "Entry%dBlendSeconds", i);
+        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, nullptr, iniPath);
+    }
+}
+
+void EnsureTimeScheduleLoaded() {
+    if (g_timeScheduleLoaded) {
+        return;
+    }
+    g_timeScheduleLoaded = true;
+
+    char iniPath[MAX_PATH] = {};
+    BuildIniPath(iniPath, sizeof(iniPath));
+    g_timeScheduleEnabled = GetPrivateProfileIntA(kTimeScheduleConfigSection, "Enabled", 0, iniPath) != 0;
+
+    int count = static_cast<int>(GetPrivateProfileIntA(kTimeScheduleConfigSection, "EntryCount", 0, iniPath));
+    count = max(0, min(64, count));
+    g_timeScheduleEntries.clear();
+    for (int i = 0; i < count; ++i) {
+        char key[64] = {};
+        char preset[MAX_PATH] = {};
+        sprintf_s(key, "Entry%dPreset", i);
+        GetPrivateProfileStringA(kTimeScheduleConfigSection, key, "", preset, static_cast<DWORD>(sizeof(preset)), iniPath);
+
+        sprintf_s(key, "Entry%dStartMinute", i);
+        const int startMinute = GetPrivateProfileIntA(kTimeScheduleConfigSection, key, -1, iniPath);
+        sprintf_s(key, "Entry%dEndMinute", i);
+        const int endMinute = GetPrivateProfileIntA(kTimeScheduleConfigSection, key, -1, iniPath);
+        sprintf_s(key, "Entry%dBlendSeconds", i);
+        const int blendSeconds = GetPrivateProfileIntA(kTimeScheduleConfigSection, key, kTimeScheduleDefaultBlendSeconds, iniPath);
+
+        PresetScheduleEntry entry{};
+        entry.startMinute = startMinute;
+        entry.endMinute = endMinute;
+        entry.presetFile = preset;
+        entry.blendSeconds = blendSeconds;
+        entry = SanitizeScheduleEntry(entry);
+        if (startMinute >= 0 && endMinute >= 0 && IsScheduleEntryUsable(entry)) {
+            g_timeScheduleEntries.push_back(entry);
+        }
+    }
+
+    SortScheduleEntries(g_timeScheduleEntries);
+    SaveTimeScheduleConfig();
+    Log("[preset-schedule] loaded enabled=%d entries=%d\n",
+        g_timeScheduleEnabled ? 1 : 0,
+        static_cast<int>(g_timeScheduleEntries.size()));
+}
+
+bool ReplaceTimeScheduleEntryWithNew(int editedIndex, PresetScheduleEntry newEntry) {
+    EnsureTimeScheduleLoaded();
+    newEntry = SanitizeScheduleEntry(newEntry);
+    if (!IsScheduleEntryUsable(newEntry) || FindPresetIndexByFileName(newEntry.presetFile) < 0) {
+        return false;
+    }
+
+    std::vector<PresetScheduleEntry> next;
+    const std::vector<ScheduleSegment> newSegments = ExpandScheduleRange(newEntry.startMinute, newEntry.endMinute);
+    for (int i = 0; i < static_cast<int>(g_timeScheduleEntries.size()); ++i) {
+        if (i == editedIndex) {
+            continue;
+        }
+
+        const PresetScheduleEntry existing = g_timeScheduleEntries[i];
+        std::vector<ScheduleSegment> remaining = SubtractScheduleSegments(
+            ExpandScheduleRange(existing.startMinute, existing.endMinute),
+            newSegments);
+        for (const ScheduleSegment& segment : remaining) {
+            if (segment.start == segment.end) {
+                continue;
+            }
+            PresetScheduleEntry trimmed = existing;
+            trimmed.startMinute = NormalizeScheduleMinute(segment.start);
+            trimmed.endMinute = NormalizeScheduleMinute(segment.end);
+            if (IsScheduleEntryUsable(trimmed)) {
+                next.push_back(trimmed);
+            }
+        }
+    }
+
+    next.push_back(newEntry);
+    SortScheduleEntries(next);
+    g_timeScheduleEntries.swap(next);
+    SaveTimeScheduleConfig();
+    TimeScheduleClearUserEditPin();
+    TimeScheduleClearSelfVisualGuard();
+    g_timeScheduleBlendActive = false;
+    g_timeScheduleActivePresetFile.clear();
+    g_timeScheduleActiveEntryIndex = -1;
+    g_timeScheduleLastAppliedEntryIndex = -1;
+    g_timeScheduleLastMissingPresetFile.clear();
+    return true;
+}
+
+int ActiveScheduleEntryIndexForMinute(int minuteOfDay) {
+    minuteOfDay = NormalizeScheduleMinute(minuteOfDay);
+    for (int i = 0; i < static_cast<int>(g_timeScheduleEntries.size()); ++i) {
+        const PresetScheduleEntry& entry = g_timeScheduleEntries[i];
+        const int start = NormalizeScheduleMinute(entry.startMinute);
+        const int end = NormalizeScheduleMinute(entry.endMinute);
+        if (start == end) {
+            continue;
+        }
+        if (start < end) {
+            if (minuteOfDay >= start && minuteOfDay < end) {
+                return i;
+            }
+        } else if (minuteOfDay >= start || minuteOfDay < end) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void TimeScheduleClearUserEditPin() {
+    g_timeScheduleUserEditPinned = false;
+    g_timeScheduleUserEditPinnedEntryIndex = -1;
+    g_timeScheduleUserEditPinnedPresetFile.clear();
+}
+
+void TimeScheduleClearSelfVisualGuard() {
+    g_timeScheduleSelfVisualGuard = false;
+    g_timeScheduleSelfVisualGuardHour = -1.0f;
+    g_timeScheduleSelfVisualGuardPresetFile.clear();
+    g_timeScheduleSelfVisualGuardSkipLogged = false;
+}
+
+float ScheduleHourDelta(float a, float b) {
+    float delta = std::fabs(NormalizeHour24(a) - NormalizeHour24(b));
+    if (delta > 12.0f) {
+        delta = 24.0f - delta;
+    }
+    return delta;
+}
+
+void TimeScheduleMarkSelfVisualGuard(const WeatherPresetData& data, const char* presetFile) {
+    if (!data.visualTimeOverride) {
+        TimeScheduleClearSelfVisualGuard();
+        return;
+    }
+
+    g_timeScheduleSelfVisualGuard = true;
+    g_timeScheduleSelfVisualGuardHour = NormalizeHour24(data.timeHour);
+    g_timeScheduleSelfVisualGuardPresetFile = presetFile ? presetFile : "";
+    g_timeScheduleSelfVisualGuardSkipLogged = false;
+    Log("[preset-schedule-diag] reason=self-visual-guard preset=%s hour=%.4f\n",
+        g_timeScheduleSelfVisualGuardPresetFile.empty() ? "<none>" : g_timeScheduleSelfVisualGuardPresetFile.c_str(),
+        g_timeScheduleSelfVisualGuardHour);
+}
+
+void LogTimeScheduleDecision(const char* reason, int minuteOfDay, int entryIndex) {
+    const char* entryPreset = "<gap>";
+    if (entryIndex >= 0 && entryIndex < static_cast<int>(g_timeScheduleEntries.size())) {
+        entryPreset = g_timeScheduleEntries[entryIndex].presetFile.c_str();
+    }
+    const char* selectedPreset = HasSelectedPresetIndexInternal()
+        ? g_presetItems[g_selectedPresetIndex].fileName.c_str()
+        : "<none>";
+    const float scheduleClockHour = (g_timeCtrlActive.load() && g_timeFreeze.load())
+        ? g_timeTargetHour.load()
+        : g_timeCurrentHour.load();
+    Log("[preset-schedule-diag] reason=%s minute=%d entry=%d entryPreset=%s "
+        "activeEntry=%d lastApplied=%d activeFile=%s selected=%s blend=%u pinned=%u pinnedEntry=%d pinnedPreset=%s "
+        "selfGuard=%u selfHour=%.4f editDraft=%u lastRegion=%d time{ctrl=%u freeze=%u progress=%u target=%.4f current=%.4f schedule=%.4f valid=%u}\n",
+        reason ? reason : "unknown",
+        minuteOfDay,
+        entryIndex,
+        entryPreset,
+        g_timeScheduleActiveEntryIndex,
+        g_timeScheduleLastAppliedEntryIndex,
+        g_timeScheduleActivePresetFile.empty() ? "<none>" : g_timeScheduleActivePresetFile.c_str(),
+        selectedPreset,
+        g_timeScheduleBlendActive ? 1u : 0u,
+        g_timeScheduleUserEditPinned ? 1u : 0u,
+        g_timeScheduleUserEditPinnedEntryIndex,
+        g_timeScheduleUserEditPinnedPresetFile.empty() ? "<none>" : g_timeScheduleUserEditPinnedPresetFile.c_str(),
+        g_timeScheduleSelfVisualGuard ? 1u : 0u,
+        g_timeScheduleSelfVisualGuardHour,
+        g_editDraftValid ? 1u : 0u,
+        g_lastAppliedRegion,
+        g_timeCtrlActive.load() ? 1u : 0u,
+        g_timeFreeze.load() ? 1u : 0u,
+        g_timeProgressVisualTime.load() ? 1u : 0u,
+        g_timeTargetHour.load(),
+        g_timeCurrentHour.load(),
+        scheduleClockHour,
+        g_timeCurrentHourValid.load() ? 1u : 0u);
+}
+
+float TimeScheduleClockHour() {
+    if (g_timeCtrlActive.load() && g_timeFreeze.load()) {
+        return g_timeTargetHour.load();
+    }
+    return g_timeCurrentHour.load();
+}
+
+void ApplyScheduledPresetInstantOrStartBlend(int index) {
+    if (index < 0 || index >= static_cast<int>(g_timeScheduleEntries.size())) {
+        return;
+    }
+
+    const PresetScheduleEntry& entry = g_timeScheduleEntries[index];
+    const int presetIndex = FindPresetIndexByFileName(entry.presetFile);
+    if (presetIndex < 0) {
+        g_timeScheduleActiveEntryIndex = index;
+        if (!EqualsNoCase(g_timeScheduleLastMissingPresetFile, entry.presetFile)) {
+            g_timeScheduleLastMissingPresetFile = entry.presetFile;
+            Log("[W] scheduled preset missing: %s\n", entry.presetFile.c_str());
+            GUI_SetStatus(("Scheduled preset missing: " + entry.presetFile).c_str());
+        }
+        return;
+    }
+
+    if (EqualsNoCase(g_timeScheduleActivePresetFile, g_presetItems[presetIndex].fileName)) {
+        g_timeScheduleActiveEntryIndex = index;
+        g_timeScheduleLastAppliedEntryIndex = index;
+        return;
+    }
+
+    WeatherPresetPackage package{};
+    if (!LoadPresetPackageInternal(g_presetItems[presetIndex].fullPath.c_str(), package)) {
+        Log("[W] failed to load scheduled preset: %s\n", g_presetItems[presetIndex].fileName.c_str());
+        GUI_SetStatus("Scheduled preset load failed");
+        return;
+    }
+
+    SanitizeAndPersistPresetPackageIfNeeded(g_presetItems[presetIndex], package);
+    g_timeScheduleLastMissingPresetFile.clear();
+
+    if (entry.blendSeconds <= 0) {
+        g_timeScheduleBlendActive = false;
+        LogTimeScheduleDecision("apply-instant", -1, index);
+        const WeatherPresetData appliedData = EffectivePresetDataForRegion(package, CurrentMajorRegionForPreset());
+        if (SelectPresetIndexInternal(presetIndex, true, "Scheduled preset applied: ", nullptr, "scheduled")) {
+            g_timeScheduleActivePresetFile = g_presetItems[presetIndex].fileName;
+            g_timeScheduleActiveEntryIndex = index;
+            g_timeScheduleLastAppliedEntryIndex = index;
+            TimeScheduleMarkSelfVisualGuard(appliedData, g_timeScheduleActivePresetFile.c_str());
+        }
+        return;
+    }
+
+    std::string blendFromPresetFile = g_timeScheduleActivePresetFile;
+    if (blendFromPresetFile.empty() && HasSelectedPresetIndexInternal()) {
+        blendFromPresetFile = g_presetItems[g_selectedPresetIndex].fileName;
+    }
+    if (EqualsNoCase(blendFromPresetFile, g_presetItems[presetIndex].fileName)) {
+        g_timeScheduleBlendActive = false;
+        LogTimeScheduleDecision("same-preset-instant", -1, index);
+        const WeatherPresetData appliedData = EffectivePresetDataForRegion(package, CurrentMajorRegionForPreset());
+        if (SelectPresetIndexInternal(presetIndex, true, "Scheduled preset applied: ", nullptr, "scheduled")) {
+            g_timeScheduleActivePresetFile = g_presetItems[presetIndex].fileName;
+            g_timeScheduleActiveEntryIndex = index;
+            g_timeScheduleLastAppliedEntryIndex = index;
+            TimeScheduleMarkSelfVisualGuard(appliedData, g_timeScheduleActivePresetFile.c_str());
+        }
+        return;
+    }
+
+    // Capture the live evaluated state first. This includes active region overrides
+    // and any in-progress blend that already touched the sliders this frame.
+    const WeatherPresetData blendFrom = CaptureCurrentPresetData();
+    LogTimeScheduleDecision("start-blend", -1, index);
+    if (!SelectPresetIndexInternal(presetIndex, false, "Scheduled preset blending: ", nullptr, "scheduled")) {
+        return;
+    }
+
+    g_timeScheduleBlendFrom = blendFrom;
+    g_timeScheduleBlendTargetPackage = package;
+    g_timeScheduleBlendPresetFile = g_presetItems[presetIndex].fileName;
+    g_timeScheduleBlendFromPresetFile = blendFromPresetFile;
+    g_timeScheduleBlendStartTick = GetTickCount64();
+    g_timeScheduleBlendSeconds = entry.blendSeconds;
+    g_timeScheduleBlendLogBucket = -1;
+    g_timeScheduleBlendActive = true;
+    g_timeScheduleActivePresetFile = g_presetItems[presetIndex].fileName;
+    g_timeScheduleActiveEntryIndex = index;
+    g_timeScheduleLastAppliedEntryIndex = index;
+
+    Log("[preset-schedule] blending to %s over %ds\n",
+        g_timeScheduleBlendPresetFile.c_str(),
+        g_timeScheduleBlendSeconds);
+}
+
+void TickScheduledPresetBlend() {
+    if (!g_timeScheduleBlendActive) {
+        return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    const float durationMs = static_cast<float>(max(1, g_timeScheduleBlendSeconds)) * 1000.0f;
+    const float progress = ClampPresetFloat(static_cast<float>(now - g_timeScheduleBlendStartTick) / durationMs, 0.0f, 1.0f);
+    const int regionId = CurrentMajorRegionForPreset();
+    const WeatherPresetData target = EffectivePresetDataForRegion(g_timeScheduleBlendTargetPackage, regionId);
+    const WeatherPresetData blended = BlendPresetData(g_timeScheduleBlendFrom, target, progress);
+    ApplyPresetData(blended);
+    g_lastRuntimeAppliedData = blended;
+    g_lastRuntimeAppliedDataValid = true;
+    g_lastAppliedRegion = regionId;
+    g_regionBlendFrom = -1;
+    g_regionBlendTo = -1;
+    g_regionBlendLogBucket = -1;
+
+    const int progressBucket = min(4, max(0, static_cast<int>(progress * 4.0f)));
+    if (kPresetVerboseTestLog && progressBucket != g_timeScheduleBlendLogBucket) {
+        g_timeScheduleBlendLogBucket = progressBucket;
+        Log("[preset-schedule-test] blend-progress preset=%s progress=%d%%\n",
+            g_timeScheduleBlendPresetFile.c_str(),
+            progressBucket * 25);
+    }
+
+    if (progress >= 0.999f) {
+        ApplyPresetData(target);
+        g_lastRuntimeAppliedData = target;
+        g_lastRuntimeAppliedDataValid = true;
+        g_lastAppliedRegion = regionId;
+        g_timeScheduleBlendActive = false;
+        TimeScheduleMarkSelfVisualGuard(target, g_timeScheduleBlendPresetFile.c_str());
+        Log("[preset-schedule] blend finished: %s\n", g_timeScheduleBlendPresetFile.c_str());
+        GUI_SetStatus(("Scheduled preset active: " + GetPresetDisplayNameFromFileName(g_timeScheduleBlendPresetFile)).c_str());
+    }
+}
+
+bool TimeScheduleRuntimeTick(bool worldReady) {
+    EnsureTimeScheduleLoaded();
+    if ((g_timeScheduleEnabled || g_timeScheduleBlendActive) && !g_presetsInitialized) {
+        LoadRememberedPresetNameOnce();
+        RefreshPresetListInternal();
+        RefreshSelectedPresetBaselineFromDisk();
+        g_presetsInitialized = true;
+        Log("[preset-schedule] initialized preset list for runtime schedule (%d preset(s))\n",
+            static_cast<int>(g_presetItems.size()));
+    }
+
+    if (g_timeScheduleBlendActive) {
+        TickScheduledPresetBlend();
+        if (g_timeScheduleBlendActive) {
+            return true;
+        }
+    }
+
+    if (!g_timeScheduleEnabled || !worldReady || !g_timeCurrentHourValid.load()) {
+        return g_timeScheduleBlendActive;
+    }
+
+    const float scheduleClockHour = NormalizeHour24(TimeScheduleClockHour());
+    if (g_timeScheduleSelfVisualGuard) {
+        if (!(g_timeCtrlActive.load() && g_timeFreeze.load())) {
+            TimeScheduleClearSelfVisualGuard();
+        } else if (ScheduleHourDelta(scheduleClockHour, g_timeScheduleSelfVisualGuardHour) <= (1.0f / 60.0f)) {
+            if (!g_timeScheduleSelfVisualGuardSkipLogged) {
+                LogTimeScheduleDecision("self-visual-guard-skip", -1, g_timeScheduleActiveEntryIndex);
+                g_timeScheduleSelfVisualGuardSkipLogged = true;
+            }
+            return g_timeScheduleBlendActive;
+        } else {
+            LogTimeScheduleDecision("self-visual-guard-cleared", -1, g_timeScheduleActiveEntryIndex);
+            TimeScheduleClearSelfVisualGuard();
+        }
+    }
+
+    const int minuteOfDay = NormalizeScheduleMinute(static_cast<int>(std::floor(scheduleClockHour * 60.0f + 0.0001f)));
+    const int entryIndex = ActiveScheduleEntryIndexForMinute(minuteOfDay);
+    const bool diagChanged =
+        minuteOfDay != g_timeScheduleLastDiagMinute ||
+        entryIndex != g_timeScheduleLastDiagEntryIndex ||
+        g_timeScheduleUserEditPinned != g_timeScheduleLastDiagPinned;
+    if (diagChanged) {
+        LogTimeScheduleDecision("tick", minuteOfDay, entryIndex);
+        g_timeScheduleLastDiagMinute = minuteOfDay;
+        g_timeScheduleLastDiagEntryIndex = entryIndex;
+        g_timeScheduleLastDiagPinned = g_timeScheduleUserEditPinned;
+    }
+    if (entryIndex < 0) {
+        g_timeScheduleActiveEntryIndex = -1;
+        TimeScheduleClearUserEditPin();
+        return g_timeScheduleBlendActive;
+    }
+
+    if (g_timeScheduleUserEditPinned) {
+        const PresetScheduleEntry& entry = g_timeScheduleEntries[entryIndex];
+        if (EqualsNoCase(entry.presetFile, g_timeScheduleUserEditPinnedPresetFile)) {
+            g_timeScheduleActiveEntryIndex = entryIndex;
+            g_timeScheduleLastAppliedEntryIndex = entryIndex;
+            g_timeScheduleActivePresetFile = entry.presetFile;
+            if (diagChanged) {
+                LogTimeScheduleDecision("pinned-user-edit-skip", minuteOfDay, entryIndex);
+            }
+            return g_timeScheduleBlendActive;
+        }
+        LogTimeScheduleDecision("clear-user-edit-pin-new-entry", minuteOfDay, entryIndex);
+        TimeScheduleClearUserEditPin();
+    }
+
+    ApplyScheduledPresetInstantOrStartBlend(entryIndex);
+    return g_timeScheduleBlendActive;
+}
+
+void TimeScheduleDisableForManualSelection() {
+    EnsureTimeScheduleLoaded();
+    if (!g_timeScheduleEnabled && !g_timeScheduleBlendActive) {
+        return;
+    }
+    g_timeScheduleEnabled = false;
+    g_timeScheduleBlendActive = false;
+    g_timeScheduleActivePresetFile.clear();
+    g_timeScheduleActiveEntryIndex = -1;
+    g_timeScheduleLastAppliedEntryIndex = -1;
+    g_timeScheduleBlendPresetFile.clear();
+    g_timeScheduleBlendFromPresetFile.clear();
+    TimeScheduleClearUserEditPin();
+    TimeScheduleClearSelfVisualGuard();
+    SaveTimeScheduleConfig();
+    Log("[preset-schedule] disabled by manual preset selection\n");
+}
+
+void TimeScheduleCancelBlendForUserEdit() {
+    if (!g_timeScheduleBlendActive) {
+        return;
+    }
+    g_timeScheduleBlendActive = false;
+    g_timeScheduleBlendPresetFile.clear();
+    g_timeScheduleBlendFromPresetFile.clear();
+    g_timeScheduleBlendLogBucket = -1;
+    Log("[preset-schedule] blend cancelled by preset edit\n");
+}
+
+void TimeSchedulePinCurrentEntryForUserEdit() {
+    EnsureTimeScheduleLoaded();
+    TimeScheduleCancelBlendForUserEdit();
+    TimeScheduleClearSelfVisualGuard();
+    if (!g_timeScheduleEnabled ||
+        g_timeScheduleActiveEntryIndex < 0 ||
+        g_timeScheduleActiveEntryIndex >= static_cast<int>(g_timeScheduleEntries.size())) {
+        return;
+    }
+
+    const PresetScheduleEntry& entry = g_timeScheduleEntries[g_timeScheduleActiveEntryIndex];
+    g_timeScheduleUserEditPinned = true;
+    g_timeScheduleUserEditPinnedEntryIndex = g_timeScheduleActiveEntryIndex;
+    g_timeScheduleUserEditPinnedPresetFile = entry.presetFile;
+    g_timeScheduleActivePresetFile = entry.presetFile;
+    g_timeScheduleLastAppliedEntryIndex = g_timeScheduleActiveEntryIndex;
+    LogTimeScheduleDecision("pin-user-edit", -1, g_timeScheduleActiveEntryIndex);
+    Log("[preset-schedule] pinned current entry for user edit: %s\n", entry.presetFile.c_str());
+}
+
+void MarkAutoSavePending() {
+    if (!g_cfg.autoSaved) {
+        g_autoSavePending = false;
+        return;
+    }
+    if (!HasSelectedPresetIndexInternal()) {
+        return;
+    }
+    g_autoSavePending = true;
+    g_autoSaveLastEditTick = GetTickCount64();
+}
+
+bool SaveSelectedDraftInternal(const char* statusPrefix, const char* logVerb, bool applyAfterSave) {
+    if (!Preset_HasSelection()) return false;
+    WeatherPresetPackage package = BuildEditDraftPreview();
+    const PresetListItem item = g_presetItems[g_selectedPresetIndex];
+    if (!WritePresetPackageInternal(item.fullPath.c_str(), package)) {
+        GUI_SetStatus("Preset save failed");
+        Log("[preset] failed to save %s\n", item.fileName.c_str());
+        return false;
+    }
+    SetSelectedPresetBaseline(package);
+    PersistRememberedPresetName(item.fileName.c_str());
+    if (applyAfterSave) {
+        ApplyDetectedRegionFromPackage(package);
+    }
+    GUI_SetStatus((std::string(statusPrefix ? statusPrefix : "Preset saved: ") + item.displayName).c_str());
+    Log("[preset] %s %s\n", logVerb ? logVerb : "saved", item.fileName.c_str());
+    LogPresetPackageSummary(logVerb && strcmp(logVerb, "autosaved") == 0 ? "autosaved-package" : "saved-package", package);
+    return true;
+}
 } // namespace
 
 void Preset_EnsureInitialized() {
     if (g_presetsInitialized) return;
     LoadRememberedPresetNameOnce();
+    EnsureTimeScheduleLoaded();
     Preset_Refresh();
 }
 
@@ -2602,6 +3484,11 @@ int Preset_GetCount() {
 const char* Preset_GetDisplayName(int index) {
     if (index < 0 || index >= static_cast<int>(g_presetItems.size())) return "";
     return g_presetItems[index].displayName.c_str();
+}
+
+const char* Preset_GetFileName(int index) {
+    if (index < 0 || index >= static_cast<int>(g_presetItems.size())) return "";
+    return g_presetItems[index].fileName.c_str();
 }
 
 int Preset_GetSelectedIndex() {
@@ -2673,11 +3560,13 @@ void Preset_SetEditRegionData(const WeatherPresetData& data) {
     if (!HasSelectedPresetIndexInternal()) {
         g_newPresetDraftActive = true;
     }
+    TimeSchedulePinCurrentEntryForUserEdit();
     const bool affectsRuntime = EditRegionAffectsCurrentRuntime();
     SaveEditedRegionToPackage(g_editDraftPackage, g_presetEditRegion, data);
     if (affectsRuntime) {
         ApplyDetectedRegionFromPackage(g_editDraftPackage);
     }
+    MarkAutoSavePending();
 }
 
 void Preset_SetEditRegionDataWithOverrides(const WeatherPresetData& data, const WeatherPresetSourceMask& mask) {
@@ -2685,11 +3574,13 @@ void Preset_SetEditRegionDataWithOverrides(const WeatherPresetData& data, const 
     if (!HasSelectedPresetIndexInternal()) {
         g_newPresetDraftActive = true;
     }
+    TimeSchedulePinCurrentEntryForUserEdit();
     const bool affectsRuntime = EditRegionAffectsCurrentRuntime();
     SaveEditedRegionToPackageWithMask(g_editDraftPackage, g_presetEditRegion, data, FromSourceMask(mask));
     if (affectsRuntime) {
         ApplyDetectedRegionFromPackage(g_editDraftPackage);
     }
+    MarkAutoSavePending();
 }
 
 void Preset_ResetEditRegion() {
@@ -2697,6 +3588,7 @@ void Preset_ResetEditRegion() {
     if (!HasSelectedPresetIndexInternal()) {
         g_newPresetDraftActive = true;
     }
+    TimeSchedulePinCurrentEntryForUserEdit();
     if (g_presetEditRegion > kPresetRegionGlobal && g_presetEditRegion < kPresetRegionCount) {
         ResetRegionToDefaultsInPackage(g_editDraftPackage, g_presetEditRegion);
         const bool affectsRuntime = EditRegionAffectsCurrentRuntime();
@@ -2706,16 +3598,19 @@ void Preset_ResetEditRegion() {
         if (affectsRuntime) {
             ApplyDetectedRegionFromPackage(g_editDraftPackage);
         }
+        MarkAutoSavePending();
         GUI_SetStatus(("Region overrides cleared: " + std::string(RegionDisplayName(g_presetEditRegion))).c_str());
         return;
     }
 
     SaveEditedRegionToPackage(g_editDraftPackage, kPresetRegionGlobal, WeatherPresetData{});
     ApplyDetectedRegionFromPackage(g_editDraftPackage);
+    MarkAutoSavePending();
     GUI_SetStatus("Global reset to defaults");
 }
 
 void Preset_SelectNew() {
+    TimeScheduleDisableForManualSelection();
     g_selectedPresetIndex = -1;
     ClearSelectedPresetBaseline();
     g_newPresetDraftActive = true;
@@ -2733,6 +3628,25 @@ bool Preset_HasUnsavedChanges() {
 bool Preset_CanSaveCurrent() {
     if (!Preset_HasSelection()) return true;
     return Preset_HasUnsavedChanges();
+}
+
+void Preset_AutoSaveTick(bool uiEditActive) {
+    if (!g_cfg.autoSaved) {
+        g_autoSavePending = false;
+        return;
+    }
+    if (!g_autoSavePending || uiEditActive || !HasSelectedPresetIndexInternal()) {
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (now - g_autoSaveLastEditTick < kAutoSaveDebounceMs) {
+        return;
+    }
+    if (!Preset_HasUnsavedChanges()) {
+        g_autoSavePending = false;
+        return;
+    }
+    SaveSelectedDraftInternal("Preset autosaved: ", "autosaved", false);
 }
 
 WeatherPresetStatusSnapshot Preset_GetStatusSnapshot() {
@@ -2779,7 +3693,7 @@ bool Preset_CurrentSlidersMatchAppliedRegion() {
     return PresetDataEquals(current, EffectivePresetDataForRegion(runtimePackage, g_lastAppliedRegion));
 }
 
-bool Preset_SelectIndex(int index) {
+bool SelectPresetIndexInternal(int index, bool applyImmediately, const char* statusPrefix, const char* toastPrefix, const char* logVerb) {
     if (index < 0 || index >= static_cast<int>(g_presetItems.size())) return false;
     WeatherPresetPackage package{};
     if (!LoadPresetPackageInternal(g_presetItems[index].fullPath.c_str(), package)) {
@@ -2788,33 +3702,35 @@ bool Preset_SelectIndex(int index) {
         return false;
     }
     SanitizeAndPersistPresetPackageIfNeeded(g_presetItems[index], package);
-    ApplyDetectedRegionFromPackage(package);
+    if (applyImmediately) {
+        ApplyDetectedRegionFromPackage(package);
+    } else {
+        g_lastAppliedRegion = -1;
+        g_lastRuntimeAppliedData = WeatherPresetData{};
+        g_lastRuntimeAppliedDataValid = false;
+        g_regionBlendFrom = -1;
+        g_regionBlendTo = -1;
+        g_regionBlendLogBucket = -1;
+    }
     g_selectedPresetIndex = index;
     SetSelectedPresetBaseline(package);
     PersistRememberedPresetName(g_presetItems[index].fileName.c_str());
-    GUI_SetStatus(("Preset loaded: " + g_presetItems[index].displayName).c_str());
-    ShowNativeToast(("ACTIVATED PRESET: " + g_presetItems[index].displayName).c_str());
-    Log("[preset] loaded %s\n", g_presetItems[index].fileName.c_str());
+    GUI_SetStatus((std::string(statusPrefix ? statusPrefix : "Preset loaded: ") + g_presetItems[index].displayName).c_str());
+    if (toastPrefix && toastPrefix[0]) {
+        ShowNativeToast((std::string(toastPrefix) + g_presetItems[index].displayName).c_str());
+    }
+    Log("[preset] %s %s\n", logVerb ? logVerb : "loaded", g_presetItems[index].fileName.c_str());
     LogPresetPackageSummary("loaded-package", package);
     return true;
 }
 
+bool Preset_SelectIndex(int index) {
+    TimeScheduleDisableForManualSelection();
+    return SelectPresetIndexInternal(index, true, "Preset loaded: ", "ACTIVATED PRESET: ", "loaded");
+}
+
 bool Preset_SaveSelected() {
-    if (!Preset_HasSelection()) return false;
-    WeatherPresetPackage package = BuildEditDraftPreview();
-    const PresetListItem item = g_presetItems[g_selectedPresetIndex];
-    if (!WritePresetPackageInternal(item.fullPath.c_str(), package)) {
-        GUI_SetStatus("Preset save failed");
-        Log("[preset] failed to save %s\n", item.fileName.c_str());
-        return false;
-    }
-    SetSelectedPresetBaseline(package);
-    PersistRememberedPresetName(item.fileName.c_str());
-    ApplyDetectedRegionFromPackage(package);
-    GUI_SetStatus(("Preset saved: " + item.displayName).c_str());
-    Log("[preset] saved %s\n", item.fileName.c_str());
-    LogPresetPackageSummary("saved-package", package);
-    return true;
+    return SaveSelectedDraftInternal("Preset saved: ", "saved", true);
 }
 
 bool Preset_SaveAs(const char* fileName) {
@@ -2850,6 +3766,273 @@ bool Preset_SaveAs(const char* fileName) {
     return true;
 }
 
+bool PresetSchedule_IsEnabled() {
+    EnsureTimeScheduleLoaded();
+    return g_timeScheduleEnabled;
+}
+
+void PresetSchedule_SetEnabled(bool enabled) {
+    EnsureTimeScheduleLoaded();
+    if (g_timeScheduleEnabled == enabled) {
+        return;
+    }
+    g_timeScheduleEnabled = enabled;
+    if (!enabled) {
+        g_timeScheduleBlendActive = false;
+        g_timeScheduleActivePresetFile.clear();
+    }
+    TimeScheduleClearUserEditPin();
+    TimeScheduleClearSelfVisualGuard();
+    SaveTimeScheduleConfig();
+    GUI_SetStatus(enabled ? "Time schedule enabled" : "Time schedule disabled");
+    Log("[preset-schedule] %s\n", enabled ? "enabled" : "disabled");
+}
+
+std::vector<PresetScheduleEntry> PresetSchedule_GetEntries() {
+    EnsureTimeScheduleLoaded();
+    return g_timeScheduleEntries;
+}
+
+std::vector<PresetScheduleRow> PresetSchedule_BuildRows() {
+    EnsureTimeScheduleLoaded();
+
+    std::vector<PresetScheduleRow> rows;
+    std::vector<ScheduleSegment> explicitSegments;
+    for (int i = 0; i < static_cast<int>(g_timeScheduleEntries.size()); ++i) {
+        const PresetScheduleEntry& entry = g_timeScheduleEntries[i];
+        const int presetIndex = FindPresetIndexByFileName(entry.presetFile);
+
+        PresetScheduleRow row{};
+        row.gap = false;
+        row.startMinute = entry.startMinute;
+        row.endMinute = entry.endMinute;
+        row.entryIndex = i;
+        row.presetFile = entry.presetFile;
+        row.displayName = presetIndex >= 0 ? g_presetItems[presetIndex].displayName : GetPresetDisplayNameFromFileName(entry.presetFile);
+        row.presetMissing = presetIndex < 0;
+        row.blendSeconds = entry.blendSeconds;
+        rows.push_back(row);
+
+        std::vector<ScheduleSegment> segments = ExpandScheduleRange(entry.startMinute, entry.endMinute);
+        explicitSegments.insert(explicitSegments.end(), segments.begin(), segments.end());
+    }
+
+    std::sort(explicitSegments.begin(), explicitSegments.end(), [](const ScheduleSegment& a, const ScheduleSegment& b) {
+        if (a.start != b.start) return a.start < b.start;
+        return a.end < b.end;
+    });
+
+    std::vector<ScheduleSegment> merged;
+    for (const ScheduleSegment& segment : explicitSegments) {
+        if (segment.start == segment.end) {
+            continue;
+        }
+        if (!merged.empty() && segment.start <= merged.back().end) {
+            merged.back().end = max(merged.back().end, segment.end);
+        } else {
+            merged.push_back(segment);
+        }
+    }
+
+    if (merged.empty()) {
+        rows.push_back({ true, 0, 0, -1, "", "gap - no preset", false, 0 });
+    } else {
+        for (size_t i = 0; i < merged.size(); ++i) {
+            const int gapStart = merged[i].end % (24 * 60);
+            const int gapEnd = merged[(i + 1) % merged.size()].start;
+            const bool lastWrapGap = i + 1 == merged.size();
+            if (!lastWrapGap && gapStart < gapEnd) {
+                rows.push_back({ true, gapStart, gapEnd, -1, "", "gap - no preset", false, 0 });
+            } else if (lastWrapGap && gapStart != gapEnd) {
+                rows.push_back({ true, gapStart, gapEnd, -1, "", "gap - no preset", false, 0 });
+            }
+        }
+    }
+
+    std::sort(rows.begin(), rows.end(), [](const PresetScheduleRow& a, const PresetScheduleRow& b) {
+        if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
+        if (a.gap != b.gap) return !a.gap;
+        return a.endMinute < b.endMinute;
+    });
+
+    return rows;
+}
+
+PresetScheduleStatus PresetSchedule_GetStatus() {
+    EnsureTimeScheduleLoaded();
+    PresetScheduleStatus status{};
+    status.enabled = g_timeScheduleEnabled;
+    status.activeEntryIndex = g_timeScheduleActiveEntryIndex;
+    status.blending = g_timeScheduleBlendActive;
+
+    if (g_timeScheduleActiveEntryIndex >= 0 &&
+        g_timeScheduleActiveEntryIndex < static_cast<int>(g_timeScheduleEntries.size())) {
+        const PresetScheduleEntry& entry = g_timeScheduleEntries[g_timeScheduleActiveEntryIndex];
+        status.active = true;
+        status.activePresetFile = entry.presetFile;
+        const int presetIndex = FindPresetIndexByFileName(entry.presetFile);
+        status.activeDisplayName = presetIndex >= 0
+            ? g_presetItems[presetIndex].displayName
+            : GetPresetDisplayNameFromFileName(entry.presetFile);
+    }
+
+    if (g_timeScheduleBlendActive) {
+        status.blendToDisplayName = GetPresetDisplayNameFromFileName(g_timeScheduleBlendPresetFile);
+        status.blendFromDisplayName = g_timeScheduleBlendFromPresetFile.empty()
+            ? "Current"
+            : GetPresetDisplayNameFromFileName(g_timeScheduleBlendFromPresetFile);
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG elapsedMs = now - g_timeScheduleBlendStartTick;
+        const int totalMs = max(1, g_timeScheduleBlendSeconds) * 1000;
+        const ULONGLONG cappedElapsedMs = elapsedMs > static_cast<ULONGLONG>(totalMs)
+            ? static_cast<ULONGLONG>(totalMs)
+            : elapsedMs;
+        const int remainingMs = max(0, totalMs - static_cast<int>(cappedElapsedMs));
+        status.blendRemainingSeconds = (remainingMs + 999) / 1000;
+    }
+
+    return status;
+}
+
+bool PresetSchedule_AddEntry(const PresetScheduleEntry& entry) {
+    return ReplaceTimeScheduleEntryWithNew(-1, entry);
+}
+
+bool PresetSchedule_UpdateEntry(int index, const PresetScheduleEntry& entry) {
+    EnsureTimeScheduleLoaded();
+    if (index < 0 || index >= static_cast<int>(g_timeScheduleEntries.size())) {
+        return false;
+    }
+    return ReplaceTimeScheduleEntryWithNew(index, entry);
+}
+
+bool PresetSchedule_DeleteEntry(int index) {
+    EnsureTimeScheduleLoaded();
+    if (index < 0 || index >= static_cast<int>(g_timeScheduleEntries.size())) {
+        return false;
+    }
+    g_timeScheduleEntries.erase(g_timeScheduleEntries.begin() + index);
+    g_timeScheduleBlendActive = false;
+    g_timeScheduleActiveEntryIndex = -1;
+    g_timeScheduleLastAppliedEntryIndex = -1;
+    g_timeScheduleActivePresetFile.clear();
+    TimeScheduleClearUserEditPin();
+    TimeScheduleClearSelfVisualGuard();
+    SaveTimeScheduleConfig();
+    GUI_SetStatus("Time schedule entry deleted");
+    Log("[preset-schedule] deleted entry %d\n", index);
+    return true;
+}
+
+bool PresetSchedule_ParseAmPm(const char* text, int& outMinute) {
+    outMinute = 0;
+    std::string value = TrimCopy(text ? text : "");
+    if (value.empty()) {
+        return false;
+    }
+
+    std::string upper;
+    upper.reserve(value.size());
+    for (size_t i = 0; i < value.size(); ++i) {
+        const char c = value[i];
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            continue;
+        }
+        if (c == '.') {
+            upper.push_back(':');
+        } else {
+            upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+        }
+    }
+
+    bool hasMarker = false;
+    bool pm = false;
+    if (upper.size() >= 2 && upper.compare(upper.size() - 2, 2, "AM") == 0) {
+        hasMarker = true;
+        pm = false;
+        upper.resize(upper.size() - 2);
+    } else if (upper.size() >= 2 && upper.compare(upper.size() - 2, 2, "PM") == 0) {
+        hasMarker = true;
+        pm = true;
+        upper.resize(upper.size() - 2);
+    }
+
+    if (upper.empty()) {
+        return false;
+    }
+
+    int hour = 0;
+    int minute = 0;
+    const size_t colon = upper.find(':');
+    if (colon == std::string::npos) {
+        for (char c : upper) {
+            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+        }
+        if (!hasMarker && upper.size() == 4) {
+            hour = atoi(upper.substr(0, 2).c_str());
+            minute = atoi(upper.substr(2, 2).c_str());
+        } else if (!hasMarker && upper.size() == 3) {
+            hour = atoi(upper.substr(0, 1).c_str());
+            minute = atoi(upper.substr(1, 2).c_str());
+        } else {
+            hour = atoi(upper.c_str());
+        }
+    } else {
+        const std::string hourText = upper.substr(0, colon);
+        const std::string minuteText = upper.substr(colon + 1);
+        if (hourText.empty() || minuteText.empty() || minuteText.size() > 2) {
+            return false;
+        }
+        for (char c : hourText) {
+            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+        }
+        for (char c : minuteText) {
+            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+        }
+        hour = atoi(hourText.c_str());
+        minute = atoi(minuteText.c_str());
+    }
+
+    if (minute < 0 || minute > 59) {
+        return false;
+    }
+
+    if (hasMarker) {
+        if (hour < 1 || hour > 12) {
+            return false;
+        }
+        int hour24 = hour % 12;
+        if (pm) {
+            hour24 += 12;
+        }
+        outMinute = hour24 * 60 + minute;
+        return true;
+    }
+
+    if (hour < 0 || hour > 23) {
+        return false;
+    }
+    outMinute = hour * 60 + minute;
+    return true;
+}
+
+std::string PresetSchedule_FormatAmPm(int minute) {
+    minute = NormalizeScheduleMinute(minute);
+    const int hour24 = minute / 60;
+    const int minutePart = minute % 60;
+    int hour12 = hour24 % 12;
+    if (hour12 == 0) {
+        hour12 = 12;
+    }
+    char out[32] = {};
+    sprintf_s(out, "%d:%02d %s", hour12, minutePart, hour24 >= 12 ? "PM" : "AM");
+    return out;
+}
+
+int PresetSchedule_DefaultBlendSeconds() {
+    return kTimeScheduleDefaultBlendSeconds;
+}
+
 void Preset_TryAutoApplyRemembered() {
     if (g_autoApplyRememberedTried) return;
     g_autoApplyRememberedTried = true;
@@ -2864,7 +4047,7 @@ void Preset_TryAutoApplyRemembered() {
 
     for (int i = 0; i < static_cast<int>(g_presetItems.size()); ++i) {
         if (!RememberedPresetMatches(g_presetItems[i], g_rememberedPresetName)) continue;
-        if (Preset_SelectIndex(i)) {
+        if (SelectPresetIndexInternal(i, true, "Preset auto applied: ", "ACTIVATED PRESET: ", "auto-applied")) {
             const std::string rememberedBefore = g_rememberedPresetName;
             if (!EqualsNoCase(g_presetItems[i].fileName, rememberedBefore)) {
                 PersistRememberedPresetName(g_presetItems[i].fileName.c_str());
@@ -2893,6 +4076,11 @@ void Preset_ArmAutoApplyRemembered() {
 }
 
 bool Preset_NeedsWorldTick() {
+    EnsureTimeScheduleLoaded();
+    if (g_timeScheduleEnabled || g_timeScheduleBlendActive) {
+        return true;
+    }
+
     if (g_autoApplyRememberedArmed && !g_autoApplyRememberedTried) {
         return true;
     }
@@ -2920,6 +4108,12 @@ bool Preset_NeedsWorldTick() {
 }
 
 void Preset_OnWorldTick(bool worldReady, float dt) {
+    const bool scheduleBlending = TimeScheduleRuntimeTick(worldReady);
+    if (scheduleBlending) {
+        (void)dt;
+        return;
+    }
+
     const bool hasSelectedRuntimePackage = HasSelectedPresetIndexInternal() && g_selectedPresetBaselineValid;
     const bool hasNewRuntimePackage = !HasSelectedPresetIndexInternal() && g_newPresetDraftActive;
     if (worldReady && (hasSelectedRuntimePackage || hasNewRuntimePackage)) {

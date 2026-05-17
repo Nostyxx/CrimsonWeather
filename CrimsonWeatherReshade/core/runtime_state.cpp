@@ -87,6 +87,7 @@ void WriteDefaultConfig(const char* path) {
 
     WritePrivateProfileStringA("General", "LogEnabled", "0", path);
     WritePrivateProfileStringA("General", "AutoStart", "1", path);
+    WritePrivateProfileStringA("General", "AutoSaved", "0", path);
     WritePrivateProfileStringA("General", "ExtendedSliderRange", "0", path);
     WritePrivateProfileStringA("General", "HotkeyToggleEffect", "F10", path);
     WritePrivateProfileStringA(
@@ -102,6 +103,8 @@ void WriteDefaultConfig(const char* path) {
         path);
 #if !defined(CW_WIND_ONLY)
     WritePrivateProfileStringA("Preset", "LastPreset", "", path);
+    WritePrivateProfileStringA("TimeSchedule", "Enabled", "0", path);
+    WritePrivateProfileStringA("TimeSchedule", "EntryCount", "0", path);
 #else
     WritePrivateProfileStringA("Wind", "Multiplier", "1.0000", path);
 #endif
@@ -125,6 +128,9 @@ void PatchMissingConfigKeys(const char* path) {
     char buf[64] = {};
     if (GetPrivateProfileStringA("General", "AutoStart", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("General", "AutoStart", "1", path);
+    }
+    if (GetPrivateProfileStringA("General", "AutoSaved", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("General", "AutoSaved", "0", path);
     }
     if (GetPrivateProfileStringA("General", "HotkeyToggleEffect", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("General", "HotkeyToggleEffect", "F10", path);
@@ -158,6 +164,12 @@ void PatchMissingConfigKeys(const char* path) {
 #else
     GetPrivateProfileStringA("Preset", "LastPreset", "", buf, sizeof(buf), path);
     WritePrivateProfileStringA("Preset", "LastPreset", buf, path);
+    if (GetPrivateProfileStringA("TimeSchedule", "Enabled", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("TimeSchedule", "Enabled", "0", path);
+    }
+    if (GetPrivateProfileStringA("TimeSchedule", "EntryCount", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("TimeSchedule", "EntryCount", "0", path);
+    }
 #endif
 #if defined(CW_DEV_BUILD)
     if (GetPrivateProfileStringA("Dev", "LaunchOption", "", buf, sizeof(buf), path) == 0) {
@@ -688,6 +700,8 @@ void LoadConfig(const char* dir) {
     g_cfg.logEnabled = atoi(buf) != 0;
     GetPrivateProfileStringA("General", "AutoStart", "1", buf, sizeof(buf), path);
     g_cfg.autoStart = atoi(buf) != 0;
+    GetPrivateProfileStringA("General", "AutoSaved", "0", buf, sizeof(buf), path);
+    g_cfg.autoSaved = atoi(buf) != 0;
     GetPrivateProfileStringA("General", "ExtendedSliderRange", "0", buf, sizeof(buf), path);
     g_extendedSliderRange.store(atoi(buf) != 0);
     GetPrivateProfileStringA("General", "HotkeyToggleEffect", "F10", buf, sizeof(buf), path);
@@ -721,6 +735,7 @@ void LoadConfig(const char* dir) {
 void SaveGeneralConfig() {
     char path[MAX_PATH] = {};
     BuildIniPath(path, sizeof(path));
+    WritePrivateProfileStringA("General", "AutoSaved", g_cfg.autoSaved ? "1" : "0", path);
     WritePrivateProfileStringA("General", "ExtendedSliderRange", g_extendedSliderRange.load() ? "1" : "0", path);
 }
 
@@ -807,10 +822,16 @@ void ResetAllSliders() {
     g_oHeightFogBaseline.clear();
     g_oHeightFogFalloff.clear();
     g_oCloudAlpha.clear();
+    g_oCloudFadeRange.clear();
+    g_oCloudDetailRatio.clear();
     g_oCloudPhaseFront.clear();
     g_oCloudScatteringCoefficient.clear();
+    g_oCloudFlow.clear();
+    g_oRayleighHeight.clear();
+    g_oOzoneRatio.clear();
     g_oRayleighScatteringColor.clear();
     g_oVolumeFogScatterColor.clear();
+    g_oMieScatterColor.clear();
     g_forceClear.store(false);
     g_noRain.store(false);
     g_noDust.store(false);
@@ -852,6 +873,10 @@ void ResetAllSliders() {
     g_windPackBase05.store(1.0f);
     g_windPackBase0FValid.store(false);
     g_windPackBase0FBits.store(0xFFFFFFu);
+    g_windPackBase0EValid.store(false);
+    g_windPackBase0E.store(1200.0f);
+    g_windPackBase14Valid.store(false);
+    g_windPackBase14.store(0.0f);
     g_windPackBase10Valid.store(false);
     g_windPackBase10.store(1200.0f);
     g_windPackBase12Valid.store(false);
@@ -862,15 +887,26 @@ void ResetAllSliders() {
     g_windPackBase19.store(0.0f);
     g_windPackBase1EValid.store(false);
     g_windPackBase1E.store(1.0f);
+    g_windPackBase1FValid.store(false);
+    g_windPackBase1F.store(1.0f);
     g_windPackBase20Valid.store(false);
     g_windPackBase20.store(0.0f);
     g_windPackBase21Valid.store(false);
     g_windPackBase21.store(0.0f);
+    g_windPackBase27Valid.store(false);
+    g_windPackBase27.store(0.0f);
+    g_windPackBase28Valid.store(false);
+    g_windPackBase28.store(0.0f);
     g_windPackBaseVolumeFogColorValid.store(false);
     g_windPackBase34.store(1.0f);
     g_windPackBase35.store(1.0f);
     g_windPackBase36.store(1.0f);
     g_windPackBase37.store(1.0f);
+    g_windPackBaseMieScatterColorValid.store(false);
+    g_windPackBase38.store(1.0f);
+    g_windPackBase39.store(1.0f);
+    g_windPackBase3A.store(1.0f);
+    g_windPackBase3B.store(1.0f);
     g_windNodeBaseValid.store(false);
     g_windNodeBaseSpeed.store(0.0f);
     g_windNodeBaseGust.store(0.0f);
@@ -883,6 +919,11 @@ void ResetAllSliders() {
     g_sceneBaseMoonYaw.store(0.0f);
     g_sceneBaseMoonPitch.store(0.0f);
     g_sceneBaseNightSkyYaw.store(0.0f);
+#if defined(CW_DEV_BUILD)
+    for (size_t i = 0; i < kDevAtmosphereLabFieldCount; ++i) {
+        g_devAtmosphereLabActive[i].store(false);
+    }
+#endif
     g_resetStopRequested.store(true);
 }
 
@@ -897,8 +938,10 @@ bool AnySliderActive() {
            g_oSunLightIntensity.active.load() || g_oMoonLightIntensity.active.load() ||
            g_oMieScaleHeight.active.load() || g_oMieAerosolDensity.active.load() || g_oMieAerosolAbsorption.active.load() ||
            g_oHeightFogBaseline.active.load() || g_oHeightFogFalloff.active.load() ||
-           g_oCloudAlpha.active.load() || g_oCloudPhaseFront.active.load() || g_oCloudScatteringCoefficient.active.load() ||
-           g_oRayleighScatteringColor.active.load() || g_oVolumeFogScatterColor.active.load() ||
+           g_oCloudAlpha.active.load() || g_oCloudFadeRange.active.load() || g_oCloudDetailRatio.active.load() ||
+           g_oCloudPhaseFront.active.load() || g_oCloudScatteringCoefficient.active.load() || g_oCloudFlow.active.load() ||
+           g_oRayleighHeight.active.load() || g_oOzoneRatio.active.load() ||
+           g_oRayleighScatteringColor.active.load() || g_oVolumeFogScatterColor.active.load() || g_oMieScatterColor.active.load() ||
            g_noRain.load() || g_noDust.load() || g_noSnow.load() ||
            g_noFog.load() || g_noWind.load() ||
            fabsf(g_windMul.load() - 1.0f) > 0.001f ||
@@ -918,8 +961,12 @@ bool AnyCustomWeatherSliderActive() {
            g_oSunLightIntensity.active.load() || g_oMoonLightIntensity.active.load() ||
            g_oMieScaleHeight.active.load() || g_oMieAerosolDensity.active.load() || g_oMieAerosolAbsorption.active.load() ||
            g_oHeightFogBaseline.active.load() || g_oHeightFogFalloff.active.load() ||
-           g_oCloudAlpha.active.load() || g_oCloudPhaseFront.active.load() || g_oCloudScatteringCoefficient.active.load() ||
-           g_oRayleighScatteringColor.active.load() || g_oVolumeFogScatterColor.active.load() ||
+           g_oCloudAlpha.active.load() || g_oCloudFadeRange.active.load() || g_oCloudDetailRatio.active.load() ||
+           g_oCloudPhaseFront.active.load() || g_oCloudScatteringCoefficient.active.load() || g_oCloudFlow.active.load() ||
+           g_oRayleighHeight.active.load() || g_oOzoneRatio.active.load() ||
+           g_oRayleighScatteringColor.active.load() || g_oVolumeFogScatterColor.active.load() || g_oMieScatterColor.active.load() ||
+           g_noRain.load() || g_noDust.load() || g_noSnow.load() ||
+           g_noFog.load() || g_noWind.load() ||
            g_oWindActual.active.load() ||
            fabsf(g_windMul.load() - 1.0f) > 0.001f;
 }

@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_BASE_VERSION "0.6.0"
+#define MOD_BASE_VERSION "0.6.1"
 #if defined(CW_DEV_BUILD)
 #define MOD_VERSION MOD_BASE_VERSION " DEV"
 #else
@@ -38,6 +38,7 @@ using std::min;
 struct Config {
     bool logEnabled = true;
     bool autoStart = true;
+    bool autoSaved = false;
     int effectToggleVK = VK_F10;
     WORD controllerEffectToggleMask = 0;
     bool reshadeDiagnostics = false;
@@ -523,10 +524,16 @@ inline SliderOverride g_oMieAerosolAbsorption;
 inline SliderOverride g_oHeightFogBaseline;
 inline SliderOverride g_oHeightFogFalloff;
 inline SliderOverride g_oCloudAlpha;
+inline SliderOverride g_oCloudFadeRange;
+inline SliderOverride g_oCloudDetailRatio;
 inline SliderOverride g_oCloudPhaseFront;
 inline SliderOverride g_oCloudScatteringCoefficient;
+inline SliderOverride g_oCloudFlow;
+inline SliderOverride g_oRayleighHeight;
+inline SliderOverride g_oOzoneRatio;
 inline ColorOverride g_oRayleighScatteringColor;
 inline ColorOverride g_oVolumeFogScatterColor;
+inline ColorOverride g_oMieScatterColor;
 inline std::atomic<float> g_thunderSchedulerRainBias{ 0.0f };
 inline std::atomic<uintptr_t> g_lastGameGlobalEffectManager{ 0 };
 inline std::atomic<bool> g_forceClear{ false };
@@ -612,7 +619,6 @@ inline std::atomic<float> g_cloudBaseTop{ 1.0f };
 inline std::atomic<float> g_cloudBaseThick{ 1.0f };
 inline std::atomic<float> g_cloudBaseBase{ 1.0f };
 inline std::atomic<float> g_cloudBaseShapeA{ 1.0f };
-inline std::atomic<float> g_cloudBaseShapeB{ 1.0f };
 inline std::atomic<float> g_cloudBaseShapeC{ 1.0f };
 inline std::atomic<bool> g_windPackBaseValid{ false };
 inline std::atomic<float> g_windPackBase23{ 0.0f };
@@ -641,6 +647,10 @@ inline std::atomic<bool> g_windPackBase05Valid{ false };
 inline std::atomic<float> g_windPackBase05{ 1.0f };
 inline std::atomic<bool> g_windPackBase0FValid{ false };
 inline std::atomic<unsigned int> g_windPackBase0FBits{ 0xFFFFFFu };
+inline std::atomic<bool> g_windPackBase0EValid{ false };
+inline std::atomic<float> g_windPackBase0E{ 1200.0f };
+inline std::atomic<bool> g_windPackBase14Valid{ false };
+inline std::atomic<float> g_windPackBase14{ 0.0f };
 inline std::atomic<bool> g_windPackBase10Valid{ false };
 inline std::atomic<float> g_windPackBase10{ 1200.0f };
 inline std::atomic<bool> g_windPackBase12Valid{ false };
@@ -651,15 +661,26 @@ inline std::atomic<bool> g_windPackBase19Valid{ false };
 inline std::atomic<float> g_windPackBase19{ 0.0f };
 inline std::atomic<bool> g_windPackBase1EValid{ false };
 inline std::atomic<float> g_windPackBase1E{ 1.0f };
+inline std::atomic<bool> g_windPackBase1FValid{ false };
+inline std::atomic<float> g_windPackBase1F{ 1.0f };
 inline std::atomic<bool> g_windPackBase20Valid{ false };
 inline std::atomic<float> g_windPackBase20{ 0.0f };
 inline std::atomic<bool> g_windPackBase21Valid{ false };
 inline std::atomic<float> g_windPackBase21{ 0.0f };
+inline std::atomic<bool> g_windPackBase27Valid{ false };
+inline std::atomic<float> g_windPackBase27{ 0.0f };
+inline std::atomic<bool> g_windPackBase28Valid{ false };
+inline std::atomic<float> g_windPackBase28{ 0.0f };
 inline std::atomic<bool> g_windPackBaseVolumeFogColorValid{ false };
 inline std::atomic<float> g_windPackBase34{ 1.0f };
 inline std::atomic<float> g_windPackBase35{ 1.0f };
 inline std::atomic<float> g_windPackBase36{ 1.0f };
 inline std::atomic<float> g_windPackBase37{ 1.0f };
+inline std::atomic<bool> g_windPackBaseMieScatterColorValid{ false };
+inline std::atomic<float> g_windPackBase38{ 1.0f };
+inline std::atomic<float> g_windPackBase39{ 1.0f };
+inline std::atomic<float> g_windPackBase3A{ 1.0f };
+inline std::atomic<float> g_windPackBase3B{ 1.0f };
 inline std::atomic<bool> g_windNodeBaseValid{ false };
 inline std::atomic<float> g_windNodeBaseSpeed{ 0.0f };
 inline std::atomic<float> g_windNodeBaseGust{ 0.0f };

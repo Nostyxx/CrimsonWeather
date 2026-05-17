@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -32,6 +33,13 @@ bool g_timeEditFocusRequest = false;
 bool g_timeEditHadFocus = false;
 std::string g_sliderEditId;
 bool g_sliderEditFocusRequest = false;
+char g_scheduleStartText[32] = "6:00 PM";
+char g_scheduleEndText[32] = "9:00 PM";
+int g_schedulePresetIndex = -1;
+int g_scheduleBlendMinutes = 2;
+int g_scheduleBlendSeconds = 0;
+int g_scheduleEditingIndex = -1;
+bool g_schedulePopupOpenRequest = false;
 
 const char* NumericInputFormat(const char* format, char* out, size_t outSize) {
     if (!out || outSize == 0) {
@@ -489,56 +497,13 @@ void DrawDevAtmosphereColorEditor(const char* label, size_t baseIndex, bool incl
 
 void DrawDevTab() {
     ImGui::TextDisabled("DEV-only live controls. These write WindPack atmosphere fields directly and are not saved to presets.");
-    ImGui::SeparatorText("Atmosphere Color Lab");
-
-    if (!WindPackReady()) {
-        ImGui::BeginDisabled();
-    }
-
     ImGui::Text("WindPack captures: %llu", g_devAtmosphereLabCaptureCount.load());
-    DrawDevAtmospherePackedRayleighColor();
-    ImGui::Spacing();
-    DrawDevAtmosphereColorEditor("Volume Fog Scatter Color 0x34-0x37", 0x34, true);
-    ImGui::Spacing();
-    DrawDevAtmosphereColorEditor("Mie Scatter Color 0x38-0x3B", 0x38, true);
+    ImGui::TextDisabled("No active DEV experiments. Promoted tests have moved into the main tabs.");
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Light Candidates");
-    DrawDevAtmosphereScalarField("Sun Light Intensity", 0x00, 0.0f, 20.0f, "%.3f");
-    DrawDevAtmosphereScalarField("Moon Light Intensity", 0x05, 0.0f, 20.0f, "%.3f");
-    DrawDevAtmosphereScalarField("Directional Light Luminance Scale", 0x15, 0.0f, 20.0f, "%.3f");
-
-    ImGui::Spacing();
-    ImGui::SeparatorText("Fog Candidates");
-    DrawDevAtmosphereScalarField("Mie Scaled Height", 0x10, 10.0f, 20000.0f, "%.1f");
-    DrawDevAtmosphereScalarField("Mie Aerosol Density", 0x11, 0.0f, 20.0f, "%.4f");
-    DrawDevAtmosphereScalarField("Mie Aerosol Absorption", 0x12, 0.0f, 5.0f, "%.4f");
-    DrawDevAtmosphereScalarField("Mie Phase Const", 0x13, -0.99f, 0.99f, "%.4f");
-    DrawDevAtmosphereScalarField("Height Fog Density", 0x17, 0.0f, 1.0f, "%.5f");
-    DrawDevAtmosphereScalarField("Height Fog Baseline", 0x18, -5000.0f, 5000.0f, "%.1f");
-    DrawDevAtmosphereScalarField("Height Fog Falloff", 0x19, 0.0f, 5.0f, "%.4f");
-    DrawDevAtmosphereScalarField("Height Fog Scale", 0x1A, 0.0f, 10.0f, "%.4f");
-
-    ImGui::Spacing();
-    ImGui::SeparatorText("Cloud Candidates");
-    DrawDevAtmosphereScalarField("Cloud Base Density", 0x1B, 0.0f, 5.0f, "%.4f");
-    DrawDevAtmosphereScalarField("Cloud Alpha", 0x1E, 0.0f, 50.0f, "%.3f");
-    DrawDevAtmosphereScalarField("Cloud Scattering Coefficient", 0x20, kCloudScatteringCoefficientMin, 1.0f, "%.5f");
-    DrawDevAtmosphereScalarField("Cloud Phase Front", 0x21, -1.0f, 1.0f, "%.4f");
-    DrawDevAtmosphereScalarField("Cloud Phase Back", 0x22, -1.0f, 1.0f, "%.4f");
-    DrawDevAtmosphereScalarField("Cloud Cirrus Density", 0x2D, 0.0f, 5.0f, "%.4f");
-    DrawDevAtmosphereScalarField("Cloud Cirrus Scale", 0x2E, 0.0f, 10.0f, "%.4f");
-    DrawDevAtmosphereColorEditor("Cloud Cirrus Weight RGB 0x2F-0x31", 0x2F, false);
-
-    ImGui::Spacing();
-    if (ImGui::Button("Clear All Atmosphere Lab Overrides")) {
+    if (ImGui::Button("Clear DEV Atmosphere Lab Overrides")) {
         DevAtmosphereLabClearValues(0, kDevAtmosphereLabFieldCount);
-        GUI_SetStatus("Atmosphere Lab cleared");
-    }
-
-    if (!WindPackReady()) {
-        ImGui::EndDisabled();
-        DrawHookUnavailable(RuntimeHookId::WindPack);
+        GUI_SetStatus("DEV Atmosphere Lab overrides cleared");
     }
 }
 #endif
@@ -1386,8 +1351,13 @@ void DrawStatusTab() {
             DrawStatusRowHookDisabled(snapshot, "Mid Clouds", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "High Clouds", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Cloud Alpha", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Cloud Fade Range", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Cloud Detail Ratio", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Cloud Phase Front", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Cloud Scattering Coefficient", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Cloud Flow", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Rayleigh Height", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Ozone Ratio", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Rayleigh Scattering Color", RuntimeHookId::WindPack);
         } else if (snapshot.effective.forceClearSky) {
             DrawStatusRowBlocked(snapshot, "Cloud Amount", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud amount overrides are not applied.");
@@ -1396,8 +1366,11 @@ void DrawStatusTab() {
             DrawStatusRowBlocked(snapshot, "Mid Clouds", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so mid-cloud overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "High Clouds", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so high-cloud overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "Cloud Alpha", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud alpha overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "Cloud Fade Range", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud fade range overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "Cloud Detail Ratio", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud detail ratio overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "Cloud Phase Front", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud phase overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "Cloud Scattering Coefficient", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud scattering overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "Cloud Flow", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud flow overrides are not applied.");
         } else {
             DrawStatusRowEnabledFloat(snapshot, "Cloud Amount", snapshot.effective.cloudAmountEnabled, snapshot.effective.cloudAmount, "x%.2f", snapshot.regionSource.cloudAmount, "Crimson Weather currently multiplies cloud amount by %s.");
             DrawStatusRowEnabledFloat(snapshot, "Cloud Height", snapshot.effective.cloudHeightEnabled, snapshot.effective.cloudHeight, "x%.2f", snapshot.regionSource.cloudHeight, "Crimson Weather currently multiplies cloud height by %s.");
@@ -1405,10 +1378,15 @@ void DrawStatusTab() {
             DrawStatusRowEnabledFloat(snapshot, "Mid Clouds", snapshot.effective.midCloudsEnabled, snapshot.effective.midClouds, "x%.2f", snapshot.regionSource.midClouds, "Crimson Weather currently multiplies mid clouds by %s.");
             DrawStatusRowEnabledFloat(snapshot, "High Clouds", snapshot.effective.highCloudsEnabled, snapshot.effective.highClouds, "x%.2f", snapshot.regionSource.highClouds, "Crimson Weather currently multiplies high clouds by %s.");
             DrawStatusRowEnabledFloat(snapshot, "Cloud Alpha", snapshot.effective.cloudAlphaEnabled, snapshot.effective.cloudAlpha, "%.3f", snapshot.regionSource.cloudAlpha, "Crimson Weather currently sets cloud alpha to %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Cloud Fade Range", snapshot.effective.cloudFadeRangeEnabled, snapshot.effective.cloudFadeRange, "%.1f", snapshot.regionSource.cloudFadeRange, "Crimson Weather currently sets cloud fade range to %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Cloud Detail Ratio", snapshot.effective.cloudDetailRatioEnabled, snapshot.effective.cloudDetailRatio, "%.4f", snapshot.regionSource.cloudDetailRatio, "Crimson Weather currently sets cloud detail ratio to %s.");
             DrawStatusRowEnabledFloat(snapshot, "Cloud Phase Front", snapshot.effective.cloudPhaseFrontEnabled, snapshot.effective.cloudPhaseFront, "%.4f", snapshot.regionSource.cloudPhaseFront, "Crimson Weather currently sets cloud phase front to %s.");
             DrawStatusRowEnabledFloat(snapshot, "Cloud Scattering Coefficient", snapshot.effective.cloudScatteringCoefficientEnabled, snapshot.effective.cloudScatteringCoefficient, "%.5f", snapshot.regionSource.cloudScatteringCoefficient, "Crimson Weather currently sets cloud scattering coefficient to %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Cloud Flow", snapshot.effective.cloudFlowEnabled, snapshot.effective.cloudFlow, "x%.3f", snapshot.regionSource.cloudFlow, "Crimson Weather currently sets cloud flow to %s.");
         }
         if (WindPackReady()) {
+            DrawStatusRowEnabledFloat(snapshot, "Rayleigh Height", snapshot.effective.rayleighHeightEnabled, snapshot.effective.rayleighHeight, "%.1f", snapshot.regionSource.rayleighHeight, "Crimson Weather currently sets Rayleigh height to %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Ozone Ratio", snapshot.effective.ozoneRatioEnabled, snapshot.effective.ozoneRatio, "%.4f", snapshot.regionSource.ozoneRatio, "Crimson Weather currently sets ozone ratio to %s.");
             DrawStatusRowText(snapshot, "Rayleigh Scattering Color", snapshot.effective.rayleighScatteringColorEnabled ? "ACTIVE" : "NATIVE", snapshot.regionSource.rayleighScatteringColor, "Crimson Weather currently overrides Rayleigh scattering color.");
         }
 
@@ -1502,6 +1480,7 @@ void DrawStatusTab() {
         if (!WindPackReady()) {
             DrawStatusRowHookDisabled(snapshot, "Fog", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Volume Fog Scatter Color", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Mie Scatter Color", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Aerosol Height", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Aerosol Density", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Aerosol Absorption", RuntimeHookId::WindPack);
@@ -1510,6 +1489,7 @@ void DrawStatusTab() {
         } else if (fogForcedZero) {
             DrawStatusRowBlocked(snapshot, "Fog", fogForceSource, nativeFogForceTooltip);
             DrawStatusRowBlocked(snapshot, "Volume Fog Scatter Color", fogForceSource, nativeFogForceTooltip);
+            DrawStatusRowBlocked(snapshot, "Mie Scatter Color", fogForceSource, nativeFogForceTooltip);
             DrawStatusRowBlocked(snapshot, "Aerosol Height", fogForceSource, nativeFogForceTooltip);
             DrawStatusRowBlocked(snapshot, "Aerosol Density", fogForceSource, nativeFogForceTooltip);
             DrawStatusRowBlocked(snapshot, "Aerosol Absorption", fogForceSource, nativeFogForceTooltip);
@@ -1518,6 +1498,7 @@ void DrawStatusTab() {
         } else {
             DrawStatusRowEnabledFloat(snapshot, "Fog", snapshot.effective.nativeFogEnabled, snapshot.effective.nativeFog, "%.2f", snapshot.regionSource.nativeFog, "Crimson Weather currently scales native fog by %s.");
             DrawStatusRowText(snapshot, "Volume Fog Scatter Color", snapshot.effective.volumeFogScatterColorEnabled ? "ACTIVE" : "NATIVE", snapshot.regionSource.volumeFogScatterColor, "Crimson Weather currently overrides volume fog scatter color.");
+            DrawStatusRowText(snapshot, "Mie Scatter Color", snapshot.effective.mieScatterColorEnabled ? "ACTIVE" : "NATIVE", snapshot.regionSource.mieScatterColor, "Crimson Weather currently overrides Mie scatter color.");
             DrawStatusRowEnabledFloat(snapshot, "Aerosol Height", snapshot.effective.mieScaleHeightEnabled, snapshot.effective.mieScaleHeight, "%.1f", snapshot.regionSource.mieScaleHeight, "Crimson Weather currently sets aerosol height to %s.");
             DrawStatusRowEnabledFloat(snapshot, "Aerosol Density", snapshot.effective.mieAerosolDensityEnabled, snapshot.effective.mieAerosolDensity, "%.4f", snapshot.regionSource.mieAerosolDensity, "Crimson Weather currently sets aerosol density to %s.");
             DrawStatusRowEnabledFloat(snapshot, "Aerosol Absorption", snapshot.effective.mieAerosolAbsorptionEnabled, snapshot.effective.mieAerosolAbsorption, "%.4f", snapshot.regionSource.mieAerosolAbsorption, "Crimson Weather currently sets aerosol absorption to %s.");
@@ -1544,6 +1525,451 @@ void DrawStatusTab() {
 
         ImGui::EndTable();
     }
+}
+
+int FindPresetUiIndexByFileName(const std::string& fileName) {
+    for (int i = 0; i < Preset_GetCount(); ++i) {
+        if (_stricmp(Preset_GetFileName(i), fileName.c_str()) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void OpenTimeScheduleEntryPopup(const PresetScheduleRow* row) {
+    if (row) {
+        strcpy_s(g_scheduleStartText, PresetSchedule_FormatAmPm(row->startMinute).c_str());
+        strcpy_s(g_scheduleEndText, PresetSchedule_FormatAmPm(row->endMinute).c_str());
+        g_schedulePresetIndex = row->gap ? max(0, Preset_GetSelectedIndex()) : FindPresetUiIndexByFileName(row->presetFile);
+        g_scheduleBlendMinutes = row->gap ? (PresetSchedule_DefaultBlendSeconds() / 60) : max(0, row->blendSeconds / 60);
+        g_scheduleBlendSeconds = row->gap ? (PresetSchedule_DefaultBlendSeconds() % 60) : max(0, row->blendSeconds % 60);
+        g_scheduleEditingIndex = row->gap ? -1 : row->entryIndex;
+    } else {
+        strcpy_s(g_scheduleStartText, "6:00 PM");
+        strcpy_s(g_scheduleEndText, "9:00 PM");
+        g_schedulePresetIndex = max(0, Preset_GetSelectedIndex());
+        if (Preset_GetCount() <= 0) {
+            g_schedulePresetIndex = -1;
+        }
+        g_scheduleBlendMinutes = PresetSchedule_DefaultBlendSeconds() / 60;
+        g_scheduleBlendSeconds = PresetSchedule_DefaultBlendSeconds() % 60;
+        g_scheduleEditingIndex = -1;
+    }
+    g_schedulePopupOpenRequest = true;
+}
+
+std::string FormatScheduleBlend(int seconds) {
+    seconds = max(0, seconds);
+    char buf[32] = {};
+    sprintf_s(buf, "%dm %ds", seconds / 60, seconds % 60);
+    return buf;
+}
+
+struct ScheduleTimelineSegment {
+    int startMinute = 0;
+    int endMinute = 0;
+    int rowIndex = -1;
+};
+
+void AddScheduleTimelineSegmentsForRow(const PresetScheduleRow& row, int rowIndex, std::vector<ScheduleTimelineSegment>& out) {
+    int start = row.startMinute % (24 * 60);
+    int end = row.endMinute % (24 * 60);
+    if (start < 0) start += 24 * 60;
+    if (end < 0) end += 24 * 60;
+
+    if (start == end) {
+        if (row.gap) {
+            out.push_back({ 0, 24 * 60, rowIndex });
+        }
+        return;
+    }
+
+    if (start < end) {
+        out.push_back({ start, end, rowIndex });
+    } else {
+        out.push_back({ start, 24 * 60, rowIndex });
+        out.push_back({ 0, end, rowIndex });
+    }
+}
+
+ImU32 ScheduleTimelineColor(const PresetScheduleRow& row) {
+    if (row.gap) {
+        return ImGui::GetColorU32(ImVec4(0.76f, 0.74f, 0.66f, 1.0f));
+    }
+    if (row.presetMissing) {
+        return ImGui::GetColorU32(ImVec4(0.56f, 0.20f, 0.20f, 1.0f));
+    }
+
+    static const ImVec4 kPalette[] = {
+        ImVec4(0.00f, 0.45f, 0.70f, 1.0f), // Okabe-Ito blue
+        ImVec4(0.90f, 0.62f, 0.00f, 1.0f), // orange
+        ImVec4(0.00f, 0.62f, 0.45f, 1.0f), // bluish green
+        ImVec4(0.80f, 0.47f, 0.65f, 1.0f), // reddish purple
+        ImVec4(0.84f, 0.37f, 0.00f, 1.0f), // vermillion
+        ImVec4(0.34f, 0.71f, 0.91f, 1.0f), // sky blue
+        ImVec4(0.94f, 0.89f, 0.26f, 1.0f), // yellow
+        ImVec4(0.56f, 0.56f, 0.56f, 1.0f), // neutral gray
+    };
+
+    const std::string key = row.presetFile.empty() ? row.displayName : row.presetFile;
+    unsigned int hash = 2166136261u;
+    for (char c : key) {
+        hash ^= static_cast<unsigned char>(c);
+        hash *= 16777619u;
+    }
+    return ImGui::GetColorU32(kPalette[hash % (sizeof(kPalette) / sizeof(kPalette[0]))]);
+}
+
+int FindScheduleTimelineRowAtMinute(const std::vector<ScheduleTimelineSegment>& segments, int minuteOfDay) {
+    minuteOfDay %= 24 * 60;
+    if (minuteOfDay < 0) {
+        minuteOfDay += 24 * 60;
+    }
+
+    for (const ScheduleTimelineSegment& segment : segments) {
+        if (minuteOfDay >= segment.startMinute && minuteOfDay < segment.endMinute) {
+            return segment.rowIndex;
+        }
+    }
+    if (minuteOfDay == 24 * 60 - 1 && !segments.empty()) {
+        return segments.back().rowIndex;
+    }
+    return -1;
+}
+
+void DrawTimeScheduleTimeline(const std::vector<PresetScheduleRow>& rows, const PresetScheduleStatus& status) {
+    if (rows.empty()) {
+        return;
+    }
+
+    std::vector<ScheduleTimelineSegment> segments;
+    segments.reserve(rows.size() + 2);
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        AddScheduleTimelineSegmentsForRow(rows[i], i, segments);
+    }
+
+    std::sort(segments.begin(), segments.end(), [](const ScheduleTimelineSegment& a, const ScheduleTimelineSegment& b) {
+        if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
+        return a.endMinute < b.endMinute;
+    });
+
+    ImGui::Spacing();
+    const float width = max(300.0f, ImGui::GetContentRegionAvail().x);
+    const float height = 88.0f;
+    ImGui::InvisibleButton("##time_schedule_timeline", ImVec2(width, height));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool clicked = hovered && ImGui::IsItemClicked(ImGuiMouseButton_Left);
+    const bool scheduleEnabled = status.enabled;
+    const ImVec2 boxMin = ImGui::GetItemRectMin();
+    const ImVec2 boxMax = ImGui::GetItemRectMax();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    const ImU32 panelBg = ImGui::GetColorU32(scheduleEnabled ? ImVec4(0.13f, 0.13f, 0.12f, 1.0f) : ImVec4(0.10f, 0.10f, 0.10f, 1.0f));
+    const ImU32 panelBorder = ImGui::GetColorU32(scheduleEnabled ? ImVec4(0.34f, 0.34f, 0.31f, 1.0f) : ImVec4(0.23f, 0.23f, 0.22f, 1.0f));
+    const ImU32 trackBg = ImGui::GetColorU32(scheduleEnabled ? ImVec4(0.08f, 0.08f, 0.08f, 1.0f) : ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
+    const ImU32 tickColor = ImGui::GetColorU32(scheduleEnabled ? ImVec4(0.52f, 0.52f, 0.48f, 1.0f) : ImVec4(0.36f, 0.36f, 0.34f, 1.0f));
+    const ImU32 gapText = ImGui::GetColorU32(scheduleEnabled ? ImVec4(0.20f, 0.20f, 0.18f, 1.0f) : ImVec4(0.46f, 0.46f, 0.43f, 1.0f));
+    const ImU32 labelText = ImGui::GetColorU32(scheduleEnabled ? ImVec4(0.95f, 0.96f, 0.98f, 1.0f) : ImVec4(0.58f, 0.58f, 0.55f, 1.0f));
+    const ImU32 mutedText = ImGui::GetColorU32(scheduleEnabled ? ImVec4(0.62f, 0.62f, 0.58f, 1.0f) : ImVec4(0.44f, 0.44f, 0.42f, 1.0f));
+    const ImU32 footerText = ImGui::GetColorU32(scheduleEnabled ? ImVec4(0.78f, 0.80f, 0.78f, 1.0f) : ImVec4(0.50f, 0.50f, 0.47f, 1.0f));
+    const ImU32 currentLine = ImGui::GetColorU32(ImVec4(1.0f, 0.18f, 0.16f, 1.0f));
+    const ImU32 disabledPresetFill = ImGui::GetColorU32(ImVec4(0.28f, 0.28f, 0.27f, 1.0f));
+    const ImU32 disabledGapFill = ImGui::GetColorU32(ImVec4(0.20f, 0.20f, 0.19f, 1.0f));
+
+    draw->AddRectFilled(boxMin, boxMax, panelBg, 7.0f);
+    draw->AddRect(boxMin, boxMax, panelBorder, 7.0f);
+
+    const float marginX = 14.0f;
+    const float trackY = boxMin.y + 14.0f;
+    const float trackH = 28.0f;
+    const float trackX0 = boxMin.x + marginX;
+    const float trackX1 = boxMax.x - marginX;
+    const float trackW = max(1.0f, trackX1 - trackX0);
+    draw->AddRectFilled(ImVec2(trackX0, trackY), ImVec2(trackX1, trackY + trackH), trackBg, 6.0f);
+
+    auto minuteToX = [&](int minute) {
+        return trackX0 + (static_cast<float>(minute) / static_cast<float>(24 * 60)) * trackW;
+    };
+
+    for (const ScheduleTimelineSegment& segment : segments) {
+        if (segment.rowIndex < 0 || segment.rowIndex >= static_cast<int>(rows.size())) {
+            continue;
+        }
+        const PresetScheduleRow& row = rows[segment.rowIndex];
+        const float x0 = minuteToX(segment.startMinute);
+        const float x1 = minuteToX(segment.endMinute);
+        if (x1 <= x0 + 1.0f) {
+            continue;
+        }
+
+        const bool activeSegment = scheduleEnabled && !row.gap && row.entryIndex == status.activeEntryIndex;
+        const ImU32 segmentColor = scheduleEnabled
+            ? ScheduleTimelineColor(row)
+            : (row.gap ? disabledGapFill : disabledPresetFill);
+        draw->AddRectFilled(ImVec2(x0, trackY), ImVec2(x1, trackY + trackH), segmentColor);
+        if (activeSegment) {
+            draw->AddRect(ImVec2(x0 + 1.0f, trackY + 1.0f), ImVec2(x1 - 1.0f, trackY + trackH - 1.0f),
+                ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.85f)), 0.0f, 0, 2.0f);
+        }
+        const std::string label = row.gap ? "gap" : (row.presetMissing ? "missing" : row.displayName);
+        const ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
+        if ((x1 - x0) > textSize.x + 12.0f) {
+            const ImU32 textColor = row.gap ? gapText : labelText;
+            draw->AddText(ImVec2(x0 + ((x1 - x0) - textSize.x) * 0.5f, trackY + 7.0f), textColor, label.c_str());
+        }
+    }
+
+    for (int hour = 0; hour <= 24; hour += 6) {
+        const float x = minuteToX(hour * 60);
+        draw->AddLine(ImVec2(x, trackY + trackH), ImVec2(x, trackY + trackH + 5.0f), tickColor, 1.0f);
+        const std::string tick = PresetSchedule_FormatAmPm(hour * 60);
+        const ImVec2 tickSize = ImGui::CalcTextSize(tick.c_str());
+        float tickX = x - tickSize.x * 0.5f;
+        if (hour == 0) tickX = x;
+        if (hour == 24) tickX = x - tickSize.x;
+        draw->AddText(ImVec2(tickX, trackY + trackH + 7.0f), mutedText, tick.c_str());
+    }
+
+    int currentMinute = -1;
+    int currentRowIndex = -1;
+    if (g_timeCurrentHourValid.load()) {
+        currentMinute = HourToMinuteOfDayFloor(g_timeCurrentHour.load());
+        if (scheduleEnabled) {
+            currentRowIndex = FindScheduleTimelineRowAtMinute(segments, currentMinute);
+            const float x = minuteToX(currentMinute);
+            draw->AddLine(ImVec2(x, trackY - 2.0f), ImVec2(x, trackY + trackH + 6.0f), currentLine, 1.5f);
+        }
+    }
+
+    std::string currentPreset = Preset_HasSelection() ? Preset_GetSelectedDisplayName() : "None";
+    if (!scheduleEnabled) {
+        currentPreset = "Schedule Off";
+    } else if (status.blending) {
+        currentPreset = status.blendFromDisplayName + " -> " + status.blendToDisplayName + " (" + FormatScheduleBlend(status.blendRemainingSeconds) + ")";
+    } else if (status.active) {
+        currentPreset = status.activeDisplayName;
+    } else if (currentRowIndex >= 0 && currentRowIndex < static_cast<int>(rows.size())) {
+        const PresetScheduleRow& currentRow = rows[currentRowIndex];
+        if (!currentRow.gap) {
+            currentPreset = currentRow.presetMissing ? (currentRow.displayName + " (missing)") : currentRow.displayName;
+        }
+    }
+    const std::string currentTime = currentMinute >= 0 ? PresetSchedule_FormatAmPm(currentMinute) : "--";
+    const std::string footer = "Current Time = " + currentTime + " | Current Preset: " + currentPreset;
+    const ImVec2 footerSize = ImGui::CalcTextSize(footer.c_str());
+    draw->AddText(ImVec2(trackX0 + max(0.0f, (trackW - footerSize.x) * 0.5f), boxMax.y - 18.0f), footerText, footer.c_str());
+
+    if (hovered) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const float clampedX = ClampSliderValue(mouse.x, { trackX0, trackX1 });
+        int minute = static_cast<int>(((clampedX - trackX0) / trackW) * static_cast<float>(24 * 60));
+        minute = min(24 * 60 - 1, max(0, minute));
+        const int rowIndex = FindScheduleTimelineRowAtMinute(segments, minute);
+        if (rowIndex >= 0 && rowIndex < static_cast<int>(rows.size())) {
+            const PresetScheduleRow& row = rows[rowIndex];
+            const std::string range = PresetSchedule_FormatAmPm(row.startMinute) + " -> " + PresetSchedule_FormatAmPm(row.endMinute);
+            if (row.gap) {
+                ImGui::SetTooltip("%s\nGap - click to set preset", range.c_str());
+            } else {
+                ImGui::SetTooltip("%s\n%s%s\nClick to edit",
+                    range.c_str(),
+                    row.displayName.c_str(),
+                    row.presetMissing ? " (missing)" : "");
+            }
+            if (clicked && (!row.gap || (row.startMinute != row.endMinute && Preset_GetCount() > 0))) {
+                OpenTimeScheduleEntryPopup(&row);
+            }
+        }
+    }
+}
+
+void ShiftScheduleTimeText(char* text, size_t textSize, int deltaMinutes) {
+    int minute = 0;
+    if (!PresetSchedule_ParseAmPm(text, minute)) {
+        return;
+    }
+    minute = (minute + deltaMinutes) % (24 * 60);
+    if (minute < 0) {
+        minute += 24 * 60;
+    }
+    strcpy_s(text, textSize, PresetSchedule_FormatAmPm(minute).c_str());
+}
+
+void DrawScheduleTimeInput(const char* label, char* text, size_t textSize) {
+    ImGui::PushID(label);
+    ImGui::SetNextItemWidth(128.0f);
+    ImGui::InputText(label, text, textSize);
+    ImGui::SameLine();
+    if (ImGui::Button("-1h")) {
+        ShiftScheduleTimeText(text, textSize, -60);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("+1h")) {
+        ShiftScheduleTimeText(text, textSize, 60);
+    }
+    ImGui::PopID();
+}
+
+void DrawTimeScheduleEntryPopup() {
+    if (!ImGui::BeginPopupModal("Time Schedule Entry", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    ImGui::TextUnformatted(g_scheduleEditingIndex >= 0 ? "Edit schedule entry" : "New schedule entry");
+    ImGui::Separator();
+
+    DrawScheduleTimeInput("Start time", g_scheduleStartText, IM_ARRAYSIZE(g_scheduleStartText));
+    DrawScheduleTimeInput("End time", g_scheduleEndText, IM_ARRAYSIZE(g_scheduleEndText));
+
+    const char* currentPreset = (g_schedulePresetIndex >= 0 && g_schedulePresetIndex < Preset_GetCount())
+        ? Preset_GetDisplayName(g_schedulePresetIndex)
+        : "Select preset...";
+    if (ImGui::BeginCombo("Preset to apply", currentPreset)) {
+        for (int i = 0; i < Preset_GetCount(); ++i) {
+            const bool selected = i == g_schedulePresetIndex;
+            if (ImGui::Selectable(Preset_GetDisplayName(i), selected)) {
+                g_schedulePresetIndex = i;
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    ImGui::SetNextItemWidth(88.0f);
+    ImGui::InputInt("Blend minutes", &g_scheduleBlendMinutes);
+    ImGui::SetNextItemWidth(88.0f);
+    ImGui::InputInt("Blend seconds", &g_scheduleBlendSeconds);
+
+    int startMinute = 0;
+    int endMinute = 0;
+    const bool startOk = PresetSchedule_ParseAmPm(g_scheduleStartText, startMinute);
+    const bool endOk = PresetSchedule_ParseAmPm(g_scheduleEndText, endMinute);
+    const bool durationOk = g_scheduleBlendMinutes >= 0 && g_scheduleBlendSeconds >= 0 && g_scheduleBlendSeconds < 60;
+    const bool presetOk = g_schedulePresetIndex >= 0 && g_schedulePresetIndex < Preset_GetCount();
+    const bool timeOk = startOk && endOk && startMinute != endMinute;
+    const bool canSave = timeOk && durationOk && presetOk;
+
+    if (!timeOk) {
+        ImGui::TextColored(ImVec4(1.0f, 0.58f, 0.36f, 1.0f), "Use valid times like 6:00 PM, 18:00, 1800, or 6.30 PM.");
+    } else if (!durationOk) {
+        ImGui::TextColored(ImVec4(1.0f, 0.58f, 0.36f, 1.0f), "Blend seconds must be 0-59 and duration cannot be negative.");
+    } else if (!presetOk) {
+        ImGui::TextColored(ImVec4(1.0f, 0.58f, 0.36f, 1.0f), "Select an existing preset file.");
+    } else {
+        ImGui::TextDisabled("New entry wins: overlapping entries will be trimmed automatically.");
+    }
+
+    ImGui::Spacing();
+    if (!canSave) {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::Button(g_scheduleEditingIndex >= 0 ? "Save" : "Add entry", ImVec2(108.0f, 0.0f))) {
+        PresetScheduleEntry entry{};
+        entry.startMinute = startMinute;
+        entry.endMinute = endMinute;
+        entry.presetFile = Preset_GetFileName(g_schedulePresetIndex);
+        entry.blendSeconds = g_scheduleBlendMinutes * 60 + g_scheduleBlendSeconds;
+        const bool saved = g_scheduleEditingIndex >= 0
+            ? PresetSchedule_UpdateEntry(g_scheduleEditingIndex, entry)
+            : PresetSchedule_AddEntry(entry);
+        if (saved) {
+            GUI_SetStatus(g_scheduleEditingIndex >= 0 ? "Time schedule entry updated" : "Time schedule entry added");
+            ImGui::CloseCurrentPopup();
+        } else {
+            GUI_SetStatus("Time schedule entry failed");
+        }
+    }
+    if (!canSave) {
+        ImGui::EndDisabled();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(88.0f, 0.0f))) {
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::EndPopup();
+}
+
+void DrawTimeScheduleSection() {
+    ImGui::Spacing();
+    ImGui::SeparatorText("Time Schedule");
+
+    bool enabled = PresetSchedule_IsEnabled();
+    if (ImGui::Checkbox("Enable time schedule", &enabled)) {
+        PresetSchedule_SetEnabled(enabled);
+    }
+    const float addButtonWidth = ImGui::CalcTextSize("+ add").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SameLine();
+    const float addButtonX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - addButtonWidth;
+    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), addButtonX));
+    if (Preset_GetCount() <= 0) {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("+ add")) {
+        OpenTimeScheduleEntryPopup(nullptr);
+    }
+    if (Preset_GetCount() <= 0) {
+        ImGui::EndDisabled();
+    }
+
+    const std::vector<PresetScheduleRow> rows = PresetSchedule_BuildRows();
+    const PresetScheduleStatus scheduleStatus = PresetSchedule_GetStatus();
+    DrawTimeScheduleTimeline(rows, scheduleStatus);
+    if (rows.empty()) {
+        ImGui::TextDisabled("No schedule rows");
+    } else if (ImGui::BeginTable("TimeScheduleRows", 4, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed, 158.0f);
+        ImGui::TableSetupColumn("Preset");
+        ImGui::TableSetupColumn("Edit", ImGuiTableColumnFlags_WidthFixed, 58.0f);
+        ImGui::TableSetupColumn("Delete", ImGuiTableColumnFlags_WidthFixed, 64.0f);
+
+        for (const PresetScheduleRow& row : rows) {
+            ImGui::TableNextRow();
+            if (scheduleStatus.enabled && !row.gap && row.entryIndex == scheduleStatus.activeEntryIndex) {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImVec4(0.22f, 0.34f, 0.44f, 0.65f)));
+            }
+            ImGui::TableSetColumnIndex(0);
+            const std::string rangeText = PresetSchedule_FormatAmPm(row.startMinute) + " -> " + PresetSchedule_FormatAmPm(row.endMinute);
+            ImGui::TextUnformatted(rangeText.c_str());
+
+            ImGui::TableSetColumnIndex(1);
+            if (row.gap) {
+                ImGui::TextDisabled("gap - no preset");
+            } else if (row.presetMissing) {
+                const std::string missing = row.displayName + " (missing)";
+                ImGui::TextColored(ImVec4(1.0f, 0.38f, 0.34f, 1.0f), "%s", missing.c_str());
+            } else {
+                ImGui::TextUnformatted(row.displayName.c_str());
+            }
+
+            ImGui::TableSetColumnIndex(2);
+            ImGui::PushID(row.gap ? -1000 - row.startMinute : row.entryIndex);
+            if (row.gap) {
+                if (row.startMinute != row.endMinute && Preset_GetCount() > 0 && ImGui::Button("Set")) {
+                    OpenTimeScheduleEntryPopup(&row);
+                }
+            } else if (ImGui::Button("Edit")) {
+                OpenTimeScheduleEntryPopup(&row);
+            }
+
+            ImGui::TableSetColumnIndex(3);
+            if (!row.gap) {
+                if (ImGui::Button("Delete")) {
+                    PresetSchedule_DeleteEntry(row.entryIndex);
+                }
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+
+    if (g_schedulePopupOpenRequest) {
+        ImGui::OpenPopup("Time Schedule Entry");
+        g_schedulePopupOpenRequest = false;
+    }
+    DrawTimeScheduleEntryPopup();
 }
 
 void DrawPresetTab() {
@@ -1602,9 +2028,10 @@ void DrawPresetTab() {
 
     const float listHeight = min(210.0f, max(96.0f, ImGui::GetTextLineHeightWithSpacing() * 8.0f));
     if (ImGui::BeginChild("PresetLibrary", ImVec2(0.0f, listHeight), true)) {
+        const bool scheduleEnabled = PresetSchedule_IsEnabled();
         const bool newVisible = TextContainsNoCase("[New Preset]", g_presetFilter);
         if (newVisible) {
-            const bool newSelected = !hasSelection;
+            const bool newSelected = !scheduleEnabled && !hasSelection;
             if (ImGui::Selectable("[New Preset]", newSelected)) {
                 Preset_SelectNew();
             }
@@ -1622,7 +2049,7 @@ void DrawPresetTab() {
                 continue;
             }
             ++visibleCount;
-            const bool selected = i == selectedIndex;
+            const bool selected = !scheduleEnabled && i == selectedIndex;
             if (ImGui::Selectable(name, selected)) {
                 Preset_SelectIndex(i);
             }
@@ -1650,6 +2077,50 @@ void DrawPresetTab() {
         ImGui::EndPopup();
     }
 
+    DrawTimeScheduleSection();
+}
+
+void LogTimeUiAction(
+    const char* action,
+    bool detachedEdit,
+    bool regionScoped,
+    bool overrideMaskTime,
+    const WeatherPresetData& editData) {
+    const PresetScheduleStatus schedule = PresetSchedule_GetStatus();
+    Log("[time-ui] action=%s detached=%u regionScoped=%u editRegion=%d maskTime=%u "
+        "schedule{enabled=%u active=%u entry=%d preset=%s blending=%u} "
+        "runtime{ctrl=%u freeze=%u progress=%u cadence=%.0f target=%.4f current=%.4f currentValid=%u applyReq=%u} "
+        "edit{override=%u progress=%u cadence=%.0f hour=%.4f}\n",
+        action ? action : "unknown",
+        detachedEdit ? 1u : 0u,
+        regionScoped ? 1u : 0u,
+        Preset_GetEditRegion(),
+        overrideMaskTime ? 1u : 0u,
+        schedule.enabled ? 1u : 0u,
+        schedule.active ? 1u : 0u,
+        schedule.activeEntryIndex,
+        schedule.activePresetFile.empty() ? "<none>" : schedule.activePresetFile.c_str(),
+        schedule.blending ? 1u : 0u,
+        g_timeCtrlActive.load() ? 1u : 0u,
+        g_timeFreeze.load() ? 1u : 0u,
+        g_timeProgressVisualTime.load() ? 1u : 0u,
+        g_timeProgressCadenceMs.load(),
+        g_timeTargetHour.load(),
+        g_timeCurrentHour.load(),
+        g_timeCurrentHourValid.load() ? 1u : 0u,
+        g_timeApplyRequest.load() ? 1u : 0u,
+        editData.visualTimeOverride ? 1u : 0u,
+        editData.progressVisualTime ? 1u : 0u,
+        editData.progressVisualTimeIntervalMs,
+        editData.timeHour);
+}
+
+void DisableScheduleForManualTimeEdit(const char* action) {
+    if (!PresetSchedule_IsEnabled()) {
+        return;
+    }
+    Log("[time-ui] disabling time schedule due to manual time edit: %s\n", action ? action : "unknown");
+    PresetSchedule_SetEnabled(false);
 }
 
 void DrawGeneralTab() {
@@ -1662,6 +2133,7 @@ void DrawGeneralTab() {
     const bool regionScoped = detachedEdit && Preset_GetEditRegion() > kPresetRegionGlobal;
     WeatherPresetSourceMask overrideMask = regionScoped ? Preset_GetEditRegionOverrideMask() : WeatherPresetSourceMask{};
     bool editChanged = false;
+    bool manualTimeEditChanged = false;
 
     ImGui::SeparatorText("Weather");
     bool forceClear = detachedEdit ? editData.forceClearSky : g_forceClear.load();
@@ -1965,6 +2437,9 @@ void DrawGeneralTab() {
     const bool visualTimeChanged = regionScoped
         ? DrawOverrideCheckboxRow("Visual Time Override", "visual_time", &visualTimeOverride, &overrideMask.time, &timeOverrideChanged)
         : ImGui::Checkbox("Visual Time Override", &visualTimeOverride);
+    if (PresetSchedule_IsEnabled() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Changing this will disable Time Schedule.");
+    }
     if (timeOverrideChanged) {
         editChanged = true;
     }
@@ -1983,6 +2458,8 @@ void DrawGeneralTab() {
             }
             g_timeApplyRequest.store(true);
         }
+        LogTimeUiAction("visual-toggle", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        manualTimeEditChanged = true;
         GUI_SetStatus(visualTimeOverride ? "Visual time override enabled" : "Visual time override disabled");
     }
     if (!visualTimeOverride) {
@@ -2013,6 +2490,8 @@ void DrawGeneralTab() {
             g_timeFreeze.store(visualTimeOverride);
             g_timeApplyRequest.store(true);
         }
+        LogTimeUiAction("progress-toggle", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        manualTimeEditChanged = true;
         GUI_SetStatus(progressVisualTime ? "Progress Visual Time enabled" : "Progress Visual Time disabled");
     }
     const bool intervalDisabled = progressDisabled || !progressVisualTime;
@@ -2043,6 +2522,8 @@ void DrawGeneralTab() {
             g_timeProgressCadenceMs.store(progressVisualTimeIntervalMs);
             g_timeProgressLastTick.store(0);
         }
+        LogTimeUiAction("progress-interval", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        manualTimeEditChanged = true;
         GUI_SetStatus("Advance interval changed");
     }
     if (ClampProgressVisualTimeIntervalMs(progressVisualTimeIntervalMs) <= 0.5f) {
@@ -2095,6 +2576,8 @@ void DrawGeneralTab() {
             g_timeProgressLastTick.store(g_timeProgressVisualTime.load() ? GetTickCount64() : 0);
             g_timeApplyRequest.store(true);
         }
+        LogTimeUiAction("clock-dial", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        manualTimeEditChanged = true;
         FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), targetClock, sizeof(targetClock));
         FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), g_timeEditText, sizeof(g_timeEditText));
         g_timeEditLastMinute = timeMinutes;
@@ -2152,8 +2635,10 @@ void DrawGeneralTab() {
             timeMinutes = typedMinutes;
             FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), g_timeEditText, sizeof(g_timeEditText));
             g_timeEditLastMinute = timeMinutes;
+            LogTimeUiAction("time-text-submit", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
         } else {
             GUI_SetStatus("Invalid time");
+            LogTimeUiAction("time-text-invalid", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
         }
         g_timeEditActive = false;
         g_timeEditFocusRequest = false;
@@ -2179,6 +2664,8 @@ void DrawGeneralTab() {
             g_timeProgressLastTick.store(g_timeProgressVisualTime.load() ? GetTickCount64() : 0);
             g_timeApplyRequest.store(true);
         }
+        LogTimeUiAction("time-reset", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        manualTimeEditChanged = true;
         g_timeEditActive = false;
         g_timeEditFocusRequest = false;
         g_timeEditHadFocus = false;
@@ -2197,6 +2684,8 @@ void DrawGeneralTab() {
             g_timeProgressLastTick.store(g_timeProgressVisualTime.load() ? GetTickCount64() : 0);
             g_timeApplyRequest.store(true);
         }
+        LogTimeUiAction("time-text-apply", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        manualTimeEditChanged = true;
     }
     if (!(timeEnabled && visualTimeOverride) || timeValueLocked) {
         ImGui::EndDisabled();
@@ -2274,6 +2763,9 @@ void DrawGeneralTab() {
         }
     }
 
+    if (manualTimeEditChanged) {
+        DisableScheduleForManualTimeEdit("general-time-control");
+    }
     if (detachedEdit && editChanged) {
         if (regionScoped) {
             Preset_SetEditRegionDataWithOverrides(editData, overrideMask);
@@ -2329,6 +2821,60 @@ void DrawAtmosphereTab() {
             editChanged = true;
         } else {
             g_oRayleighScatteringColor.set(rayleighColor[0], rayleighColor[1], rayleighColor[2], 1.0f);
+        }
+    }
+
+    float rayleighHeight = detachedEdit ? editData.rayleighHeight : (g_oRayleighHeight.active.load() ? g_oRayleighHeight.value.load() : g_windPackBase0E.load());
+    const bool rayleighHeightNative = detachedEdit ? !editData.rayleighHeightEnabled : !g_oRayleighHeight.active.load();
+    bool rayleighHeightChanged = false;
+    bool rayleighHeightOverrideChanged = false;
+    const SliderRange rayleighHeightRange = ActiveSliderRange(10.0f, 20000.0f, 1.0f, 200000.0f);
+    if (DrawSliderFloatRow("Rayleigh Height", "rayleigh_height", &rayleighHeight, rayleighHeightRange.lo, rayleighHeightRange.hi, "%.1f", &rayleighHeightChanged, regionScoped ? &overrideMask.rayleighHeight : nullptr, &rayleighHeightOverrideChanged, rayleighHeightNative)) {
+        if (detachedEdit) {
+            editData.rayleighHeightEnabled = false;
+            editData.rayleighHeight = g_windPackBase0E.load();
+            if (regionScoped) overrideMask.rayleighHeight = true;
+            editChanged = true;
+        } else {
+            g_oRayleighHeight.clear();
+        }
+    } else if (rayleighHeightOverrideChanged) {
+        editChanged = true;
+    } else if (windPackAvailable && rayleighHeightChanged) {
+        if (detachedEdit) {
+            editData.rayleighHeight = ClampSliderValue(rayleighHeight, rayleighHeightRange);
+            editData.rayleighHeightEnabled = true;
+            if (regionScoped) overrideMask.rayleighHeight = true;
+            editChanged = true;
+        } else {
+            g_oRayleighHeight.set(ClampSliderValue(rayleighHeight, rayleighHeightRange));
+        }
+    }
+
+    float ozoneRatio = detachedEdit ? editData.ozoneRatio : (g_oOzoneRatio.active.load() ? g_oOzoneRatio.value.load() : g_windPackBase14.load());
+    const bool ozoneRatioNative = detachedEdit ? !editData.ozoneRatioEnabled : !g_oOzoneRatio.active.load();
+    bool ozoneRatioChanged = false;
+    bool ozoneRatioOverrideChanged = false;
+    const SliderRange ozoneRatioRange = ActiveSliderRange(0.0f, 10.0f, 0.0f, 100.0f);
+    if (DrawSliderFloatRow("Ozone Ratio", "ozone_ratio", &ozoneRatio, ozoneRatioRange.lo, ozoneRatioRange.hi, "%.4f", &ozoneRatioChanged, regionScoped ? &overrideMask.ozoneRatio : nullptr, &ozoneRatioOverrideChanged, ozoneRatioNative)) {
+        if (detachedEdit) {
+            editData.ozoneRatioEnabled = false;
+            editData.ozoneRatio = g_windPackBase14.load();
+            if (regionScoped) overrideMask.ozoneRatio = true;
+            editChanged = true;
+        } else {
+            g_oOzoneRatio.clear();
+        }
+    } else if (ozoneRatioOverrideChanged) {
+        editChanged = true;
+    } else if (windPackAvailable && ozoneRatioChanged) {
+        if (detachedEdit) {
+            editData.ozoneRatio = ClampSliderValue(ozoneRatio, ozoneRatioRange);
+            editData.ozoneRatioEnabled = true;
+            if (regionScoped) overrideMask.ozoneRatio = true;
+            editChanged = true;
+        } else {
+            g_oOzoneRatio.set(ClampSliderValue(ozoneRatio, ozoneRatioRange));
         }
     }
     if (!windPackAvailable) {
@@ -2512,6 +3058,60 @@ void DrawAtmosphereTab() {
         }
     }
 
+    float cloudFadeRange = detachedEdit ? editData.cloudFadeRange : (g_oCloudFadeRange.active.load() ? g_oCloudFadeRange.value.load() : g_windPackBase27.load());
+    const bool cloudFadeRangeNative = detachedEdit ? !editData.cloudFadeRangeEnabled : !g_oCloudFadeRange.active.load();
+    bool cloudFadeRangeChanged = false;
+    bool cloudFadeRangeOverrideChanged = false;
+    const SliderRange cloudFadeRangeRange = ActiveSliderRange(0.0f, 100000.0f, 0.0f, 200000.0f);
+    if (DrawSliderFloatRow("Cloud Fade Range", "cloud_fade_range", &cloudFadeRange, cloudFadeRangeRange.lo, cloudFadeRangeRange.hi, "%.1f", &cloudFadeRangeChanged, regionScoped ? &overrideMask.cloudFadeRange : nullptr, &cloudFadeRangeOverrideChanged, cloudFadeRangeNative)) {
+        if (detachedEdit) {
+            editData.cloudFadeRangeEnabled = false;
+            editData.cloudFadeRange = g_windPackBase27.load();
+            if (regionScoped) overrideMask.cloudFadeRange = true;
+            editChanged = true;
+        } else {
+            g_oCloudFadeRange.clear();
+        }
+    } else if (cloudFadeRangeOverrideChanged) {
+        editChanged = true;
+    } else if (cloudEnabled && cloudFadeRangeChanged) {
+        if (detachedEdit) {
+            editData.cloudFadeRange = ClampSliderValue(cloudFadeRange, cloudFadeRangeRange);
+            editData.cloudFadeRangeEnabled = true;
+            if (regionScoped) overrideMask.cloudFadeRange = true;
+            editChanged = true;
+        } else {
+            g_oCloudFadeRange.set(ClampSliderValue(cloudFadeRange, cloudFadeRangeRange));
+        }
+    }
+
+    float cloudDetailRatio = detachedEdit ? editData.cloudDetailRatio : (g_oCloudDetailRatio.active.load() ? g_oCloudDetailRatio.value.load() : g_windPackBase28.load());
+    const bool cloudDetailRatioNative = detachedEdit ? !editData.cloudDetailRatioEnabled : !g_oCloudDetailRatio.active.load();
+    bool cloudDetailRatioChanged = false;
+    bool cloudDetailRatioOverrideChanged = false;
+    const SliderRange cloudDetailRatioRange = ActiveSliderRange(0.0f, 1.5f, 0.0f, 1.5f);
+    if (DrawSliderFloatRow("Cloud Detail Ratio", "cloud_detail_ratio", &cloudDetailRatio, cloudDetailRatioRange.lo, cloudDetailRatioRange.hi, "%.4f", &cloudDetailRatioChanged, regionScoped ? &overrideMask.cloudDetailRatio : nullptr, &cloudDetailRatioOverrideChanged, cloudDetailRatioNative)) {
+        if (detachedEdit) {
+            editData.cloudDetailRatioEnabled = false;
+            editData.cloudDetailRatio = g_windPackBase28.load();
+            if (regionScoped) overrideMask.cloudDetailRatio = true;
+            editChanged = true;
+        } else {
+            g_oCloudDetailRatio.clear();
+        }
+    } else if (cloudDetailRatioOverrideChanged) {
+        editChanged = true;
+    } else if (cloudEnabled && cloudDetailRatioChanged) {
+        if (detachedEdit) {
+            editData.cloudDetailRatio = ClampSliderValue(cloudDetailRatio, cloudDetailRatioRange);
+            editData.cloudDetailRatioEnabled = true;
+            if (regionScoped) overrideMask.cloudDetailRatio = true;
+            editChanged = true;
+        } else {
+            g_oCloudDetailRatio.set(ClampSliderValue(cloudDetailRatio, cloudDetailRatioRange));
+        }
+    }
+
     float cloudPhaseFront = detachedEdit ? editData.cloudPhaseFront : (g_oCloudPhaseFront.active.load() ? g_oCloudPhaseFront.value.load() : g_windPackBase21.load());
     const bool cloudPhaseFrontNative = detachedEdit ? !editData.cloudPhaseFrontEnabled : !g_oCloudPhaseFront.active.load();
     bool cloudPhaseFrontChanged = false;
@@ -2563,6 +3163,33 @@ void DrawAtmosphereTab() {
             editChanged = true;
         } else {
             g_oCloudScatteringCoefficient.set(ClampSliderValue(cloudScatter, cloudScatterRange));
+        }
+    }
+
+    float cloudFlow = detachedEdit ? editData.cloudFlow : (g_oCloudFlow.active.load() ? g_oCloudFlow.value.load() : g_windPackBase1F.load());
+    const bool cloudFlowNative = detachedEdit ? !editData.cloudFlowEnabled : !g_oCloudFlow.active.load();
+    bool cloudFlowChanged = false;
+    bool cloudFlowOverrideChanged = false;
+    const SliderRange cloudFlowRange = ActiveSliderRange(0.0f, 10.0f, 0.0f, 50.0f);
+    if (DrawSliderFloatRow("Cloud Flow", "cloud_flow", &cloudFlow, cloudFlowRange.lo, cloudFlowRange.hi, "x%.3f", &cloudFlowChanged, regionScoped ? &overrideMask.cloudFlow : nullptr, &cloudFlowOverrideChanged, cloudFlowNative)) {
+        if (detachedEdit) {
+            editData.cloudFlowEnabled = false;
+            editData.cloudFlow = g_windPackBase1F.load();
+            if (regionScoped) overrideMask.cloudFlow = true;
+            editChanged = true;
+        } else {
+            g_oCloudFlow.clear();
+        }
+    } else if (cloudFlowOverrideChanged) {
+        editChanged = true;
+    } else if (cloudEnabled && cloudFlowChanged) {
+        if (detachedEdit) {
+            editData.cloudFlow = ClampSliderValue(cloudFlow, cloudFlowRange);
+            editData.cloudFlowEnabled = true;
+            if (regionScoped) overrideMask.cloudFlow = true;
+            editChanged = true;
+        } else {
+            g_oCloudFlow.set(ClampSliderValue(cloudFlow, cloudFlowRange));
         }
     }
 
@@ -2651,6 +3278,44 @@ void DrawAtmosphereTab() {
             } else {
                 g_oNativeFog.clear();
             }
+        }
+    }
+
+    WeatherPresetColor nativeMieScatterColor{
+        g_windPackBase38.load(),
+        g_windPackBase39.load(),
+        g_windPackBase3A.load(),
+        g_windPackBase3B.load(),
+    };
+    WeatherPresetColor mieScatterColorData = detachedEdit
+        ? (editData.mieScatterColorEnabled ? editData.mieScatterColor : nativeMieScatterColor)
+        : (g_oMieScatterColor.active.load()
+            ? WeatherPresetColor{ g_oMieScatterColor.r.load(), g_oMieScatterColor.g.load(), g_oMieScatterColor.b.load(), g_oMieScatterColor.a.load() }
+            : nativeMieScatterColor);
+    float mieScatterColor[4] = { mieScatterColorData.r, mieScatterColorData.g, mieScatterColorData.b, mieScatterColorData.a };
+    const bool mieScatterNative = detachedEdit ? !editData.mieScatterColorEnabled : !g_oMieScatterColor.active.load();
+    bool mieScatterColorChanged = false;
+    bool mieScatterColorOverrideChanged = false;
+    if (DrawColorRow("Mie Scatter Color", "mie_scatter_color", mieScatterColor, true, &mieScatterColorChanged, regionScoped ? &overrideMask.mieScatterColor : nullptr, &mieScatterColorOverrideChanged, mieScatterNative)) {
+        if (detachedEdit) {
+            editData.mieScatterColorEnabled = false;
+            editData.mieScatterColor = nativeMieScatterColor;
+            if (regionScoped) overrideMask.mieScatterColor = true;
+            editChanged = true;
+        } else {
+            g_oMieScatterColor.clear();
+        }
+    } else if (mieScatterColorOverrideChanged) {
+        editChanged = true;
+    } else if (windEnabled && mieScatterColorChanged) {
+        ClampColorValues(mieScatterColor, true);
+        if (detachedEdit) {
+            editData.mieScatterColor = ColorFromArray(mieScatterColor, true);
+            editData.mieScatterColorEnabled = true;
+            if (regionScoped) overrideMask.mieScatterColor = true;
+            editChanged = true;
+        } else {
+            g_oMieScatterColor.set(mieScatterColor[0], mieScatterColor[1], mieScatterColor[2], mieScatterColor[3]);
         }
     }
 
@@ -3726,6 +4391,20 @@ void DrawCelestialTab() {
     }
 }
 
+std::string BuildFooterScheduleLabel() {
+    const PresetScheduleStatus status = PresetSchedule_GetStatus();
+    if (!status.enabled) {
+        return "OFF";
+    }
+    if (status.blending && !status.blendToDisplayName.empty()) {
+        return status.blendToDisplayName;
+    }
+    if (status.active && !status.activeDisplayName.empty()) {
+        return status.activeDisplayName;
+    }
+    return "ON";
+}
+
 void DrawOverlay(reshade::api::effect_runtime*) {
 #if !defined(CW_WIND_ONLY)
     Preset_OnWorldTick(g_pEnvManager && *g_pEnvManager != 0, 0.016f);
@@ -3787,7 +4466,12 @@ void DrawOverlay(reshade::api::effect_runtime*) {
     }
 
     ImGui::Separator();
-    ImGui::Text("Unsaved changes: %s", Preset_HasUnsavedChanges() ? "Yes" : "No");
+    const std::string scheduleLabel = BuildFooterScheduleLabel();
+    ImGui::Text("UNSAVED : %s  |  SCHEDULE : %s  |  EDITING : %s",
+        Preset_HasUnsavedChanges() ? "YES" : "NO",
+        scheduleLabel.c_str(),
+        Preset_GetSelectedDisplayName());
+    Preset_AutoSaveTick(ImGui::IsAnyItemActive());
     const char* nexusLabel = "nexusmods";
     const float nexusWidth = ImGui::CalcTextSize(nexusLabel).x;
     const float rightEdge = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
