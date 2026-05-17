@@ -2,10 +2,29 @@
 
 #include "runtime_shared.h"
 
+#include <cctype>
 #include <fstream>
 #include <vector>
 
 namespace {
+
+#if defined(CW_DEV_BUILD)
+constexpr const char* kDevOptimizationLogDir = "C:\\Games\\Crimson Desert\\bin64\\optimizationLOG";
+
+void EnsureDevOptimizationLogDir() {
+    char path[MAX_PATH] = {};
+    strcpy_s(path, kDevOptimizationLogDir);
+    for (char* p = path; *p; ++p) {
+        if (*p != '\\' || p == path || p[-1] == ':') {
+            continue;
+        }
+        *p = '\0';
+        CreateDirectoryA(path, nullptr);
+        *p = '\\';
+    }
+    CreateDirectoryA(path, nullptr);
+}
+#endif
 
 void RemoveIniSectionByName(const char* path, const char* sectionName) {
     if (!path || !path[0] || !sectionName || !sectionName[0]) {
@@ -67,6 +86,7 @@ void WriteDefaultConfig(const char* path) {
 
     WritePrivateProfileStringA("General", "LogEnabled", "0", path);
     WritePrivateProfileStringA("General", "AutoStart", "1", path);
+    WritePrivateProfileStringA("General", "ExtendedSliderRange", "0", path);
     WritePrivateProfileStringA("General", "HotkeyToggleEffect", "F10", path);
     WritePrivateProfileStringA(
         "General",
@@ -84,6 +104,16 @@ void WriteDefaultConfig(const char* path) {
 #else
     WritePrivateProfileStringA("Wind", "Multiplier", "1.0000", path);
 #endif
+#if defined(CW_DEV_BUILD)
+    WritePrivateProfileStringA("Dev", "LaunchOption", "full", path);
+    WritePrivateProfileStringA(
+        "Dev",
+        "_LaunchOptionValues",
+        "full, none, texturehook, weathertickhook, intensityhooks, windhooks, framehooks, foghooks, regionhook",
+        path);
+    WritePrivateProfileStringA("Dev", "PerfLog", "1", path);
+    WritePrivateProfileStringA("Dev", "PerfLogIntervalSec", "10", path);
+#endif
 }
 
 void PatchMissingConfigKeys(const char* path) {
@@ -97,6 +127,9 @@ void PatchMissingConfigKeys(const char* path) {
     }
     if (GetPrivateProfileStringA("General", "HotkeyToggleEffect", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("General", "HotkeyToggleEffect", "F10", path);
+    }
+    if (GetPrivateProfileStringA("General", "ExtendedSliderRange", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("General", "ExtendedSliderRange", "0", path);
     }
     if (GetPrivateProfileStringA("General", "_HotkeyOptions", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA(
@@ -125,6 +158,24 @@ void PatchMissingConfigKeys(const char* path) {
     GetPrivateProfileStringA("Preset", "LastPreset", "", buf, sizeof(buf), path);
     WritePrivateProfileStringA("Preset", "LastPreset", buf, path);
 #endif
+#if defined(CW_DEV_BUILD)
+    if (GetPrivateProfileStringA("Dev", "LaunchOption", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("Dev", "LaunchOption", "full", path);
+    }
+    if (GetPrivateProfileStringA("Dev", "_LaunchOptionValues", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA(
+            "Dev",
+            "_LaunchOptionValues",
+            "full, none, texturehook, weathertickhook, intensityhooks, windhooks, framehooks, foghooks, regionhook",
+            path);
+    }
+    if (GetPrivateProfileStringA("Dev", "PerfLog", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("Dev", "PerfLog", "1", path);
+    }
+    if (GetPrivateProfileStringA("Dev", "PerfLogIntervalSec", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("Dev", "PerfLogIntervalSec", "10", path);
+    }
+#endif
 
     WritePrivateProfileStringA("General", "HotkeyToggleGUI", nullptr, path);
     WritePrivateProfileStringA("Hotkeys", "ControllerHotkeyToggleGUI", nullptr, path);
@@ -136,19 +187,208 @@ void PatchMissingConfigKeys(const char* path) {
 } // namespace
 
 void Log(const char* fmt, ...) {
+#if defined(CW_DEV_BUILD)
+    if ((!g_logEnabled || !g_logFile) && !g_devLaunchLogFile) {
+        return;
+    }
+#else
     if (!g_logEnabled || !g_logFile) {
         return;
     }
+#endif
 
     SYSTEMTIME st = {};
     GetLocalTime(&st);
-    fprintf(g_logFile, "[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
     va_list args;
     va_start(args, fmt);
-    vfprintf(g_logFile, fmt, args);
+
+    if (g_logEnabled && g_logFile) {
+        va_list copy{};
+        va_copy(copy, args);
+        fprintf(g_logFile, "[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+        vfprintf(g_logFile, fmt, copy);
+        fflush(g_logFile);
+        va_end(copy);
+    }
+
+#if defined(CW_DEV_BUILD)
+    if (g_devLaunchLogFile) {
+        va_list copy{};
+        va_copy(copy, args);
+        fprintf(g_devLaunchLogFile, "[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+        vfprintf(g_devLaunchLogFile, fmt, copy);
+        fflush(g_devLaunchLogFile);
+        va_end(copy);
+    }
+#endif
+
     va_end(args);
-    fflush(g_logFile);
 }
+
+#if defined(CW_DEV_BUILD)
+namespace {
+
+void NormalizeDevLaunchOptionText(const char* text, char* out, size_t outSize) {
+    if (!out || outSize == 0) {
+        return;
+    }
+
+    out[0] = '\0';
+    if (!text) {
+        return;
+    }
+
+    size_t written = 0;
+    for (const char* p = text; *p && written + 1 < outSize; ++p) {
+        const unsigned char ch = static_cast<unsigned char>(*p);
+        if (std::isalnum(ch)) {
+            out[written++] = static_cast<char>(std::tolower(ch));
+        }
+    }
+    out[written] = '\0';
+}
+
+} // namespace
+
+const char* DevLaunchOptionName(DevLaunchOption option) {
+    switch (option) {
+    case DevLaunchOption::None:
+        return "none";
+    case DevLaunchOption::TextureHook:
+        return "texturehook";
+    case DevLaunchOption::WeatherTickHook:
+        return "weathertickhook";
+    case DevLaunchOption::IntensityHooks:
+        return "intensityhooks";
+    case DevLaunchOption::WindHooks:
+        return "windhooks";
+    case DevLaunchOption::FrameHooks:
+        return "framehooks";
+    case DevLaunchOption::FogHooks:
+        return "foghooks";
+    case DevLaunchOption::RegionHook:
+        return "regionhook";
+    case DevLaunchOption::Full:
+    default:
+        return "full";
+    }
+}
+
+const char* DevLaunchOptionDescription(DevLaunchOption option) {
+    switch (option) {
+    case DevLaunchOption::None:
+        return "DEV isolation: no texture hook and no runtime hooks.";
+    case DevLaunchOption::TextureHook:
+        return "DEV isolation: D3D12 moon/milkyway texture hook only.";
+    case DevLaunchOption::WeatherTickHook:
+        return "DEV isolation: WeatherTick hook only.";
+    case DevLaunchOption::IntensityHooks:
+        return "DEV isolation: rain/snow/dust intensity hooks only.";
+    case DevLaunchOption::WindHooks:
+        return "DEV isolation: ProcessWindState and WindPack hooks only.";
+    case DevLaunchOption::FrameHooks:
+        return "DEV isolation: production SceneFrameUpdate hook only.";
+    case DevLaunchOption::FogHooks:
+        return "DEV isolation: WeatherFrameUpdate and AtmosFogBlend hooks only.";
+    case DevLaunchOption::RegionHook:
+        return "DEV isolation: minimap region hook only.";
+    case DevLaunchOption::Full:
+    default:
+        return "Normal DEV build: all hooks enabled.";
+    }
+}
+
+DevLaunchOption ParseDevLaunchOption(const char* text) {
+    char normalized[64] = {};
+    NormalizeDevLaunchOptionText(text, normalized, sizeof(normalized));
+
+    if (normalized[0] == '\0' || strcmp(normalized, "full") == 0 || strcmp(normalized, "all") == 0) {
+        return DevLaunchOption::Full;
+    }
+    if (strcmp(normalized, "none") == 0 || strcmp(normalized, "off") == 0 || strcmp(normalized, "disabled") == 0) {
+        return DevLaunchOption::None;
+    }
+    if (strcmp(normalized, "texturehook") == 0 || strcmp(normalized, "texture") == 0 ||
+        strcmp(normalized, "moonhook") == 0 || strcmp(normalized, "moontexturehook") == 0) {
+        return DevLaunchOption::TextureHook;
+    }
+    if (strcmp(normalized, "weathertickhook") == 0 || strcmp(normalized, "weathertick") == 0) {
+        return DevLaunchOption::WeatherTickHook;
+    }
+    if (strcmp(normalized, "intensityhooks") == 0 || strcmp(normalized, "intensityhook") == 0 ||
+        strcmp(normalized, "intensity") == 0) {
+        return DevLaunchOption::IntensityHooks;
+    }
+    if (strcmp(normalized, "windhooks") == 0 || strcmp(normalized, "windhook") == 0 ||
+        strcmp(normalized, "wind") == 0) {
+        return DevLaunchOption::WindHooks;
+    }
+    if (strcmp(normalized, "framehooks") == 0 || strcmp(normalized, "framehook") == 0 ||
+        strcmp(normalized, "sceneframehook") == 0 || strcmp(normalized, "sceneframe") == 0 ||
+        strcmp(normalized, "scenehooks") == 0 || strcmp(normalized, "scenehook") == 0 ||
+        strcmp(normalized, "sceneupdatehook") == 0 || strcmp(normalized, "sceneupdate") == 0 ||
+        strcmp(normalized, "frame") == 0 || strcmp(normalized, "scene") == 0) {
+        return DevLaunchOption::FrameHooks;
+    }
+    if (strcmp(normalized, "foghooks") == 0 || strcmp(normalized, "foghook") == 0 ||
+        strcmp(normalized, "fog") == 0) {
+        return DevLaunchOption::FogHooks;
+    }
+    if (strcmp(normalized, "regionhook") == 0 || strcmp(normalized, "regionhooks") == 0 ||
+        strcmp(normalized, "minimaphook") == 0 || strcmp(normalized, "minimap") == 0 ||
+        strcmp(normalized, "region") == 0) {
+        return DevLaunchOption::RegionHook;
+    }
+    return DevLaunchOption::Full;
+}
+
+bool DevLaunchOptionUsesTextureHook(DevLaunchOption option) {
+    return option == DevLaunchOption::Full || option == DevLaunchOption::TextureHook;
+}
+
+bool DevLaunchOptionUsesRuntimeStartup(DevLaunchOption option) {
+    return option != DevLaunchOption::None && option != DevLaunchOption::TextureHook;
+}
+
+bool DevLaunchOptionBypassesStartupHealth(DevLaunchOption option) {
+    return option != DevLaunchOption::Full;
+}
+
+const char* DevPerfHookLabel(DevPerfHookId id) {
+    switch (id) {
+    case DevPerfHookId::WeatherTick:
+        return "WeatherTick";
+    case DevPerfHookId::RainIntensity:
+        return "RainIntensity";
+    case DevPerfHookId::SnowIntensity:
+        return "SnowIntensity";
+    case DevPerfHookId::DustIntensity:
+        return "DustIntensity";
+    case DevPerfHookId::AtmosFogBlend:
+        return "AtmosFogBlend";
+    case DevPerfHookId::WeatherFrameUpdate:
+        return "WeatherFrameUpdate";
+    case DevPerfHookId::ProcessWindState:
+        return "ProcessWindState";
+    case DevPerfHookId::WindPack:
+        return "WindPack";
+    case DevPerfHookId::SceneFrameUpdate:
+        return "SceneFrameUpdate";
+    case DevPerfHookId::MinimapRegionLabels:
+        return "MinimapRegionLabels";
+    case DevPerfHookId::D3D12CreateDevice:
+        return "D3D12CreateDevice";
+    case DevPerfHookId::D3D12CreateShaderResourceView:
+        return "D3D12CreateShaderResourceView";
+    case DevPerfHookId::D3D12CopyDescriptors:
+        return "D3D12CopyDescriptors";
+    case DevPerfHookId::D3D12CopyDescriptorsSimple:
+        return "D3D12CopyDescriptorsSimple";
+    default:
+        return "UnknownHook";
+    }
+}
+#endif
 
 const char* RuntimeHealthStateLabel(RuntimeHealthState state) {
     switch (state) {
@@ -308,6 +548,14 @@ bool RuntimeStartupHealthy(char* outReason, size_t outReasonSize) {
         outReason[0] = '\0';
     }
 
+#if defined(CW_DEV_BUILD)
+    const DevLaunchOption option = g_devLaunchOption.load();
+    if (DevLaunchOptionBypassesStartupHealth(option)) {
+        Log("[dev] Startup health bypassed for LaunchOption=%s\n", DevLaunchOptionName(option));
+        return true;
+    }
+#endif
+
 #if defined(CW_WIND_ONLY)
     constexpr RuntimeFeatureId criticalFeatures[] = {
         RuntimeFeatureId::WindControls
@@ -439,15 +687,40 @@ void LoadConfig(const char* dir) {
     g_cfg.logEnabled = atoi(buf) != 0;
     GetPrivateProfileStringA("General", "AutoStart", "1", buf, sizeof(buf), path);
     g_cfg.autoStart = atoi(buf) != 0;
+    GetPrivateProfileStringA("General", "ExtendedSliderRange", "0", buf, sizeof(buf), path);
+    g_extendedSliderRange.store(atoi(buf) != 0);
     GetPrivateProfileStringA("General", "HotkeyToggleEffect", "F10", buf, sizeof(buf), path);
     g_cfg.effectToggleVK = KeyNameToVK(buf);
     GetPrivateProfileStringA("Hotkeys", "ControllerToggleEffect", "dpad_down+a", buf, sizeof(buf), path);
     g_cfg.controllerEffectToggleMask = ParseControllerCombo(buf, static_cast<WORD>(0x0002 | 0x4000));
     g_cfg.reshadeDiagnostics = false;
+#if defined(CW_DEV_BUILD)
+    char devBuf[96] = {};
+    GetPrivateProfileStringA("Dev", "LaunchOption", "full", devBuf, sizeof(devBuf), path);
+    const DevLaunchOption launchOption = ParseDevLaunchOption(devBuf);
+    g_devLaunchOption.store(launchOption);
+    Log("[dev] LaunchOption=%s (%s)\n",
+        DevLaunchOptionName(launchOption),
+        DevLaunchOptionDescription(launchOption));
+
+    GetPrivateProfileStringA("Dev", "PerfLog", "1", buf, sizeof(buf), path);
+    g_cfg.devPerfLog = atoi(buf) != 0;
+    GetPrivateProfileStringA("Dev", "PerfLogIntervalSec", "10", buf, sizeof(buf), path);
+    g_cfg.devPerfLogIntervalSec = min(120, max(1, atoi(buf)));
+    Log("[dev-perf] enabled=%u interval=%ds\n",
+        g_cfg.devPerfLog ? 1u : 0u,
+        g_cfg.devPerfLogIntervalSec);
+#endif
 #if defined(CW_WIND_ONLY)
     GetPrivateProfileStringA("Wind", "Multiplier", "1.0000", buf, sizeof(buf), path);
     g_windMul.store(min(15.0f, max(0.0f, static_cast<float>(atof(buf)))));
 #endif
+}
+
+void SaveGeneralConfig() {
+    char path[MAX_PATH] = {};
+    BuildIniPath(path, sizeof(path));
+    WritePrivateProfileStringA("General", "ExtendedSliderRange", g_extendedSliderRange.load() ? "1" : "0", path);
 }
 
 void SaveWindOnlyConfig() {
@@ -461,21 +734,34 @@ void SaveWindOnlyConfig() {
 }
 
 void OpenLogFile(const char* dir) {
-    if (!g_cfg.logEnabled) {
+    g_logEnabled = g_cfg.logEnabled;
+    if (g_cfg.logEnabled) {
+        char path[MAX_PATH] = {};
+        if (dir && dir[0]) {
+            sprintf_s(path, "%s\\%s", dir, MOD_LOG_FILE);
+        } else {
+            strcpy_s(path, MOD_LOG_FILE);
+        }
+        fopen_s(&g_logFile, path, "w");
+    }
+    if (g_cfg.logEnabled && !g_logFile) {
         g_logEnabled = false;
-        return;
     }
 
-    char path[MAX_PATH] = {};
-    if (dir && dir[0]) {
-        sprintf_s(path, "%s\\%s", dir, MOD_LOG_FILE);
-    } else {
-        strcpy_s(path, MOD_LOG_FILE);
+#if defined(CW_DEV_BUILD)
+    const DevLaunchOption launchOption = g_devLaunchOption.load();
+    if (launchOption != DevLaunchOption::Full) {
+        EnsureDevOptimizationLogDir();
+        char devPath[MAX_PATH] = {};
+        sprintf_s(devPath, sizeof(devPath), "%s\\crimsonweather_%s.log",
+            kDevOptimizationLogDir,
+            DevLaunchOptionName(launchOption));
+        fopen_s(&g_devLaunchLogFile, devPath, "w");
+        if (g_devLaunchLogFile) {
+            Log("[dev] Optimization isolation log opened: %s\n", devPath);
+        }
     }
-    fopen_s(&g_logFile, path, "w");
-    if (!g_logFile) {
-        g_logEnabled = false;
-    }
+#endif
 }
 
 void GUI_SetStatus(const char* msg) {
@@ -520,6 +806,8 @@ void ResetAllSliders() {
     g_windMul.store(1.0f);
     g_timeCtrlActive.store(false);
     g_timeFreeze.store(false);
+    g_timeProgressVisualTime.store(false);
+    g_timeProgressLastTick.store(0);
     g_timeApplyRequest.store(false);
     g_timeTargetHour.store(g_timeCurrentHour.load());
     g_timeOriginalHour.store(g_timeCurrentHour.load());
@@ -927,13 +1215,15 @@ void TickTimeControl() {
     float currentHour = NAN;
     if (TryReadCurrentHourFromEntity(entity, currentHour)) {
         g_timeCurrentHour.store(currentHour);
+        g_timeCurrentHourValid.store(true);
     } else {
         float currentRaw = 0.0f;
         if (TryReadCurrentTimeRaw(envMgr, currentRaw)) {
-            g_timeCurrentHour.store(NormalizeHour24(g_timeDomainHours.load() ? currentRaw : (currentRaw * 24.0f)));
+            currentHour = NormalizeHour24(g_timeDomainHours.load() ? currentRaw : (currentRaw * 24.0f));
+            g_timeCurrentHour.store(currentHour);
+            g_timeCurrentHourValid.store(true);
         }
     }
-
     const bool active = g_timeCtrlActive.load();
     const bool freeze = g_timeFreeze.load();
     if (!active && !freeze) {
@@ -941,6 +1231,8 @@ void TickTimeControl() {
         g_timeOriginalHourValid.store(true);
     }
     if (!active && !freeze) {
+        g_timeProgressVisualTime.store(false);
+        g_timeProgressLastTick.store(0);
         if (g_timeFreezeApplied.exchange(false)) {
             RestoreTimeLimitBaseline(entity);
         }
@@ -948,7 +1240,39 @@ void TickTimeControl() {
         return;
     }
 
-    const float targetHour = NormalizeHour24(g_timeTargetHour.load());
+    const bool progressVisualTime = g_timeProgressVisualTime.load();
+    float targetHour = NormalizeHour24(g_timeTargetHour.load());
+    if (freeze && progressVisualTime) {
+        constexpr unsigned long long kProgressMinuteMs = 5000;
+        const unsigned long long now = GetTickCount64();
+        unsigned long long lastTick = g_timeProgressLastTick.load();
+        if (!lastTick || now < lastTick) {
+            g_timeProgressLastTick.store(now);
+        } else {
+            unsigned long long elapsedMs = now - lastTick;
+            const float cadenceSetting = g_timeProgressCadenceMs.load();
+            const unsigned long long cadenceMs = std::isfinite(cadenceSetting) && cadenceSetting > 0.0f
+                ? static_cast<unsigned long long>(cadenceSetting)
+                : 0ull;
+            const unsigned long long maxProgressGapMs = max(10000ull, cadenceMs * 4ull);
+            if (elapsedMs > maxProgressGapMs) {
+                elapsedMs = 0;
+                g_timeProgressLastTick.store(now);
+            }
+            if (cadenceMs > 0 && elapsedMs < cadenceMs) {
+                elapsedMs = 0;
+            }
+            if (elapsedMs > 0) {
+                const float addHours = static_cast<float>(elapsedMs) / static_cast<float>(kProgressMinuteMs * 60ull);
+                targetHour = NormalizeHour24(targetHour + addHours);
+                g_timeTargetHour.store(targetHour);
+                g_timeProgressLastTick.store(now);
+                g_timeApplyRequest.store(true);
+            }
+        }
+    } else {
+        g_timeProgressLastTick.store(0);
+    }
     const float targetRaw = UIHourToEngineRaw(targetHour);
     const bool applyNow = g_timeApplyRequest.exchange(false);
 

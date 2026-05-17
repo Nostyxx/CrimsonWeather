@@ -375,6 +375,9 @@ static void UpdateRegionState(const ResolvedEnv& env, float dt) {
 
 // Intensity hooks feed slider overrides into the engine weather blend inputs.
 __m128 __fastcall Hooked_GetRainIntensity(long long ws) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::RainIntensity);
+#endif
     if (!g_modEnabled.load()) {
         return g_pOrigGetRainIntensity ? g_pOrigGetRainIntensity(ws) : PackScalar(0.0f);
     }
@@ -400,6 +403,9 @@ __m128 __fastcall Hooked_GetRainIntensity(long long ws) {
 }
 
 __m128 __fastcall Hooked_GetSnowIntensity(long long ws) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::SnowIntensity);
+#endif
     if (!g_modEnabled.load()) {
         return g_pOrigGetSnowIntensity ? g_pOrigGetSnowIntensity(ws) : PackScalar(0.0f);
     }
@@ -410,6 +416,9 @@ __m128 __fastcall Hooked_GetSnowIntensity(long long ws) {
 }
 
 __m128 __fastcall Hooked_GetDustIntensity(long long ws) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::DustIntensity);
+#endif
     if (!g_modEnabled.load()) {
         return g_pOrigGetDustIntensity ? g_pOrigGetDustIntensity(ws) : PackScalar(0.0f);
     }
@@ -452,6 +461,9 @@ static inline void ApplyAuthoritativeFogProfile(float fogValue,
 }
 
 void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::AtmosFogBlend);
+#endif
     if (g_pOrigAtmosFogBlend) g_pOrigAtmosFogBlend(ctx, outParams);
     if (!g_modEnabled.load()) return;
     if (!outParams) return;
@@ -1070,7 +1082,6 @@ static void CaptureSceneCelestialBase(const float* scene) {
     if (!g_oNightSkyYaw.active.load() && std::isfinite(scene[kSceneTimeW])) {
         g_sceneBaseNightSkyYaw.store(SceneTimeToNightSkyYaw(scene[kSceneTimeW]));
     }
-
     if (!g_sceneCelestialBaseValid.load()) {
         g_sceneCelestialBaseValid.store(true);
     }
@@ -1107,6 +1118,9 @@ static bool ApplySceneCelestialOverrides(float* scene) {
 }
 
 void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::SceneFrameUpdate);
+#endif
     void* result = g_pOrigSceneFrameUpdate ? g_pOrigSceneFrameUpdate(self, context) : nullptr;
     if (!g_modEnabled.load() || !self) return result;
 
@@ -1117,7 +1131,9 @@ void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context) {
         }
 
         auto* sceneOwner = *reinterpret_cast<uint8_t**>(self + 0x430);
-        if (!sceneOwner) return result;
+        if (!sceneOwner) {
+            return result;
+        }
         auto* scenePrimary = *reinterpret_cast<float**>(sceneOwner + 0x20);
         ApplySceneCelestialOverrides(scenePrimary);
         auto* sceneCopy = *reinterpret_cast<float**>(sceneOwner + 0x60);
@@ -1130,6 +1146,9 @@ void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context) {
 }
 
 void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::WindPack);
+#endif
     const bool modEnabled = g_modEnabled.load();
     if (g_pOrigWindPack) g_pOrigWindPack(windNodePtr, packedOut);
     if (!modEnabled) return;
@@ -1250,6 +1269,9 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
 }
 
 void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::WeatherFrameUpdate);
+#endif
     if (!g_modEnabled.load()) {
         if (g_pOrigWeatherFrameUpdate) g_pOrigWeatherFrameUpdate(self, dt);
         return;
@@ -1451,6 +1473,9 @@ static void ApplyDustWindPolicy(long long self, const ResolvedEnv& env) {
 
 // Process wind state hook.
 void __fastcall Hooked_ProcessWindState(long long self) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::ProcessWindState);
+#endif
     if (g_pOrigProcessWindState) g_pOrigProcessWindState(self);
     if (!g_modEnabled.load()) return;
     const ResolvedEnv env = ResolveEnv();
@@ -1570,6 +1595,9 @@ static MinimapRegionCallerKind ClassifyMinimapRegionCaller(uintptr_t callerOffse
 }
 
 long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short areaId, unsigned short subAreaId) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::MinimapRegionLabels);
+#endif
     const auto caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
     long long result = 0;
     if (g_pOrigMinimapRegionLabels) {
@@ -1818,6 +1846,9 @@ static void TickNativeLightningBridge(long long self, float dt) {
 
 // Hooked weather tick.
 void __fastcall Hooked_WeatherTick(long long self, float dt) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::WeatherTick);
+#endif
     const bool resetStopNow = g_resetStopRequested.exchange(false);
     const bool modSuspendNow = g_modSuspendRequested.exchange(false);
     const ResolvedEnv env = ResolveEnv();

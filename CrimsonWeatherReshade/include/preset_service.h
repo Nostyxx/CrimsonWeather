@@ -12,6 +12,8 @@ struct WeatherPresetData {
     bool noSnow = false;
     float snow = 0.0f;
     bool visualTimeOverride = false;
+    bool progressVisualTime = false;
+    float progressVisualTimeIntervalMs = 0.0f;
     float timeHour = 12.0f;
     bool cloudAmountEnabled = false;
     float cloudAmount = 1.0f;

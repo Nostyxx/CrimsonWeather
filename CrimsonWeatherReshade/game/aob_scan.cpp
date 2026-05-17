@@ -9,22 +9,214 @@
 #endif
 
 #if defined(CW_WIND_ONLY)
-static constexpr bool kEnableWeatherTickHook = false;
-static constexpr bool kEnableGameplayHooks = false;
-static constexpr bool kEnableIntensityHooks = true;
-static constexpr bool kEnableWindHooks = false;
-static constexpr bool kEnableProcessWindHook = false;
-static constexpr bool kEnableWindPackHook = false;
-static constexpr bool kEnableFrameHooks = false;
+static bool EnableWeatherTickHook() { return false; }
+static bool EnableIntensityHooks() { return true; }
+static bool EnableWindHooks() { return false; }
+static bool EnableProcessWindHook() { return false; }
+static bool EnableWindPackHook() { return false; }
+static bool EnableSceneFrameHook() { return false; }
+static bool EnableFogHooks() { return false; }
+static bool EnableRegionHook() { return false; }
+static bool DevLaunchOptionIsFullProfile() { return false; }
 #else
-static constexpr bool kEnableWeatherTickHook = true;
-static constexpr bool kEnableGameplayHooks = true;
-static constexpr bool kEnableIntensityHooks = true;
-static constexpr bool kEnableWindHooks = true;
-static constexpr bool kEnableProcessWindHook = true;
-static constexpr bool kEnableWindPackHook = true;
-static constexpr bool kEnableFrameHooks = true;
+#if defined(CW_DEV_BUILD)
+static DevLaunchOption ActiveDevLaunchOption() {
+    return g_devLaunchOption.load();
+}
+
+static bool DevLaunchOptionIsFullProfile() {
+    return ActiveDevLaunchOption() == DevLaunchOption::Full;
+}
+
+static bool EnableWeatherTickHook() {
+    const DevLaunchOption option = ActiveDevLaunchOption();
+    return option == DevLaunchOption::Full || option == DevLaunchOption::WeatherTickHook;
+}
+
+static bool EnableIntensityHooks() {
+    const DevLaunchOption option = ActiveDevLaunchOption();
+    return option == DevLaunchOption::Full || option == DevLaunchOption::IntensityHooks;
+}
+
+static bool EnableWindHooks() {
+    const DevLaunchOption option = ActiveDevLaunchOption();
+    return option == DevLaunchOption::Full || option == DevLaunchOption::WindHooks;
+}
+
+static bool EnableSceneFrameHook() {
+    const DevLaunchOption option = ActiveDevLaunchOption();
+    return option == DevLaunchOption::Full || option == DevLaunchOption::FrameHooks;
+}
+
+static bool EnableFogHooks() {
+    const DevLaunchOption option = ActiveDevLaunchOption();
+    return option == DevLaunchOption::Full || option == DevLaunchOption::FogHooks;
+}
+
+static bool EnableRegionHook() {
+    const DevLaunchOption option = ActiveDevLaunchOption();
+    return option == DevLaunchOption::Full || option == DevLaunchOption::RegionHook;
+}
+
+static bool EnableProcessWindHook() {
+    return EnableWindHooks();
+}
+
+static bool EnableWindPackHook() {
+    return EnableWindHooks();
+}
+
+#else
+static bool EnableWeatherTickHook() { return true; }
+static bool EnableIntensityHooks() { return true; }
+static bool EnableWindHooks() { return true; }
+static bool EnableProcessWindHook() { return true; }
+static bool EnableWindPackHook() { return true; }
+static bool EnableSceneFrameHook() { return true; }
+static bool EnableFogHooks() { return true; }
+static bool EnableRegionHook() { return true; }
+static bool DevLaunchOptionIsFullProfile() { return true; }
 #endif
+#endif
+
+static bool PatchPointerSlot(void** slot, void* value);
+
+const char* RuntimeHookLabel(RuntimeHookId id) {
+    switch (id) {
+    case RuntimeHookId::WeatherTick: return "WeatherTick";
+    case RuntimeHookId::GetRainIntensity: return "GetRainIntensity";
+    case RuntimeHookId::GetSnowIntensity: return "GetSnowIntensity";
+    case RuntimeHookId::GetDustIntensity: return "GetDustIntensity";
+    case RuntimeHookId::ProcessWindState: return "ProcessWindState";
+    case RuntimeHookId::WindPack: return "WindPack";
+    case RuntimeHookId::SceneFrameUpdate: return "SceneFrameUpdate";
+    case RuntimeHookId::WeatherFrameUpdate: return "WeatherFrameUpdate";
+    case RuntimeHookId::AtmosFogBlend: return "AtmosFogBlend";
+    case RuntimeHookId::FogSet0: return "FogSet0";
+    case RuntimeHookId::FogSet1: return "FogSet1";
+    case RuntimeHookId::FogSet2: return "FogSet2";
+    case RuntimeHookId::FogSet3: return "FogSet3";
+    case RuntimeHookId::FogSet4: return "FogSet4";
+    case RuntimeHookId::MinimapRegionLabels: return "MinimapRegionLabels";
+    default: return "Unknown";
+    }
+}
+
+static const char* RuntimeHookKind(RuntimeHookId id) {
+    switch (id) {
+    case RuntimeHookId::WeatherTick: return "Core tick";
+    case RuntimeHookId::GetRainIntensity:
+    case RuntimeHookId::GetSnowIntensity:
+    case RuntimeHookId::GetDustIntensity:
+        return "Intensity";
+    case RuntimeHookId::ProcessWindState:
+    case RuntimeHookId::WindPack:
+        return "Wind/cloud";
+    case RuntimeHookId::SceneFrameUpdate:
+        return "Frame";
+    case RuntimeHookId::WeatherFrameUpdate:
+    case RuntimeHookId::AtmosFogBlend:
+    case RuntimeHookId::FogSet0:
+    case RuntimeHookId::FogSet1:
+    case RuntimeHookId::FogSet2:
+    case RuntimeHookId::FogSet3:
+    case RuntimeHookId::FogSet4:
+        return "Fog";
+    case RuntimeHookId::MinimapRegionLabels:
+        return "Region";
+    default:
+        return "";
+    }
+}
+
+RuntimeHookId RuntimeHookIdFromName(const char* name) {
+    if (!name || !name[0]) {
+        return RuntimeHookId::Count;
+    }
+    for (size_t i = 0; i < static_cast<size_t>(RuntimeHookId::Count); ++i) {
+        const auto id = static_cast<RuntimeHookId>(i);
+        if (_stricmp(name, RuntimeHookLabel(id)) == 0) {
+            return id;
+        }
+    }
+    return RuntimeHookId::Count;
+}
+
+void ResetRuntimeHookControls() {
+    for (auto& entry : g_runtimeHookControls) {
+        entry.target = nullptr;
+        entry.detour = nullptr;
+        entry.pointerSlot = nullptr;
+        entry.original = nullptr;
+        entry.installed.store(false);
+        entry.enabled.store(false);
+        entry.pointerPatch.store(false);
+    }
+}
+
+void RegisterRuntimeMinHook(RuntimeHookId id, void* target, void* detour) {
+    if (id == RuntimeHookId::Count) {
+        return;
+    }
+    auto& entry = g_runtimeHookControls[static_cast<size_t>(id)];
+    entry.target = target;
+    entry.detour = detour;
+    entry.pointerSlot = nullptr;
+    entry.original = nullptr;
+    entry.pointerPatch.store(false);
+    entry.installed.store(target != nullptr);
+    entry.enabled.store(target != nullptr);
+}
+
+void RegisterRuntimePointerHook(RuntimeHookId id, void* target, void* detour, void** slot, void* original) {
+    if (id == RuntimeHookId::Count) {
+        return;
+    }
+    auto& entry = g_runtimeHookControls[static_cast<size_t>(id)];
+    entry.target = target;
+    entry.detour = detour;
+    entry.pointerSlot = slot;
+    entry.original = original;
+    entry.pointerPatch.store(true);
+    entry.installed.store(slot != nullptr && original != nullptr && detour != nullptr);
+    entry.enabled.store(slot != nullptr && original != nullptr && detour != nullptr);
+}
+
+size_t GetRuntimeHookStatusEntries(RuntimeHookStatusEntry* outEntries, size_t maxEntries) {
+    if (!outEntries || maxEntries == 0) {
+        return 0;
+    }
+    size_t count = 0;
+    for (size_t i = 0; i < static_cast<size_t>(RuntimeHookId::Count) && count < maxEntries; ++i) {
+        const auto id = static_cast<RuntimeHookId>(i);
+        const auto& control = g_runtimeHookControls[i];
+        outEntries[count++] = RuntimeHookStatusEntry{
+            id,
+            RuntimeHookLabel(id),
+            RuntimeHookKind(id),
+            control.pointerPatch.load() ? reinterpret_cast<void*>(control.pointerSlot) : control.target,
+            control.installed.load(),
+            control.enabled.load(),
+            control.pointerPatch.load()
+        };
+    }
+    return count;
+}
+
+bool RuntimeHookInstalled(RuntimeHookId id) {
+    if (id == RuntimeHookId::Count) {
+        return false;
+    }
+    return g_runtimeHookControls[static_cast<size_t>(id)].installed.load();
+}
+
+bool RuntimeHookEnabled(RuntimeHookId id) {
+    if (id == RuntimeHookId::Count) {
+        return false;
+    }
+    const auto& entry = g_runtimeHookControls[static_cast<size_t>(id)];
+    return entry.installed.load() && entry.enabled.load();
+}
 
 static int HexNibble(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -63,6 +255,8 @@ static bool ParsePattern(const char* pattern, uint8_t* bytes, uint8_t* mask, siz
     return len > 0;
 }
 
+static bool ReadBytesSafe(uintptr_t addr, uint8_t* out, size_t n);
+
 static uintptr_t ScanModule(const char*pat){
     uint8_t bytes[256],mask[256];size_t len=0;
     if(!ParsePattern(pat,bytes,mask,len))return 0;
@@ -79,6 +273,110 @@ static uintptr_t ScanModule(const char*pat){
             bool ok=true;for(size_t k=0;k<len;k++)if(mask[k]&&mem[j+k]!=bytes[k]){ok=false;break;}
             if(ok)return base+j;}
     }return 0;}
+
+#if defined(CW_DEV_BUILD)
+static void* AllocateNearCodeCave(uintptr_t target, size_t size) {
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    const uintptr_t granularity = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
+    const uintptr_t lowLimit = target > 0x70000000ull ? target - 0x70000000ull : granularity;
+    const uintptr_t highLimit = target + 0x70000000ull;
+    const uintptr_t alignedTarget = target & ~(granularity - 1);
+
+    for (uintptr_t delta = granularity; delta < 0x70000000ull; delta += granularity) {
+        const uintptr_t candidates[2] = {
+            alignedTarget >= delta ? alignedTarget - delta : 0,
+            alignedTarget + delta
+        };
+        for (uintptr_t candidate : candidates) {
+            if (candidate < lowLimit || candidate > highLimit) {
+                continue;
+            }
+            void* mem = VirtualAlloc(reinterpret_cast<void*>(candidate), size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            if (mem) {
+                return mem;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+static bool PatchIndirectCallWithRelay(uintptr_t callSite, void* detour, const char* name) {
+    if (!callSite || !detour) {
+        return false;
+    }
+
+    uint8_t original[6] = {};
+    if (!ReadBytesSafe(callSite, original, sizeof(original))) {
+        Log("[W] AOB: %s patch site unreadable\n", name);
+        return false;
+    }
+    if (original[0] != 0xFF || original[1] != 0x90) {
+        Log("[W] AOB: %s patch site has unexpected bytes %02X %02X at %p\n",
+            name, original[0], original[1], reinterpret_cast<void*>(callSite));
+        return false;
+    }
+
+    uint8_t* relay = reinterpret_cast<uint8_t*>(AllocateNearCodeCave(callSite, 0x1000));
+    if (!relay) {
+        Log("[W] AOB: %s relay allocation failed near %p\n", name, reinterpret_cast<void*>(callSite));
+        return false;
+    }
+
+    relay[0] = 0x48; // mov rax, imm64
+    relay[1] = 0xB8;
+    *reinterpret_cast<uintptr_t*>(relay + 2) = reinterpret_cast<uintptr_t>(detour);
+    relay[10] = 0xFF; // jmp rax
+    relay[11] = 0xE0;
+
+    const int64_t rel64 = reinterpret_cast<uintptr_t>(relay) - (callSite + 5);
+    if (rel64 < INT32_MIN || rel64 > INT32_MAX) {
+        Log("[W] AOB: %s relay out of rel32 range site=%p relay=%p\n",
+            name, reinterpret_cast<void*>(callSite), relay);
+        return false;
+    }
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(callSite), 6, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        Log("[W] AOB: %s VirtualProtect failed at %p\n", name, reinterpret_cast<void*>(callSite));
+        return false;
+    }
+
+    auto* patch = reinterpret_cast<uint8_t*>(callSite);
+    patch[0] = 0xE8;
+    *reinterpret_cast<int32_t*>(patch + 1) = static_cast<int32_t>(rel64);
+    patch[5] = 0x90;
+    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(callSite), 6);
+
+    DWORD restoreProtect = 0;
+    VirtualProtect(reinterpret_cast<void*>(callSite), 6, oldProtect, &restoreProtect);
+
+    Log("[AOB] %s call patch = %p relay=%p detour=%p\n",
+        name, reinterpret_cast<void*>(callSite), relay, detour);
+    return true;
+}
+
+static uintptr_t FindShadowAoParamsUploadCallAOB() {
+    uintptr_t hit = ScanModule("4C 8D 45 E8 48 8B D6 48 8B CB FF 90 98 03 00 00");
+    if (hit) {
+        return hit + 10;
+    }
+
+    hit = ScanModule("4C 8D 85 ?? ?? ?? ?? 48 8B D6 48 8B CB FF 90 98 03 00 00");
+    if (hit) {
+        return hit + 13;
+    }
+
+    hit = ScanModule("4C 8D 85 ?? ?? ?? ?? 48 8B D6 48 8B CB FF 90 ?? ?? ?? ??");
+    if (hit) {
+        return hit + 13;
+    }
+
+    hit = ScanModule("4C 8D 45 ?? 48 8B D6 48 8B CB FF 90 ?? ?? ?? ??");
+    return hit ? hit + 10 : 0;
+}
+#endif
 
 static uintptr_t ReadCall(uintptr_t a){
     if(*reinterpret_cast<uint8_t*>(a)!=0xE8)return 0;
@@ -688,6 +986,45 @@ static bool FindDirectCallToTargetInRange(uintptr_t start, size_t len, uintptr_t
     return false;
 }
 
+static uintptr_t FindNthDirectCallTargetInRange(uintptr_t start, size_t len, unsigned nth, uintptr_t* outSite = nullptr) {
+    if (!start || len < 5 || nth == 0) return 0;
+    unsigned seen = 0;
+    __try {
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(start);
+        for (size_t i = 0; i + 5 <= len; ++i) {
+            if (p[i] != 0xE8) continue;
+            ++seen;
+            if (seen != nth) continue;
+            uintptr_t site = start + i;
+            if (outSite) *outSite = site;
+            return ReadCall(site);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return 0;
+}
+
+static uintptr_t FindPreviousDirectCallTarget(uintptr_t start, uintptr_t beforeSite, uintptr_t* outSite = nullptr) {
+    if (!start || !beforeSite || beforeSite <= start + 5) return 0;
+    uintptr_t lastSite = 0;
+    uintptr_t lastTarget = 0;
+    __try {
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(start);
+        const size_t len = beforeSite - start;
+        for (size_t i = 0; i + 5 <= len; ++i) {
+            if (p[i] != 0xE8) continue;
+            uintptr_t site = start + i;
+            lastSite = site;
+            lastTarget = ReadCall(site);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    if (outSite) *outSite = lastSite;
+    return lastTarget;
+}
+
 static bool ResolveNativeToastBridgeAOB() {
     auto* hMod = reinterpret_cast<uint8_t*>(GetModuleHandleA(nullptr));
     auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(hMod);
@@ -1004,6 +1341,7 @@ bool InstallHook(void*t,void*d,void**tr,const char*n,bool req){
         Log("[%s] Hook failed: %s enable=%s (%d) target=%p\n",
             req?"E":"W",n,MH_StatusToString(enableStatus),(int)enableStatus,t);
         return!req;}
+    RegisterRuntimeMinHook(RuntimeHookIdFromName(n), t, d);
     Log("[+] Hooked %s at %p\n",n,t);return true;}
 
 static void** FindVtableSlotForTarget(uintptr_t target) {
@@ -1044,6 +1382,80 @@ static bool PatchPointerSlot(void** slot, void* value) {
     return true;
 }
 
+bool SetRuntimeHookEnabled(RuntimeHookId id, bool enabled, char* outMessage, size_t outMessageSize) {
+    if (outMessage && outMessageSize > 0) {
+        outMessage[0] = '\0';
+    }
+    if (id == RuntimeHookId::Count) {
+        if (outMessage && outMessageSize > 0) {
+            strcpy_s(outMessage, outMessageSize, "Unknown hook");
+        }
+        return false;
+    }
+
+    auto& entry = g_runtimeHookControls[static_cast<size_t>(id)];
+    const char* name = RuntimeHookLabel(id);
+    if (!entry.installed.load()) {
+        if (outMessage && outMessageSize > 0) {
+            sprintf_s(outMessage, outMessageSize, "%s hook is not installed", name);
+        }
+        return false;
+    }
+    if (entry.enabled.load() == enabled) {
+        if (outMessage && outMessageSize > 0) {
+            sprintf_s(outMessage, outMessageSize, "%s already %s", name, enabled ? "enabled" : "disabled");
+        }
+        return true;
+    }
+
+    if (entry.pointerPatch.load()) {
+        void* target = enabled ? entry.detour : entry.original;
+        if (!PatchPointerSlot(entry.pointerSlot, target)) {
+            if (outMessage && outMessageSize > 0) {
+                sprintf_s(outMessage, outMessageSize, "%s pointer patch failed", name);
+            }
+            return false;
+        }
+        entry.enabled.store(enabled);
+        Log("[hook-toggle] %s %s (pointer patch)\n", name, enabled ? "enabled" : "disabled");
+        if (outMessage && outMessageSize > 0) {
+            sprintf_s(outMessage, outMessageSize, "%s %s", name, enabled ? "enabled" : "disabled");
+        }
+        return true;
+    }
+
+    if (!entry.target) {
+        if (outMessage && outMessageSize > 0) {
+            sprintf_s(outMessage, outMessageSize, "%s hook target is unavailable", name);
+        }
+        return false;
+    }
+
+    const MH_STATUS status = enabled ? MH_EnableHook(entry.target) : MH_DisableHook(entry.target);
+    if (status != MH_OK) {
+        if (outMessage && outMessageSize > 0) {
+            sprintf_s(outMessage, outMessageSize, "%s %s failed: %s",
+                name,
+                enabled ? "enable" : "disable",
+                MH_StatusToString(status));
+        }
+        Log("[W] hook-toggle failed: %s %s=%s (%d) target=%p\n",
+            name,
+            enabled ? "enable" : "disable",
+            MH_StatusToString(status),
+            static_cast<int>(status),
+            entry.target);
+        return false;
+    }
+
+    entry.enabled.store(enabled);
+    Log("[hook-toggle] %s %s\n", name, enabled ? "enabled" : "disabled");
+    if (outMessage && outMessageSize > 0) {
+        sprintf_s(outMessage, outMessageSize, "%s %s", name, enabled ? "enabled" : "disabled");
+    }
+    return true;
+}
+
 static bool InstallWeatherTickVtableHook(uintptr_t target) {
     if (g_pOriginalTick || g_pWeatherTickVtableSlot) return true;
     void** slot = FindVtableSlotForTarget(target);
@@ -1058,6 +1470,12 @@ static bool InstallWeatherTickVtableHook(uintptr_t target) {
         return false;
     }
     g_pWeatherTickVtableSlot = slot;
+    RegisterRuntimePointerHook(
+        RuntimeHookId::WeatherTick,
+        reinterpret_cast<void*>(target),
+        reinterpret_cast<void*>(&Hooked_WeatherTick),
+        slot,
+        reinterpret_cast<void*>(g_pOriginalTick));
     Log("[+] Vtable-hooked WeatherTick at %p\n", slot);
     return true;
 }
@@ -1065,12 +1483,17 @@ static bool InstallWeatherTickVtableHook(uintptr_t target) {
 void RestoreRuntimePatches() {
     if (g_pWeatherTickVtableSlot && g_pOriginalTick) {
         PatchPointerSlot(g_pWeatherTickVtableSlot, reinterpret_cast<void*>(g_pOriginalTick));
+        auto& weatherTick = g_runtimeHookControls[static_cast<size_t>(RuntimeHookId::WeatherTick)];
+        if (weatherTick.pointerPatch.load()) {
+            weatherTick.enabled.store(false);
+        }
     }
     g_pWeatherTickVtableSlot = nullptr;
 }
 
 bool RunAOBScan(){
     ClearRuntimeHealthState();
+    ResetRuntimeHookControls();
 
 #if defined(CW_WIND_ONLY)
     uintptr_t windOnlyAddrGetDust = ScanModule(
@@ -1305,6 +1728,7 @@ bool RunAOBScan(){
         Log("[W] WindPack not found (cloud speed pack override limited)\n");
     }
     uintptr_t addrSceneFrameUpdate = 0;
+    uintptr_t addrSceneAtmosphereFrame = 0;
     if (addrWindPack) {
         uintptr_t windPackXrefs[8] = {};
         size_t nWindPackXrefs = FindCallsitesTo(addrWindPack, windPackXrefs, 8);
@@ -1320,6 +1744,7 @@ bool RunAOBScan(){
                 if (!FindDirectCallToTargetInRange(candidate, 0x280, atmosphereFrame, nullptr)) continue;
                 if (LooksLikeSceneFrameUpdate(candidate)) {
                     addrSceneFrameUpdate = candidate;
+                    addrSceneAtmosphereFrame = atmosphereFrame;
                 }
             }
         }
@@ -1534,8 +1959,12 @@ bool RunAOBScan(){
 
     g_pActivateEffect = reinterpret_cast<ActivateEffect_fn>(addrActivate);
     g_pSetIntensity   = reinterpret_cast<SetIntensity_fn>  (addrSetIntensity);
+    g_pOrigAtmosFogBlend = reinterpret_cast<AtmosFogBlend_fn>(addrAtmosFogBlend);
+    if (g_pOrigAtmosFogBlend) {
+        Log("[AOB] AtmosFogBlend helper ready (callable, not directly hooked)\n");
+    }
 
-    if (kEnableWeatherTickHook) {
+    if (EnableWeatherTickHook()) {
         InstallHook((void*)tick,(void*)&Hooked_WeatherTick,
                     (void**)&g_pOriginalTick,"WeatherTick",false);
         if (!g_pOriginalTick) {
@@ -1549,7 +1978,7 @@ bool RunAOBScan(){
 #endif
     }
 
-    if (kEnableGameplayHooks || kEnableIntensityHooks) {
+    if (EnableIntensityHooks()) {
 #if !defined(CW_WIND_ONLY)
         InstallHook((void*)rain,(void*)&Hooked_GetRainIntensity,
                     (void**)&g_pOrigGetRainIntensity,"GetRainIntensity",false);
@@ -1561,36 +1990,40 @@ bool RunAOBScan(){
             InstallHook((void*)addrGetDust,(void*)&Hooked_GetDustIntensity,
                         (void**)&g_pOrigGetDustIntensity,"GetDustIntensity",false);
     }
-    if (kEnableGameplayHooks || kEnableWindHooks) {
-        if(kEnableProcessWindHook && addrProcessWind)
+    if (EnableWindHooks() || EnableSceneFrameHook()) {
+        if(EnableProcessWindHook() && addrProcessWind)
             InstallHook((void*)addrProcessWind,(void*)&Hooked_ProcessWindState,
                         (void**)&g_pOrigProcessWindState,"ProcessWindState",false);
-        if(kEnableWindPackHook && addrWindPack)
+        if(EnableWindPackHook() && addrWindPack)
             InstallHook((void*)addrWindPack,(void*)&Hooked_WindPack,
                         (void**)&g_pOrigWindPack,"WindPack",false);
-        if(kEnableFrameHooks && addrSceneFrameUpdate)
+        if(EnableSceneFrameHook() && addrSceneFrameUpdate)
             InstallHook((void*)addrSceneFrameUpdate,(void*)&Hooked_SceneFrameUpdate,
                         (void**)&g_pOrigSceneFrameUpdate,"SceneFrameUpdate",false);
     }
-    if (kEnableGameplayHooks || kEnableFrameHooks) {
+    if (EnableFogHooks()) {
         if(addrWeatherFrameUpdate)
             InstallHook((void*)addrWeatherFrameUpdate,(void*)&Hooked_WeatherFrameUpdate,
                         (void**)&g_pOrigWeatherFrameUpdate,"WeatherFrameUpdate",false);
-        if(addrAtmosFogBlend)
-            InstallHook((void*)addrAtmosFogBlend,(void*)&Hooked_AtmosFogBlend,
-                        (void**)&g_pOrigAtmosFogBlend,"AtmosFogBlend",false);
+    }
+    if (EnableRegionHook()) {
         if(addrMinimapRegionLabels)
             InstallHook((void*)addrMinimapRegionLabels,(void*)&Hooked_MinimapRegionLabels,
                         (void**)&g_pOrigMinimapRegionLabels,"MinimapRegionLabels",false);
     }
-    if (!kEnableGameplayHooks) {
-        Log("[W] Gameplay hooks isolation flags: intensity=%d wind=%d frame=%d\n",
-            kEnableIntensityHooks ? 1 : 0,
-            kEnableWindHooks ? 1 : 0,
-            kEnableFrameHooks ? 1 : 0);
-        Log("[W] Wind hook split: process=%d windpack=%d\n",
-            kEnableProcessWindHook ? 1 : 0,
-            kEnableWindPackHook ? 1 : 0);
+    if (!DevLaunchOptionIsFullProfile()) {
+#if defined(CW_DEV_BUILD)
+        Log("[dev] Hook isolation active: option=%s tick=%d intensity=%d wind=%d sceneFrame=%d fog=%d region=%d\n",
+            DevLaunchOptionName(g_devLaunchOption.load()),
+            EnableWeatherTickHook() ? 1 : 0,
+            EnableIntensityHooks() ? 1 : 0,
+            EnableWindHooks() ? 1 : 0,
+            EnableSceneFrameHook() ? 1 : 0,
+            EnableFogHooks() ? 1 : 0,
+            EnableRegionHook() ? 1 : 0);
+#else
+        Log("[W] Gameplay hooks isolation active\n");
+#endif
     }
     const bool weatherTickReady = tick && g_pOriginalTick;
     SetAobTargetHealth(AobTargetId::WeatherTick,
@@ -1675,13 +2108,12 @@ bool RunAOBScan(){
         !weatherFrameInstalled ? "fog frame hook unavailable"
             : "hook installed");
 
-    const bool fogInstalled = addrAtmosFogBlend && g_pOrigAtmosFogBlend;
+    const bool fogBlendCallable = addrAtmosFogBlend && g_pOrigAtmosFogBlend;
     SetAobTargetHealth(AobTargetId::AtmosFogBlend,
-        fogInstalled ? RuntimeHealthState::Ready
-            : (weatherFrameInstalled ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled),
+        fogBlendCallable ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
         addrAtmosFogBlend,
-        fogInstalled ? "direct hook installed"
-            : (weatherFrameInstalled ? "WeatherFrameUpdate fallback active" : "direct fog hook unavailable"));
+        fogBlendCallable ? "callable helper resolved; driven from WeatherFrameUpdate"
+            : "fog blend helper unavailable");
 
     SetAobTargetHealth(AobTargetId::EnvManagerPtr,
         envManagerValidated ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,

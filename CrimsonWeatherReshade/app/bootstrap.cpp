@@ -64,6 +64,17 @@ void PrimeMinHookRelayBlock() {
         : "[W] MinHook relay block reserve failed near game base\n");
 }
 
+bool TryInitializeSkyTextureOverride(HMODULE module) {
+    __try {
+        return InitializeSkyTextureOverride(module);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        const DWORD code = GetExceptionCode();
+        Log("[E] Sky texture override crashed during init: 0x%08lX; continuing without moon/milkyway texture switching\n", code);
+        GUI_SetStatus("Moon/Milky Way texture switching unavailable");
+        return false;
+    }
+}
+
 DWORD WINAPI StartThread(void*) {
     AddonStartupState expected = AddonStartupState::NotStarted;
     if (!g_addonStartupState.compare_exchange_strong(expected, AddonStartupState::Starting)) {
@@ -80,6 +91,18 @@ DWORD WINAPI StartThread(void*) {
     GUI_SetStatus("Starting Crimson Weather...");
     const bool autoStart = g_nextStartIsAuto.exchange(false);
     Log(autoStart ? "[i] Auto Start requested from config\n" : "[i] Start requested from ReShade overlay\n");
+
+#if defined(CW_DEV_BUILD)
+    const DevLaunchOption launchOption = g_devLaunchOption.load();
+    if (!DevLaunchOptionUsesRuntimeStartup(launchOption)) {
+        StartupSetStep(StartupStepId::Ready, 6, DevLaunchOptionDescription(launchOption));
+        g_initialized.store(true);
+        g_addonStartupState.store(AddonStartupState::Ready);
+        GUI_SetStatus(DevLaunchOptionDescription(launchOption));
+        Log("[dev] Runtime startup skipped for LaunchOption=%s\n", DevLaunchOptionName(launchOption));
+        return 0;
+    }
+#endif
 
     StartupSetStep(StartupStepId::MinHook, 2, "Initializing hook engine");
     const MH_STATUS mhStatus = MH_Initialize();
@@ -146,7 +169,31 @@ DWORD WINAPI BootstrapThread(void* param) {
     }
 
     OpenStartupLog(module);
+#if defined(CW_DEV_BUILD)
+    const DevLaunchOption launchOption = g_devLaunchOption.load();
+    const bool useTextureHook = DevLaunchOptionUsesTextureHook(launchOption);
+    const bool mayUseRuntimeHooks = DevLaunchOptionUsesRuntimeStartup(launchOption);
+    Log("[dev] Bootstrap LaunchOption=%s (%s)\n",
+        DevLaunchOptionName(launchOption),
+        DevLaunchOptionDescription(launchOption));
+    if (useTextureHook || mayUseRuntimeHooks) {
+        PrimeMinHookRelayBlock();
+    } else {
+        Log("[dev] MinHook relay prime skipped for LaunchOption=%s\n", DevLaunchOptionName(launchOption));
+    }
+    if (useTextureHook) {
+        Log("[i] Initializing sky texture override\n");
+        const bool skyTextureOk = TryInitializeSkyTextureOverride(module);
+        Log(skyTextureOk ? "[i] Sky texture override initialized\n" : "[W] Sky texture override disabled\n");
+    } else {
+        Log("[dev] Sky texture override skipped for LaunchOption=%s\n", DevLaunchOptionName(launchOption));
+    }
+#else
     PrimeMinHookRelayBlock();
+    Log("[i] Initializing sky texture override\n");
+    const bool skyTextureOk = TryInitializeSkyTextureOverride(module);
+    Log(skyTextureOk ? "[i] Sky texture override initialized\n" : "[W] Sky texture override disabled\n");
+#endif
     if (g_cfg.autoStart) {
         Log("[i] ReShade addon loaded; Auto Start enabled\n");
         StartupSetStep(StartupStepId::Idle, 0, "Auto Start enabled");
@@ -180,7 +227,6 @@ bool InitializeCrimsonWeather(HMODULE module) {
         MarkStartupFailed("ReShade addon registration failed");
         return false;
     }
-    InitializeSkyTextureOverride(module);
     g_addonStartupState.store(AddonStartupState::NotStarted);
     StartupSetStep(StartupStepId::Idle, 0, "Click Start to initialize");
     GUI_SetStatus("Click Start to initialize");
@@ -203,6 +249,16 @@ void ShutdownCrimsonWeather() {
         if (g_minHookInitialized.exchange(false)) {
             MH_Uninitialize();
         }
+        if (g_logFile) {
+            fclose(g_logFile);
+            g_logFile = nullptr;
+        }
+#if defined(CW_DEV_BUILD)
+        if (g_devLaunchLogFile) {
+            fclose(g_devLaunchLogFile);
+            g_devLaunchLogFile = nullptr;
+        }
+#endif
         return;
     }
 
@@ -218,4 +274,10 @@ void ShutdownCrimsonWeather() {
         fclose(g_logFile);
         g_logFile = nullptr;
     }
+#if defined(CW_DEV_BUILD)
+    if (g_devLaunchLogFile) {
+        fclose(g_devLaunchLogFile);
+        g_devLaunchLogFile = nullptr;
+    }
+#endif
 }

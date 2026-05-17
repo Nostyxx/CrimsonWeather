@@ -2,7 +2,10 @@
 
 #include <Windows.h>
 
+struct ID3D12Device;
+
 bool InitializeSkyTextureOverride(HMODULE module);
+void SkyTextureOnInitDevice(ID3D12Device* device);
 void ShutdownSkyTextureOverride();
 void MoonTextureReload();
 const char* MoonTextureStatus();

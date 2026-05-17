@@ -8,6 +8,7 @@
 #include <imgui.h>
 #include <reshade.hpp>
 
+#include <d3d12.h>
 #include <cmath>
 #include <cstdio>
 #include <cctype>
@@ -69,6 +70,16 @@ int HourToMinuteOfDay(float hour) {
     return minutes;
 }
 
+int HourToMinuteOfDayFloor(float hour) {
+    const float normalized = NormalizeHour24(hour);
+    int minutes = static_cast<int>(std::floor(normalized * 60.0f + 0.0001f));
+    minutes %= 24 * 60;
+    if (minutes < 0) {
+        minutes += 24 * 60;
+    }
+    return minutes;
+}
+
 float MinuteOfDayToHour(int minuteOfDay) {
     minuteOfDay %= 24 * 60;
     if (minuteOfDay < 0) {
@@ -77,13 +88,57 @@ float MinuteOfDayToHour(int minuteOfDay) {
     return static_cast<float>(minuteOfDay) / 60.0f;
 }
 
-void FormatGameClockFromHour(float hour, char* out, size_t outSize) {
-    const int minuteOfDay = HourToMinuteOfDay(hour);
+void FormatGameClockFromMinute(int minuteOfDay, char* out, size_t outSize) {
+    minuteOfDay %= 24 * 60;
+    if (minuteOfDay < 0) {
+        minuteOfDay += 24 * 60;
+    }
     const int rawHour = minuteOfDay / 60;
     const int minute = minuteOfDay % 60;
     const int displayHour = rawHour <= 12 ? rawHour : rawHour - 12;
     const char* meridiem = rawHour > 11 ? "PM" : "AM";
     sprintf_s(out, outSize, "%d:%02d %s", displayHour, minute, meridiem);
+}
+
+void FormatGameClockFromHour(float hour, char* out, size_t outSize) {
+    FormatGameClockFromMinute(HourToMinuteOfDay(hour), out, outSize);
+}
+
+float ClampProgressVisualTimeIntervalMs(float value) {
+    if (!std::isfinite(value)) {
+        return 0.0f;
+    }
+    return min(5000.0f, max(0.0f, value));
+}
+
+void FormatProgressVisualTimeInterval(float value, char* out, size_t outSize) {
+    if (!out || outSize == 0) {
+        return;
+    }
+    const float clamped = ClampProgressVisualTimeIntervalMs(value);
+    if (clamped <= 0.5f) {
+        strcpy_s(out, outSize, "Every frame");
+        return;
+    }
+    sprintf_s(out, outSize, "%.0f ms", clamped);
+}
+
+struct SliderRange {
+    float lo;
+    float hi;
+};
+
+SliderRange ActiveSliderRange(float normalLo, float normalHi, float extendedLo, float extendedHi) {
+    return g_extendedSliderRange.load()
+        ? SliderRange{ extendedLo, extendedHi }
+        : SliderRange{ normalLo, normalHi };
+}
+
+float ClampSliderValue(float value, const SliderRange& range) {
+    if (!std::isfinite(value)) {
+        return range.lo;
+    }
+    return min(range.hi, max(range.lo, value));
 }
 
 bool TryParseClockText(const char* text, int* outMinuteOfDay) {
@@ -175,6 +230,22 @@ void DrawFeatureUnavailable(RuntimeFeatureId feature) {
         ImGui::TextDisabled("%s", note);
     }
 }
+
+bool HookReady(RuntimeHookId hook) {
+    return RuntimeHookEnabled(hook);
+}
+
+void DrawHookUnavailable(RuntimeHookId hook) {
+    ImGui::TextDisabled("Required hook disabled: %s", RuntimeHookLabel(hook));
+}
+
+bool WeatherTickReady() { return HookReady(RuntimeHookId::WeatherTick); }
+bool RainHookReady() { return HookReady(RuntimeHookId::GetRainIntensity); }
+bool SnowHookReady() { return HookReady(RuntimeHookId::GetSnowIntensity); }
+bool DustHookReady() { return HookReady(RuntimeHookId::GetDustIntensity); }
+bool WindPackReady() { return HookReady(RuntimeHookId::WindPack); }
+bool SceneFrameReady() { return HookReady(RuntimeHookId::SceneFrameUpdate); }
+bool WeatherFrameReady() { return HookReady(RuntimeHookId::WeatherFrameUpdate); }
 
 bool DrawResetButton(const char* id) {
     ImGui::SameLine();
@@ -656,6 +727,8 @@ void DrawStatusRowText(
     if (ImGui::IsItemHovered()) {
         if (strcmp(value, "NATIVE") == 0) {
             ImGui::SetTooltip("Crimson Weather is not overriding this; the game controls it natively.");
+        } else if (strcmp(value, "HOOK DISABLED") == 0) {
+            ImGui::SetTooltip("The required runtime hook is disabled in Hook Controls.");
         } else if (strcmp(value, "DISABLED") == 0) {
             ImGui::SetTooltip("This Crimson Weather override is disabled.");
         } else if (activeTooltip && activeTooltip[0]) {
@@ -663,8 +736,12 @@ void DrawStatusRowText(
         }
     }
     ImGui::TableNextColumn();
-    const std::string source = PresetStatusSourceLabel(snapshot, regionOverride);
-    ImGui::TextUnformatted(source.c_str());
+    if (strcmp(value, "HOOK DISABLED") == 0) {
+        ImGui::TextDisabled("Hook Controls");
+    } else {
+        const std::string source = PresetStatusSourceLabel(snapshot, regionOverride);
+        ImGui::TextUnformatted(source.c_str());
+    }
 }
 
 void DrawStatusRowFloat(
@@ -730,6 +807,15 @@ void DrawStatusRowBlocked(
     DrawStatusRowText(snapshot, name, "BLOCKED", regionOverride, tooltip);
 }
 
+void DrawStatusRowHookDisabled(
+    const WeatherPresetStatusSnapshot& snapshot,
+    const char* name,
+    RuntimeHookId hook) {
+    char tooltip[160] = {};
+    sprintf_s(tooltip, sizeof(tooltip), "Required hook disabled: %s.", RuntimeHookLabel(hook));
+    DrawStatusRowText(snapshot, name, "HOOK DISABLED", false, tooltip);
+}
+
 void DrawStatusRowEnabledFloat(
     const WeatherPresetStatusSnapshot& snapshot,
     const char* name,
@@ -751,6 +837,69 @@ void DrawStatusRowEnabledFloat(
     DrawStatusRowText(snapshot, name, valueText, regionOverride, tooltipText);
 }
 
+void DrawHookControlsTable() {
+    RuntimeHookStatusEntry hooks[static_cast<size_t>(RuntimeHookId::Count)] = {};
+    const size_t hookCount = GetRuntimeHookStatusEntries(hooks, _countof(hooks));
+
+    ImGui::SeparatorText("Hook Controls");
+    if (ImGui::BeginTable(
+            "HookControlsTable",
+            5,
+            ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Hook");
+        ImGui::TableSetupColumn("Group");
+        ImGui::TableSetupColumn("Target");
+        ImGui::TableSetupColumn("Status");
+        ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 82.0f);
+        ImGui::TableHeadersRow();
+
+        for (size_t i = 0; i < hookCount; ++i) {
+            const RuntimeHookStatusEntry& hook = hooks[i];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(hook.name);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(hook.kind);
+            ImGui::TableNextColumn();
+            if (hook.target) {
+                ImGui::Text("0x%p", hook.target);
+            } else {
+                ImGui::TextDisabled("Not found");
+            }
+            ImGui::TableNextColumn();
+            if (!hook.installed) {
+                ImGui::TextDisabled("Not installed");
+            } else if (hook.enabled) {
+                ImGui::TextColored(ImVec4(0.40f, 0.88f, 0.48f, 1.0f), "Enabled");
+            } else {
+                ImGui::TextColored(ImVec4(1.00f, 0.68f, 0.25f, 1.0f), "Disabled");
+            }
+            ImGui::TableNextColumn();
+            if (!hook.installed) {
+                ImGui::BeginDisabled();
+            }
+            ImGui::PushID(static_cast<int>(i));
+            const char* label = hook.enabled ? "Disable" : "Enable";
+            if (ImGui::Button(label, ImVec2(74.0f, 0.0f))) {
+                char message[128] = {};
+                if (SetRuntimeHookEnabled(hook.id, !hook.enabled, message, sizeof(message))) {
+                    GUI_SetStatus(message);
+                } else if (message[0]) {
+                    GUI_SetStatus(message);
+                } else {
+                    GUI_SetStatus("Hook control failed");
+                }
+            }
+            ImGui::PopID();
+            if (!hook.installed) {
+                ImGui::EndDisabled();
+            }
+        }
+
+        ImGui::EndTable();
+    }
+}
+
 void DrawStatusTab() {
     if (DrawDisabledTabBody()) {
         return;
@@ -760,6 +909,15 @@ void DrawStatusTab() {
     ImGui::Text("Active Preset: %s", Preset_GetSelectedDisplayName());
     ImGui::Text("Player Region: %s", Preset_GetRegionDisplayName(snapshot.playerRegion));
     ImGui::Text("Editing: %s", Preset_GetRegionDisplayName(snapshot.editRegion));
+    bool extendedSliderRange = g_extendedSliderRange.load();
+    if (ImGui::Checkbox("Extended Slider Range", &extendedSliderRange)) {
+        g_extendedSliderRange.store(extendedSliderRange);
+        SaveGeneralConfig();
+        GUI_SetStatus(extendedSliderRange ? "Extended Slider Range enabled" : "Extended Slider Range disabled");
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Allows sliders to go beyond recommended limits. Extreme values may cause visual glitches or rendering issues.");
+    }
     if (snapshot.blendFromRegion >= kPresetRegionGlobal &&
         snapshot.blendFromRegion < kPresetRegionCount &&
         snapshot.blendToRegion == snapshot.playerRegion &&
@@ -771,6 +929,9 @@ void DrawStatusTab() {
     }
 
     ImGui::Spacing();
+    DrawHookControlsTable();
+    ImGui::Spacing();
+    ImGui::SeparatorText("Preset Status");
     if (ImGui::BeginTable(
             "PresetStatusTable",
             3,
@@ -780,38 +941,97 @@ void DrawStatusTab() {
         ImGui::TableSetupColumn("Source");
         ImGui::TableHeadersRow();
 
-        DrawStatusRowBool(snapshot, "Force Clear Sky", snapshot.effective.forceClearSky, snapshot.regionSource.forceClearSky, "Crimson Weather currently forces clear skies.");
+        DrawStatusRowText(
+            snapshot,
+            "Extended Slider Range",
+            g_extendedSliderRange.load() ? "On" : "Off",
+            false,
+            "Global user preference. Allows eligible sliders to use wider expert ranges.");
+        if (WeatherTickReady()) {
+            DrawStatusRowBool(snapshot, "Force Clear Sky", snapshot.effective.forceClearSky, snapshot.regionSource.forceClearSky, "Crimson Weather currently forces clear skies.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "Force Clear Sky", RuntimeHookId::WeatherTick);
+        }
         if (snapshot.effective.forceClearSky) {
             DrawStatusRowBlocked(snapshot, "Rain", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so rain is not applied.");
             DrawStatusRowBlocked(snapshot, "Thunder", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so thunder is not applied.");
             DrawStatusRowBlocked(snapshot, "Dust", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so dust is not applied.");
             DrawStatusRowBlocked(snapshot, "Snow", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so snow is not applied.");
         } else {
-            if (snapshot.effective.noRain) {
+            if (!RainHookReady()) {
+                DrawStatusRowHookDisabled(snapshot, "Rain", RuntimeHookId::GetRainIntensity);
+            } else if (snapshot.effective.noRain) {
                 DrawStatusRowBlocked(snapshot, "Rain", snapshot.regionSource.noRain, "No Rain is active, so Crimson Weather forces rain to zero.");
             } else {
                 DrawStatusRowNativeFloat(snapshot, "Rain", snapshot.effective.rain, 0.0f, "%.3f", snapshot.regionSource.rain, "Crimson Weather currently forces rain to %s.");
             }
-            DrawStatusRowNativeFloat(snapshot, "Thunder", snapshot.effective.thunder, 0.0f, "%.3f", snapshot.regionSource.thunder, "Crimson Weather currently drives visual lightning and thunder SFX frequency at %s.");
-            if (snapshot.effective.noDust) {
+            if (WeatherTickReady()) {
+                DrawStatusRowNativeFloat(snapshot, "Thunder", snapshot.effective.thunder, 0.0f, "%.3f", snapshot.regionSource.thunder, "Crimson Weather currently drives visual lightning and thunder SFX frequency at %s.");
+            } else {
+                DrawStatusRowHookDisabled(snapshot, "Thunder", RuntimeHookId::WeatherTick);
+            }
+            if (!DustHookReady()) {
+                DrawStatusRowHookDisabled(snapshot, "Dust", RuntimeHookId::GetDustIntensity);
+            } else if (snapshot.effective.noDust) {
                 DrawStatusRowBlocked(snapshot, "Dust", snapshot.regionSource.noDust, "No Dust is active, so Crimson Weather forces dust to zero.");
             } else {
                 DrawStatusRowNativeFloat(snapshot, "Dust", snapshot.effective.dust, 0.0f, "%.3f", snapshot.regionSource.dust, "Crimson Weather currently forces dust to %s.");
             }
-            if (snapshot.effective.noSnow) {
+            if (!SnowHookReady()) {
+                DrawStatusRowHookDisabled(snapshot, "Snow", RuntimeHookId::GetSnowIntensity);
+            } else if (snapshot.effective.noSnow) {
                 DrawStatusRowBlocked(snapshot, "Snow", snapshot.regionSource.noSnow, "No Snow is active, so Crimson Weather forces snow to zero.");
             } else {
                 DrawStatusRowNativeFloat(snapshot, "Snow", snapshot.effective.snow, 0.0f, "%.3f", snapshot.regionSource.snow, "Crimson Weather currently forces snow to %s.");
             }
         }
-        DrawStatusRowBool(snapshot, "No Rain", snapshot.effective.noRain, snapshot.regionSource.noRain, "Crimson Weather currently disables rain.");
-        DrawStatusRowBool(snapshot, "No Dust", snapshot.effective.noDust, snapshot.regionSource.noDust, "Crimson Weather currently disables dust.");
-        DrawStatusRowBool(snapshot, "No Snow", snapshot.effective.noSnow, snapshot.regionSource.noSnow, "Crimson Weather currently disables snow.");
+        if (RainHookReady()) {
+            DrawStatusRowBool(snapshot, "No Rain", snapshot.effective.noRain, snapshot.regionSource.noRain, "Crimson Weather currently disables rain.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "No Rain", RuntimeHookId::GetRainIntensity);
+        }
+        if (DustHookReady()) {
+            DrawStatusRowBool(snapshot, "No Dust", snapshot.effective.noDust, snapshot.regionSource.noDust, "Crimson Weather currently disables dust.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "No Dust", RuntimeHookId::GetDustIntensity);
+        }
+        if (SnowHookReady()) {
+            DrawStatusRowBool(snapshot, "No Snow", snapshot.effective.noSnow, snapshot.regionSource.noSnow, "Crimson Weather currently disables snow.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "No Snow", RuntimeHookId::GetSnowIntensity);
+        }
 
-        DrawStatusRowBool(snapshot, "Visual Time Override", snapshot.effective.visualTimeOverride, snapshot.regionSource.time, "Crimson Weather currently freezes visual time.");
-        DrawStatusRowActiveFloat(snapshot, "Time Hour", snapshot.effective.visualTimeOverride, NormalizeHour24(snapshot.effective.timeHour), "%.2f", snapshot.regionSource.time, "Crimson Weather currently forces time to %s.");
+        if (WeatherTickReady()) {
+            DrawStatusRowBool(snapshot, "Visual Time Override", snapshot.effective.visualTimeOverride, snapshot.regionSource.time, "Crimson Weather currently freezes visual time.");
+            DrawStatusRowBool(snapshot, "Progress Visual Time", snapshot.effective.visualTimeOverride && snapshot.effective.progressVisualTime, snapshot.regionSource.time, "Crimson Weather currently advances the visual time override.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "Visual Time Override", RuntimeHookId::WeatherTick);
+            DrawStatusRowHookDisabled(snapshot, "Progress Visual Time", RuntimeHookId::WeatherTick);
+        }
+        if (!WeatherTickReady()) {
+            DrawStatusRowHookDisabled(snapshot, "Advance Interval", RuntimeHookId::WeatherTick);
+        } else if (snapshot.effective.visualTimeOverride && snapshot.effective.progressVisualTime) {
+            char intervalText[32] = {};
+            FormatProgressVisualTimeInterval(snapshot.effective.progressVisualTimeIntervalMs, intervalText, sizeof(intervalText));
+            char tooltipText[160] = {};
+            sprintf_s(tooltipText, sizeof(tooltipText), "Crimson Weather currently advances the visual time override at %s.", intervalText);
+            DrawStatusRowText(snapshot, "Advance Interval", intervalText, snapshot.regionSource.time, tooltipText);
+        } else {
+            DrawStatusRowText(snapshot, "Advance Interval", "DISABLED", snapshot.regionSource.time, "This only applies when Progress Visual Time is enabled.");
+        }
+        if (WeatherTickReady()) {
+            DrawStatusRowActiveFloat(snapshot, "Time Hour", snapshot.effective.visualTimeOverride, NormalizeHour24(snapshot.effective.timeHour), "%.2f", snapshot.regionSource.time, "Crimson Weather currently forces time to %s.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "Time Hour", RuntimeHookId::WeatherTick);
+        }
 
-        if (snapshot.effective.forceClearSky) {
+        if (!WindPackReady()) {
+            DrawStatusRowHookDisabled(snapshot, "Cloud Amount", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Cloud Height", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Cloud Density", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Mid Clouds", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "High Clouds", RuntimeHookId::WindPack);
+        } else if (snapshot.effective.forceClearSky) {
             DrawStatusRowBlocked(snapshot, "Cloud Amount", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud amount overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "Cloud Height", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud height overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "Cloud Density", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud density overrides are not applied.");
@@ -825,7 +1045,11 @@ void DrawStatusTab() {
             DrawStatusRowEnabledFloat(snapshot, "High Clouds", snapshot.effective.highCloudsEnabled, snapshot.effective.highClouds, "x%.2f", snapshot.regionSource.highClouds, "Crimson Weather currently multiplies high clouds by %s.");
         }
 
-        if (snapshot.effective.forceClearSky) {
+        if (!WindPackReady()) {
+            DrawStatusRowHookDisabled(snapshot, "2C", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "2D", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Cloud Variation", RuntimeHookId::WindPack);
+        } else if (snapshot.effective.forceClearSky) {
             DrawStatusRowBlocked(snapshot, "2C", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so 2C cloud overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "2D", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so 2D cloud overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "Cloud Variation", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud variation overrides are not applied.");
@@ -834,17 +1058,48 @@ void DrawStatusTab() {
             DrawStatusRowEnabledFloat(snapshot, "2D", snapshot.effective.exp2DEnabled, snapshot.effective.exp2D, "x%.2f", snapshot.regionSource.exp2D, "Crimson Weather currently multiplies 2D by %s.");
             DrawStatusRowEnabledFloat(snapshot, "Cloud Variation", snapshot.effective.cloudVariationEnabled, snapshot.effective.cloudVariation, "x%.2f", snapshot.regionSource.cloudVariation, "Crimson Weather currently multiplies cloud variation by %s.");
         }
-        DrawStatusRowEnabledFloat(snapshot, "Puddle Scale", snapshot.effective.puddleScaleEnabled, snapshot.effective.puddleScale, "%.3f", snapshot.regionSource.puddleScale, "Crimson Weather currently sets puddle scale to %s.");
+        if (WeatherTickReady()) {
+            DrawStatusRowEnabledFloat(snapshot, "Puddle Scale", snapshot.effective.puddleScaleEnabled, snapshot.effective.puddleScale, "%.3f", snapshot.regionSource.puddleScale, "Crimson Weather currently sets puddle scale to %s.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "Puddle Scale", RuntimeHookId::WeatherTick);
+        }
 
-        DrawStatusRowEnabledFloat(snapshot, "Night Sky Tilt", snapshot.effective.nightSkyRotationEnabled, snapshot.effective.nightSkyRotation, "%.2f", snapshot.regionSource.nightSkyRotation, "Crimson Weather currently sets the native night sky tilt to %s.");
-        DrawStatusRowEnabledFloat(snapshot, "Night Sky Phase", snapshot.effective.nightSkyYawEnabled, snapshot.effective.nightSkyYaw, "%.2f", snapshot.regionSource.nightSkyYaw, "Crimson Weather currently sets the native night sky phase to %s.");
-        DrawStatusRowEnabledFloat(snapshot, "Sun Size", snapshot.effective.sunSizeEnabled, snapshot.effective.sunSize, "%.3f", snapshot.regionSource.sunSize, "Crimson Weather currently sets sun size to %s.");
-        DrawStatusRowEnabledFloat(snapshot, "Sun Yaw Lock", snapshot.effective.sunYawEnabled, snapshot.effective.sunYaw, "%.2f", snapshot.regionSource.sunYaw, "Crimson Weather currently locks sun yaw to %s, overriding natural sun movement.");
-        DrawStatusRowEnabledFloat(snapshot, "Sun Pitch Lock", snapshot.effective.sunPitchEnabled, snapshot.effective.sunPitch, "%.2f", snapshot.regionSource.sunPitch, "Crimson Weather currently locks sun pitch to %s, overriding natural sun movement.");
-        DrawStatusRowEnabledFloat(snapshot, "Moon Size", snapshot.effective.moonSizeEnabled, snapshot.effective.moonSize, "%.3f", snapshot.regionSource.moonSize, "Crimson Weather currently sets moon size to %s.");
-        DrawStatusRowEnabledFloat(snapshot, "Moon Yaw Lock", snapshot.effective.moonYawEnabled, snapshot.effective.moonYaw, "%.2f", snapshot.regionSource.moonYaw, "Crimson Weather currently locks moon yaw to %s, overriding natural moon movement.");
-        DrawStatusRowEnabledFloat(snapshot, "Moon Pitch Lock", snapshot.effective.moonPitchEnabled, snapshot.effective.moonPitch, "%.2f", snapshot.regionSource.moonPitch, "Crimson Weather currently locks moon pitch to %s, overriding natural moon movement.");
-        DrawStatusRowEnabledFloat(snapshot, "Moon Rotation", snapshot.effective.moonRollEnabled, snapshot.effective.moonRoll, "%.2f", snapshot.regionSource.moonRoll, "Crimson Weather currently rotates the moon disc to %s.");
+        if (WindPackReady()) {
+            DrawStatusRowEnabledFloat(snapshot, "Night Sky Tilt", snapshot.effective.nightSkyRotationEnabled, snapshot.effective.nightSkyRotation, "%.2f", snapshot.regionSource.nightSkyRotation, "Crimson Weather currently sets the native night sky tilt to %s.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "Night Sky Tilt", RuntimeHookId::WindPack);
+        }
+        if (SceneFrameReady()) {
+            DrawStatusRowEnabledFloat(snapshot, "Night Sky Phase", snapshot.effective.nightSkyYawEnabled, snapshot.effective.nightSkyYaw, "%.2f", snapshot.regionSource.nightSkyYaw, "Crimson Weather currently sets the native night sky phase to %s.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "Night Sky Phase", RuntimeHookId::SceneFrameUpdate);
+        }
+        if (WindPackReady()) {
+            DrawStatusRowEnabledFloat(snapshot, "Sun Size", snapshot.effective.sunSizeEnabled, snapshot.effective.sunSize, "%.3f", snapshot.regionSource.sunSize, "Crimson Weather currently sets sun size to %s.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "Sun Size", RuntimeHookId::WindPack);
+        }
+        if (SceneFrameReady()) {
+            DrawStatusRowEnabledFloat(snapshot, "Sun Yaw Lock", snapshot.effective.sunYawEnabled, snapshot.effective.sunYaw, "%.2f", snapshot.regionSource.sunYaw, "Crimson Weather currently locks sun yaw to %s, overriding natural sun movement.");
+            DrawStatusRowEnabledFloat(snapshot, "Sun Pitch Lock", snapshot.effective.sunPitchEnabled, snapshot.effective.sunPitch, "%.2f", snapshot.regionSource.sunPitch, "Crimson Weather currently locks sun pitch to %s, overriding natural sun movement.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "Sun Yaw Lock", RuntimeHookId::SceneFrameUpdate);
+            DrawStatusRowHookDisabled(snapshot, "Sun Pitch Lock", RuntimeHookId::SceneFrameUpdate);
+        }
+        if (WindPackReady()) {
+            DrawStatusRowEnabledFloat(snapshot, "Moon Size", snapshot.effective.moonSizeEnabled, snapshot.effective.moonSize, "%.3f", snapshot.regionSource.moonSize, "Crimson Weather currently sets moon size to %s.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "Moon Size", RuntimeHookId::WindPack);
+        }
+        if (SceneFrameReady()) {
+            DrawStatusRowEnabledFloat(snapshot, "Moon Yaw Lock", snapshot.effective.moonYawEnabled, snapshot.effective.moonYaw, "%.2f", snapshot.regionSource.moonYaw, "Crimson Weather currently locks moon yaw to %s, overriding natural moon movement.");
+            DrawStatusRowEnabledFloat(snapshot, "Moon Pitch Lock", snapshot.effective.moonPitchEnabled, snapshot.effective.moonPitch, "%.2f", snapshot.regionSource.moonPitch, "Crimson Weather currently locks moon pitch to %s, overriding natural moon movement.");
+            DrawStatusRowEnabledFloat(snapshot, "Moon Rotation", snapshot.effective.moonRollEnabled, snapshot.effective.moonRoll, "%.2f", snapshot.regionSource.moonRoll, "Crimson Weather currently rotates the moon disc to %s.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "Moon Yaw Lock", RuntimeHookId::SceneFrameUpdate);
+            DrawStatusRowHookDisabled(snapshot, "Moon Pitch Lock", RuntimeHookId::SceneFrameUpdate);
+            DrawStatusRowHookDisabled(snapshot, "Moon Rotation", RuntimeHookId::SceneFrameUpdate);
+        }
         DrawStatusRowText(
             snapshot,
             "Moon Texture",
@@ -866,23 +1121,37 @@ void DrawStatusTab() {
         const char* nativeFogForceTooltip = snapshot.effective.forceClearSky
             ? "Force Clear Sky is active, so Crimson Weather forces native fog to zero."
             : "No Fog is active, so Crimson Weather forces native fog to zero.";
-        if (fogForcedZero) {
+        if (!WeatherFrameReady()) {
+            DrawStatusRowHookDisabled(snapshot, "Fog [LEGACY]", RuntimeHookId::WeatherFrameUpdate);
+        } else if (fogForcedZero) {
             DrawStatusRowBlocked(snapshot, "Fog [LEGACY]", fogForceSource, fogForceTooltip);
         } else {
             DrawStatusRowEnabledFloat(snapshot, "Fog [LEGACY]", snapshot.effective.fogEnabled, snapshot.effective.fogPercent, "%.1f%%", snapshot.regionSource.fog, "Crimson Weather currently forces legacy fog to %s.");
         }
-        if (fogForcedZero) {
+        if (!WindPackReady()) {
+            DrawStatusRowHookDisabled(snapshot, "Fog", RuntimeHookId::WindPack);
+        } else if (fogForcedZero) {
             DrawStatusRowBlocked(snapshot, "Fog", fogForceSource, nativeFogForceTooltip);
         } else {
             DrawStatusRowEnabledFloat(snapshot, "Fog", snapshot.effective.nativeFogEnabled, snapshot.effective.nativeFog, "%.2f", snapshot.regionSource.nativeFog, "Crimson Weather currently scales native fog by %s.");
         }
-        DrawStatusRowBool(snapshot, "No Fog", snapshot.effective.noFog, snapshot.regionSource.noFog, "Crimson Weather currently disables fog.");
-        if (snapshot.effective.noWind) {
+        if (WeatherFrameReady() || WindPackReady()) {
+            DrawStatusRowBool(snapshot, "No Fog", snapshot.effective.noFog, snapshot.regionSource.noFog, "Crimson Weather currently disables fog.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "No Fog", RuntimeHookId::WeatherFrameUpdate);
+        }
+        if (!WindPackReady()) {
+            DrawStatusRowHookDisabled(snapshot, "Wind", RuntimeHookId::WindPack);
+        } else if (snapshot.effective.noWind) {
             DrawStatusRowBlocked(snapshot, "Wind", snapshot.regionSource.noWind, "No Wind is active, so the wind multiplier is not applied.");
         } else {
             DrawStatusRowNativeFloat(snapshot, "Wind", snapshot.effective.wind, 1.0f, "x%.2f", snapshot.regionSource.wind, "Crimson Weather currently multiplies wind by %s.");
         }
-        DrawStatusRowBool(snapshot, "No Wind", snapshot.effective.noWind, snapshot.regionSource.noWind, "Crimson Weather currently disables wind.");
+        if (WeatherTickReady()) {
+            DrawStatusRowBool(snapshot, "No Wind", snapshot.effective.noWind, snapshot.regionSource.noWind, "Crimson Weather currently disables wind.");
+        } else {
+            DrawStatusRowHookDisabled(snapshot, "No Wind", RuntimeHookId::WeatherTick);
+        }
 
         ImGui::EndTable();
     }
@@ -1007,7 +1276,8 @@ void DrawGeneralTab() {
 
     ImGui::SeparatorText("Weather");
     bool forceClear = detachedEdit ? editData.forceClearSky : g_forceClear.load();
-    if (!RuntimeFeatureAvailable(RuntimeFeatureId::ForceClear)) {
+    const bool forceClearEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::ForceClear) && WeatherTickReady();
+    if (!forceClearEnabled) {
         ImGui::BeginDisabled();
     }
     bool forceClearOverrideChanged = false;
@@ -1027,9 +1297,13 @@ void DrawGeneralTab() {
         }
         GUI_SetStatus(forceClear ? "Force clear active" : "Force clear off");
     }
-    if (!RuntimeFeatureAvailable(RuntimeFeatureId::ForceClear)) {
+    if (!forceClearEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::ForceClear);
+        if (!RuntimeFeatureAvailable(RuntimeFeatureId::ForceClear)) {
+            DrawFeatureUnavailable(RuntimeFeatureId::ForceClear);
+        } else {
+            DrawHookUnavailable(RuntimeHookId::WeatherTick);
+        }
     }
 
     bool noRain = detachedEdit ? editData.noRain : g_noRain.load();
@@ -1037,14 +1311,15 @@ void DrawGeneralTab() {
     bool noSnow = detachedEdit ? editData.noSnow : g_noSnow.load();
 
     float rain = detachedEdit ? editData.rain : (g_oRain.active.load() ? g_oRain.value.load() : 0.0f);
+    const SliderRange rainRange = ActiveSliderRange(0.0f, 1.0f, 0.0f, 5.0f);
     const bool rainNative = rain <= 0.0001f;
-    const bool rainEnabled = !forceClear && !noRain && RuntimeFeatureAvailable(RuntimeFeatureId::Rain);
+    const bool rainEnabled = !forceClear && !noRain && RuntimeFeatureAvailable(RuntimeFeatureId::Rain) && RainHookReady();
     if (!rainEnabled) {
         ImGui::BeginDisabled();
     }
     bool rainChanged = false;
     bool rainOverrideChanged = false;
-    if (DrawSliderFloatRow("Rain", "rain", &rain, 0.0f, 1.0f, "%.3f", &rainChanged, regionScoped ? &overrideMask.rain : nullptr, &rainOverrideChanged, rainNative)) {
+    if (DrawSliderFloatRow("Rain", "rain", &rain, rainRange.lo, rainRange.hi, "%.3f", &rainChanged, regionScoped ? &overrideMask.rain : nullptr, &rainOverrideChanged, rainNative)) {
         if (detachedEdit) {
             editData.rain = 0.0f;
             if (regionScoped) overrideMask.rain = true;
@@ -1056,29 +1331,35 @@ void DrawGeneralTab() {
         editChanged = true;
     } else if (rainEnabled && rainChanged) {
         if (detachedEdit) {
-            editData.rain = min(1.0f, max(0.0f, rain));
+            editData.rain = ClampSliderValue(rain, rainRange);
             if (regionScoped) overrideMask.rain = true;
             editChanged = true;
         } else {
+            rain = ClampSliderValue(rain, rainRange);
             rain > 0.0001f ? g_oRain.set(rain) : g_oRain.clear();
         }
     }
     if (!rainEnabled) {
         ImGui::EndDisabled();
         if (!forceClear && !noRain) {
-            DrawFeatureUnavailable(RuntimeFeatureId::Rain);
+            if (!RuntimeFeatureAvailable(RuntimeFeatureId::Rain)) {
+                DrawFeatureUnavailable(RuntimeFeatureId::Rain);
+            } else {
+                DrawHookUnavailable(RuntimeHookId::GetRainIntensity);
+            }
         }
     }
 
     float thunder = detachedEdit ? editData.thunder : (g_oThunder.active.load() ? g_oThunder.value.load() : 0.0f);
+    const SliderRange thunderRange = ActiveSliderRange(0.0f, 1.0f, 0.0f, 5.0f);
     const bool thunderNative = thunder <= 0.0001f;
-    const bool thunderEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::ThunderControls);
+    const bool thunderEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::ThunderControls) && WeatherTickReady();
     if (!thunderEnabled) {
         ImGui::BeginDisabled();
     }
     bool thunderChanged = false;
     bool thunderOverrideChanged = false;
-    if (DrawSliderFloatRow("Thunder", "thunder", &thunder, 0.0f, 1.0f, "%.3f", &thunderChanged, regionScoped ? &overrideMask.thunder : nullptr, &thunderOverrideChanged, thunderNative)) {
+    if (DrawSliderFloatRow("Thunder", "thunder", &thunder, thunderRange.lo, thunderRange.hi, "%.3f", &thunderChanged, regionScoped ? &overrideMask.thunder : nullptr, &thunderOverrideChanged, thunderNative)) {
         if (detachedEdit) {
             editData.thunder = 0.0f;
             if (regionScoped) overrideMask.thunder = true;
@@ -1090,27 +1371,33 @@ void DrawGeneralTab() {
         editChanged = true;
     } else if (thunderEnabled && thunderChanged) {
         if (detachedEdit) {
-            editData.thunder = min(1.0f, max(0.0f, thunder));
+            editData.thunder = ClampSliderValue(thunder, thunderRange);
             if (regionScoped) overrideMask.thunder = true;
             editChanged = true;
         } else {
+            thunder = ClampSliderValue(thunder, thunderRange);
             thunder > 0.0001f ? g_oThunder.set(thunder) : g_oThunder.clear();
         }
     }
     if (!thunderEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::ThunderControls);
+        if (!RuntimeFeatureAvailable(RuntimeFeatureId::ThunderControls)) {
+            DrawFeatureUnavailable(RuntimeFeatureId::ThunderControls);
+        } else if (!forceClear) {
+            DrawHookUnavailable(RuntimeHookId::WeatherTick);
+        }
     }
 
     float dust = detachedEdit ? editData.dust : (g_oDust.active.load() ? g_oDust.value.load() : 0.0f);
+    const SliderRange dustRange = ActiveSliderRange(0.0f, 2.0f, 0.0f, 10.0f);
     const bool dustNative = dust <= 0.0001f;
-    const bool dustEnabled = !forceClear && !noDust && RuntimeFeatureAvailable(RuntimeFeatureId::Dust);
+    const bool dustEnabled = !forceClear && !noDust && RuntimeFeatureAvailable(RuntimeFeatureId::Dust) && DustHookReady();
     if (!dustEnabled) {
         ImGui::BeginDisabled();
     }
     bool dustChanged = false;
     bool dustOverrideChanged = false;
-    if (DrawSliderFloatRow("Dust", "dust", &dust, 0.0f, 2.0f, "%.3f", &dustChanged, regionScoped ? &overrideMask.dust : nullptr, &dustOverrideChanged, dustNative)) {
+    if (DrawSliderFloatRow("Dust", "dust", &dust, dustRange.lo, dustRange.hi, "%.3f", &dustChanged, regionScoped ? &overrideMask.dust : nullptr, &dustOverrideChanged, dustNative)) {
         if (detachedEdit) {
             editData.dust = 0.0f;
             if (regionScoped) overrideMask.dust = true;
@@ -1122,10 +1409,11 @@ void DrawGeneralTab() {
         editChanged = true;
     } else if (dustEnabled && dustChanged) {
         if (detachedEdit) {
-            editData.dust = min(2.0f, max(0.0f, dust));
+            editData.dust = ClampSliderValue(dust, dustRange);
             if (regionScoped) overrideMask.dust = true;
             editChanged = true;
         } else {
+            dust = ClampSliderValue(dust, dustRange);
             if (dust > 0.0001f) {
                 g_oDust.set(dust);
             } else {
@@ -1136,19 +1424,24 @@ void DrawGeneralTab() {
     if (!dustEnabled) {
         ImGui::EndDisabled();
         if (!forceClear && !noDust) {
-            DrawFeatureUnavailable(RuntimeFeatureId::Dust);
+            if (!RuntimeFeatureAvailable(RuntimeFeatureId::Dust)) {
+                DrawFeatureUnavailable(RuntimeFeatureId::Dust);
+            } else {
+                DrawHookUnavailable(RuntimeHookId::GetDustIntensity);
+            }
         }
     }
 
     float snow = detachedEdit ? editData.snow : (g_oSnow.active.load() ? g_oSnow.value.load() : 0.0f);
+    const SliderRange snowRange = ActiveSliderRange(0.0f, 1.0f, 0.0f, 5.0f);
     const bool snowNative = snow <= 0.0001f;
-    const bool snowEnabled = !forceClear && !noSnow && RuntimeFeatureAvailable(RuntimeFeatureId::Snow);
+    const bool snowEnabled = !forceClear && !noSnow && RuntimeFeatureAvailable(RuntimeFeatureId::Snow) && SnowHookReady();
     if (!snowEnabled) {
         ImGui::BeginDisabled();
     }
     bool snowChanged = false;
     bool snowOverrideChanged = false;
-    if (DrawSliderFloatRow("Snow", "snow", &snow, 0.0f, 1.0f, "%.3f", &snowChanged, regionScoped ? &overrideMask.snow : nullptr, &snowOverrideChanged, snowNative)) {
+    if (DrawSliderFloatRow("Snow", "snow", &snow, snowRange.lo, snowRange.hi, "%.3f", &snowChanged, regionScoped ? &overrideMask.snow : nullptr, &snowOverrideChanged, snowNative)) {
         if (detachedEdit) {
             editData.snow = 0.0f;
             if (regionScoped) overrideMask.snow = true;
@@ -1160,23 +1453,28 @@ void DrawGeneralTab() {
         editChanged = true;
     } else if (snowEnabled && snowChanged) {
         if (detachedEdit) {
-            editData.snow = min(1.0f, max(0.0f, snow));
+            editData.snow = ClampSliderValue(snow, snowRange);
             if (regionScoped) overrideMask.snow = true;
             editChanged = true;
         } else {
+            snow = ClampSliderValue(snow, snowRange);
             snow > 0.0001f ? g_oSnow.set(snow) : g_oSnow.clear();
         }
     }
     if (!snowEnabled) {
         ImGui::EndDisabled();
         if (!forceClear && !noSnow) {
-            DrawFeatureUnavailable(RuntimeFeatureId::Snow);
+            if (!RuntimeFeatureAvailable(RuntimeFeatureId::Snow)) {
+                DrawFeatureUnavailable(RuntimeFeatureId::Snow);
+            } else {
+                DrawHookUnavailable(RuntimeHookId::GetSnowIntensity);
+            }
         }
     }
 
     ImGui::Spacing();
     ImGui::SeparatorText("Disable Native Weather");
-    const bool noRainEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Rain);
+    const bool noRainEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Rain) && RainHookReady();
     if (!noRainEnabled) {
         ImGui::BeginDisabled();
     }
@@ -1199,9 +1497,12 @@ void DrawGeneralTab() {
     }
     if (!noRainEnabled) {
         ImGui::EndDisabled();
+        if (!forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Rain)) {
+            DrawHookUnavailable(RuntimeHookId::GetRainIntensity);
+        }
     }
 
-    const bool noDustEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Dust);
+    const bool noDustEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Dust) && DustHookReady();
     if (!noDustEnabled) {
         ImGui::BeginDisabled();
     }
@@ -1224,9 +1525,12 @@ void DrawGeneralTab() {
     }
     if (!noDustEnabled) {
         ImGui::EndDisabled();
+        if (!forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Dust)) {
+            DrawHookUnavailable(RuntimeHookId::GetDustIntensity);
+        }
     }
 
-    const bool noSnowEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Snow);
+    const bool noSnowEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Snow) && SnowHookReady();
     if (!noSnowEnabled) {
         ImGui::BeginDisabled();
     }
@@ -1249,13 +1553,22 @@ void DrawGeneralTab() {
     }
     if (!noSnowEnabled) {
         ImGui::EndDisabled();
+        if (!forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Snow)) {
+            DrawHookUnavailable(RuntimeHookId::GetSnowIntensity);
+        }
     }
 
     ImGui::Spacing();
     ImGui::SeparatorText("Time");
     bool visualTimeOverride = detachedEdit ? editData.visualTimeOverride : (g_timeCtrlActive.load() && g_timeFreeze.load());
+    bool progressVisualTime = detachedEdit ? editData.progressVisualTime : g_timeProgressVisualTime.load();
+    float progressVisualTimeIntervalMs = detachedEdit
+        ? ClampProgressVisualTimeIntervalMs(editData.progressVisualTimeIntervalMs)
+        : ClampProgressVisualTimeIntervalMs(g_timeProgressCadenceMs.load());
     const bool timeEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::TimeControls) &&
-                             g_timeLayoutReady.load();
+                             g_timeLayoutReady.load() &&
+                             WeatherTickReady();
+    const bool timeValueLocked = regionScoped && !overrideMask.time;
     if (!timeEnabled) {
         ImGui::BeginDisabled();
     }
@@ -1269,14 +1582,83 @@ void DrawGeneralTab() {
     if (visualTimeChanged) {
         if (detachedEdit) {
             editData.visualTimeOverride = visualTimeOverride;
+            if (!visualTimeOverride) editData.progressVisualTime = false;
             if (regionScoped) overrideMask.time = true;
             editChanged = true;
         } else {
             g_timeCtrlActive.store(visualTimeOverride);
             g_timeFreeze.store(visualTimeOverride);
+            if (!visualTimeOverride) {
+                g_timeProgressVisualTime.store(false);
+                g_timeProgressLastTick.store(0);
+            }
             g_timeApplyRequest.store(true);
         }
         GUI_SetStatus(visualTimeOverride ? "Visual time override enabled" : "Visual time override disabled");
+    }
+    if (!visualTimeOverride) {
+        progressVisualTime = false;
+    }
+    const bool progressDisabled = !(timeEnabled && visualTimeOverride) || timeValueLocked;
+    if (progressDisabled) {
+        ImGui::BeginDisabled();
+    }
+    const bool progressVisualTimeChanged = ImGui::Checkbox("Progress Visual Time", &progressVisualTime);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Advances the visual time override instead of keeping the sky frozen at one hour.");
+    }
+    if (progressDisabled) {
+        ImGui::EndDisabled();
+    }
+    if (progressVisualTimeChanged) {
+        progressVisualTime = visualTimeOverride && progressVisualTime;
+        if (detachedEdit) {
+            editData.visualTimeOverride = visualTimeOverride;
+            editData.progressVisualTime = progressVisualTime;
+            if (regionScoped) overrideMask.time = true;
+            editChanged = true;
+        } else {
+            g_timeProgressVisualTime.store(progressVisualTime);
+            g_timeProgressLastTick.store(progressVisualTime ? GetTickCount64() : 0);
+            g_timeCtrlActive.store(visualTimeOverride);
+            g_timeFreeze.store(visualTimeOverride);
+            g_timeApplyRequest.store(true);
+        }
+        GUI_SetStatus(progressVisualTime ? "Progress Visual Time enabled" : "Progress Visual Time disabled");
+    }
+    const bool intervalDisabled = progressDisabled || !progressVisualTime;
+    if (intervalDisabled) {
+        ImGui::BeginDisabled();
+    }
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Advance Interval");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Controls how often Progress Visual Time steps forward. 0 ms updates every frame.");
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(125.0f);
+    const bool progressIntervalChanged = ImGui::SliderFloat("##progress_visual_time_interval", &progressVisualTimeIntervalMs, 0.0f, 5000.0f, "%.0f ms");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Lower values update more smoothly. Higher values step visual time forward in batches.");
+    }
+    if (intervalDisabled) {
+        ImGui::EndDisabled();
+    }
+    if (progressIntervalChanged) {
+        progressVisualTimeIntervalMs = ClampProgressVisualTimeIntervalMs(progressVisualTimeIntervalMs);
+        if (detachedEdit) {
+            editData.progressVisualTimeIntervalMs = progressVisualTimeIntervalMs;
+            if (regionScoped) overrideMask.time = true;
+            editChanged = true;
+        } else {
+            g_timeProgressCadenceMs.store(progressVisualTimeIntervalMs);
+            g_timeProgressLastTick.store(0);
+        }
+        GUI_SetStatus("Advance interval changed");
+    }
+    if (ClampProgressVisualTimeIntervalMs(progressVisualTimeIntervalMs) <= 0.5f) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Every frame");
     }
     ImGui::SameLine();
     const float resetWidth = 28.0f;
@@ -1285,14 +1667,25 @@ void DrawGeneralTab() {
     const bool timeReset = ImGui::Button("R##time_reset", ImVec2(resetWidth, 0.0f));
     if (!timeEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::TimeControls);
+        if (!RuntimeFeatureAvailable(RuntimeFeatureId::TimeControls) || !g_timeLayoutReady.load()) {
+            DrawFeatureUnavailable(RuntimeFeatureId::TimeControls);
+        } else {
+            DrawHookUnavailable(RuntimeHookId::WeatherTick);
+        }
     }
 
-    int timeMinutes = HourToMinuteOfDay(detachedEdit ? editData.timeHour : g_timeTargetHour.load());
+    const bool runtimeProgressVisualTimeActive =
+        g_timeCtrlActive.load() && g_timeFreeze.load() && g_timeProgressVisualTime.load();
+    const bool progressUiActive = runtimeProgressVisualTimeActive;
+    const float displayedTimeHour = runtimeProgressVisualTimeActive
+        ? g_timeTargetHour.load()
+        : (detachedEdit ? editData.timeHour : g_timeTargetHour.load());
+    int timeMinutes = progressUiActive
+        ? HourToMinuteOfDayFloor(displayedTimeHour)
+        : HourToMinuteOfDay(displayedTimeHour);
     char targetClock[32] = {};
-    FormatGameClockFromHour(detachedEdit ? editData.timeHour : g_timeTargetHour.load(), targetClock, sizeof(targetClock));
+    FormatGameClockFromMinute(timeMinutes, targetClock, sizeof(targetClock));
 
-    const bool timeValueLocked = regionScoped && !overrideMask.time;
     if (!(timeEnabled && visualTimeOverride) || timeValueLocked) {
         ImGui::BeginDisabled();
     }
@@ -1303,12 +1696,14 @@ void DrawGeneralTab() {
         if (detachedEdit) {
             editData.timeHour = MinuteOfDayToHour(timeMinutes);
             editData.visualTimeOverride = true;
+            editData.progressVisualTime = progressVisualTime;
             if (regionScoped) overrideMask.time = true;
             editChanged = true;
         } else {
             g_timeTargetHour.store(MinuteOfDayToHour(timeMinutes));
             g_timeCtrlActive.store(true);
             g_timeFreeze.store(true);
+            g_timeProgressLastTick.store(g_timeProgressVisualTime.load() ? GetTickCount64() : 0);
             g_timeApplyRequest.store(true);
         }
         FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), targetClock, sizeof(targetClock));
@@ -1385,12 +1780,14 @@ void DrawGeneralTab() {
         if (detachedEdit) {
             editData.timeHour = MinuteOfDayToHour(HourToMinuteOfDay(g_timeCurrentHour.load()));
             editData.visualTimeOverride = true;
+            editData.progressVisualTime = progressVisualTime;
             if (regionScoped) overrideMask.time = true;
             editChanged = true;
         } else {
             g_timeTargetHour.store(MinuteOfDayToHour(HourToMinuteOfDay(g_timeCurrentHour.load())));
             g_timeCtrlActive.store(true);
             g_timeFreeze.store(true);
+            g_timeProgressLastTick.store(g_timeProgressVisualTime.load() ? GetTickCount64() : 0);
             g_timeApplyRequest.store(true);
         }
         g_timeEditActive = false;
@@ -1401,12 +1798,14 @@ void DrawGeneralTab() {
         if (detachedEdit) {
             editData.timeHour = MinuteOfDayToHour(timeMinutes);
             editData.visualTimeOverride = true;
+            editData.progressVisualTime = progressVisualTime;
             if (regionScoped) overrideMask.time = true;
             editChanged = true;
         } else {
             g_timeTargetHour.store(MinuteOfDayToHour(timeMinutes));
             g_timeCtrlActive.store(true);
             g_timeFreeze.store(true);
+            g_timeProgressLastTick.store(g_timeProgressVisualTime.load() ? GetTickCount64() : 0);
             g_timeApplyRequest.store(true);
         }
     }
@@ -1417,15 +1816,16 @@ void DrawGeneralTab() {
     ImGui::Spacing();
     ImGui::SeparatorText("Wind");
     bool noWind = detachedEdit ? editData.noWind : g_noWind.load();
-    const bool windEnabled = !noWind && RuntimeFeatureAvailable(RuntimeFeatureId::WindControls);
+    const bool windEnabled = !noWind && RuntimeFeatureAvailable(RuntimeFeatureId::WindControls) && WindPackReady();
     float wind = detachedEdit ? editData.wind : g_windMul.load();
+    const SliderRange windRange = ActiveSliderRange(0.0f, 15.0f, 0.0f, 50.0f);
     const bool windNative = fabsf(wind - 1.0f) <= 0.001f;
     if (!windEnabled) {
         ImGui::BeginDisabled();
     }
     bool windChanged = false;
     bool windOverrideChanged = false;
-    if (DrawSliderFloatRow("Wind", "wind_general", &wind, 0.0f, 15.0f, "x%.2f", &windChanged, regionScoped ? &overrideMask.wind : nullptr, &windOverrideChanged, windNative)) {
+    if (DrawSliderFloatRow("Wind", "wind_general", &wind, windRange.lo, windRange.hi, "x%.2f", &windChanged, regionScoped ? &overrideMask.wind : nullptr, &windOverrideChanged, windNative)) {
         if (detachedEdit) {
             editData.wind = 1.0f;
             if (regionScoped) overrideMask.wind = true;
@@ -1437,21 +1837,25 @@ void DrawGeneralTab() {
         editChanged = true;
     } else if (windEnabled && windChanged) {
         if (detachedEdit) {
-            editData.wind = min(15.0f, max(0.0f, wind));
+            editData.wind = ClampSliderValue(wind, windRange);
             if (regionScoped) overrideMask.wind = true;
             editChanged = true;
         } else {
-            g_windMul.store(min(15.0f, max(0.0f, wind)));
+            g_windMul.store(ClampSliderValue(wind, windRange));
         }
     }
     if (!windEnabled) {
         ImGui::EndDisabled();
         if (!noWind) {
-            DrawFeatureUnavailable(RuntimeFeatureId::WindControls);
+            if (!RuntimeFeatureAvailable(RuntimeFeatureId::WindControls)) {
+                DrawFeatureUnavailable(RuntimeFeatureId::WindControls);
+            } else {
+                DrawHookUnavailable(RuntimeHookId::WindPack);
+            }
         }
     }
 
-    const bool noWindEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::NoWindControls);
+    const bool noWindEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::NoWindControls) && WeatherTickReady();
     if (!noWindEnabled) {
         ImGui::BeginDisabled();
     }
@@ -1474,7 +1878,11 @@ void DrawGeneralTab() {
     }
     if (!noWindEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::NoWindControls);
+        if (!RuntimeFeatureAvailable(RuntimeFeatureId::NoWindControls)) {
+            DrawFeatureUnavailable(RuntimeFeatureId::NoWindControls);
+        } else {
+            DrawHookUnavailable(RuntimeHookId::WeatherTick);
+        }
     }
 
     if (detachedEdit && editChanged) {
@@ -1497,7 +1905,9 @@ void DrawAtmosphereTab() {
     WeatherPresetSourceMask overrideMask = regionScoped ? Preset_GetEditRegionOverrideMask() : WeatherPresetSourceMask{};
     bool editChanged = false;
 
-    const bool cloudEnabled = !(detachedEdit ? editData.forceClearSky : g_forceClear.load()) && RuntimeFeatureAvailable(RuntimeFeatureId::CloudControls);
+    const bool cloudEnabled = !(detachedEdit ? editData.forceClearSky : g_forceClear.load()) &&
+                              RuntimeFeatureAvailable(RuntimeFeatureId::CloudControls) &&
+                              WindPackReady();
     ImGui::SeparatorText("Clouds");
     if (!cloudEnabled) {
         ImGui::BeginDisabled();
@@ -1507,7 +1917,8 @@ void DrawAtmosphereTab() {
     const bool cloudAmountNative = detachedEdit ? !editData.cloudAmountEnabled : !g_oCloudAmount.active.load();
     bool cloudAmountChanged = false;
     bool cloudAmountOverrideChanged = false;
-    if (DrawSliderFloatRow("Cloud Amount", "cloud_amount", &cloudAmount, 0.0f, 15.0f, "x%.2f", &cloudAmountChanged, regionScoped ? &overrideMask.cloudAmount : nullptr, &cloudAmountOverrideChanged, cloudAmountNative)) {
+    const SliderRange cloudAmountRange = ActiveSliderRange(0.0f, 15.0f, 0.0f, 50.0f);
+    if (DrawSliderFloatRow("Cloud Amount", "cloud_amount", &cloudAmount, cloudAmountRange.lo, cloudAmountRange.hi, "x%.2f", &cloudAmountChanged, regionScoped ? &overrideMask.cloudAmount : nullptr, &cloudAmountOverrideChanged, cloudAmountNative)) {
         if (detachedEdit) {
             editData.cloudAmountEnabled = false;
             editData.cloudAmount = 1.0f;
@@ -1520,11 +1931,12 @@ void DrawAtmosphereTab() {
         editChanged = true;
     } else if (cloudEnabled && cloudAmountChanged) {
         if (detachedEdit) {
-            editData.cloudAmount = min(15.0f, max(0.0f, cloudAmount));
+            editData.cloudAmount = ClampSliderValue(cloudAmount, cloudAmountRange);
             editData.cloudAmountEnabled = fabsf(editData.cloudAmount - 1.0f) > 0.001f;
             if (regionScoped) overrideMask.cloudAmount = true;
             editChanged = true;
         } else {
+            cloudAmount = ClampSliderValue(cloudAmount, cloudAmountRange);
             fabsf(cloudAmount - 1.0f) <= 0.001f ? g_oCloudAmount.clear() : g_oCloudAmount.set(cloudAmount);
         }
     }
@@ -1533,7 +1945,8 @@ void DrawAtmosphereTab() {
     const bool cloudHeightNative = detachedEdit ? !editData.cloudHeightEnabled : !g_oCloudSpdX.active.load();
     bool cloudHeightChanged = false;
     bool cloudHeightOverrideChanged = false;
-    if (DrawSliderFloatRow("Cloud Height", "cloud_height", &cloudHeight, -15.0f, 15.0f, "x%.2f", &cloudHeightChanged, regionScoped ? &overrideMask.cloudHeight : nullptr, &cloudHeightOverrideChanged, cloudHeightNative)) {
+    const SliderRange cloudHeightRange = ActiveSliderRange(-15.0f, 15.0f, -50.0f, 50.0f);
+    if (DrawSliderFloatRow("Cloud Height", "cloud_height", &cloudHeight, cloudHeightRange.lo, cloudHeightRange.hi, "x%.2f", &cloudHeightChanged, regionScoped ? &overrideMask.cloudHeight : nullptr, &cloudHeightOverrideChanged, cloudHeightNative)) {
         if (detachedEdit) {
             editData.cloudHeightEnabled = false;
             editData.cloudHeight = 1.0f;
@@ -1546,11 +1959,12 @@ void DrawAtmosphereTab() {
         editChanged = true;
     } else if (cloudEnabled && cloudHeightChanged) {
         if (detachedEdit) {
-            editData.cloudHeight = min(15.0f, max(-15.0f, cloudHeight));
+            editData.cloudHeight = ClampSliderValue(cloudHeight, cloudHeightRange);
             editData.cloudHeightEnabled = fabsf(editData.cloudHeight - 1.0f) > 0.001f;
             if (regionScoped) overrideMask.cloudHeight = true;
             editChanged = true;
         } else {
+            cloudHeight = ClampSliderValue(cloudHeight, cloudHeightRange);
             fabsf(cloudHeight - 1.0f) <= 0.001f ? g_oCloudSpdX.clear() : g_oCloudSpdX.set(cloudHeight);
         }
     }
@@ -1559,7 +1973,8 @@ void DrawAtmosphereTab() {
     const bool cloudDensityNative = detachedEdit ? !editData.cloudDensityEnabled : !g_oCloudSpdY.active.load();
     bool cloudDensityChanged = false;
     bool cloudDensityOverrideChanged = false;
-    if (DrawSliderFloatRow("Cloud Density", "cloud_density", &cloudDensity, 0.0f, 10.0f, "x%.2f", &cloudDensityChanged, regionScoped ? &overrideMask.cloudDensity : nullptr, &cloudDensityOverrideChanged, cloudDensityNative)) {
+    const SliderRange cloudDensityRange = ActiveSliderRange(0.0f, 10.0f, 0.0f, 50.0f);
+    if (DrawSliderFloatRow("Cloud Density", "cloud_density", &cloudDensity, cloudDensityRange.lo, cloudDensityRange.hi, "x%.2f", &cloudDensityChanged, regionScoped ? &overrideMask.cloudDensity : nullptr, &cloudDensityOverrideChanged, cloudDensityNative)) {
         if (detachedEdit) {
             editData.cloudDensityEnabled = false;
             editData.cloudDensity = 1.0f;
@@ -1572,11 +1987,12 @@ void DrawAtmosphereTab() {
         editChanged = true;
     } else if (cloudEnabled && cloudDensityChanged) {
         if (detachedEdit) {
-            editData.cloudDensity = min(10.0f, max(0.0f, cloudDensity));
+            editData.cloudDensity = ClampSliderValue(cloudDensity, cloudDensityRange);
             editData.cloudDensityEnabled = fabsf(editData.cloudDensity - 1.0f) > 0.001f;
             if (regionScoped) overrideMask.cloudDensity = true;
             editChanged = true;
         } else {
+            cloudDensity = ClampSliderValue(cloudDensity, cloudDensityRange);
             fabsf(cloudDensity - 1.0f) <= 0.001f ? g_oCloudSpdY.clear() : g_oCloudSpdY.set(cloudDensity);
         }
     }
@@ -1585,7 +2001,8 @@ void DrawAtmosphereTab() {
     const bool midCloudsNative = detachedEdit ? !editData.midCloudsEnabled : !g_oHighClouds.active.load();
     bool midCloudsChanged = false;
     bool midCloudsOverrideChanged = false;
-    if (DrawSliderFloatRow("Mid Clouds", "mid_clouds", &midClouds, 0.0f, 15.0f, "x%.2f", &midCloudsChanged, regionScoped ? &overrideMask.midClouds : nullptr, &midCloudsOverrideChanged, midCloudsNative)) {
+    const SliderRange midCloudsRange = ActiveSliderRange(0.0f, 15.0f, 0.0f, 50.0f);
+    if (DrawSliderFloatRow("Mid Clouds", "mid_clouds", &midClouds, midCloudsRange.lo, midCloudsRange.hi, "x%.2f", &midCloudsChanged, regionScoped ? &overrideMask.midClouds : nullptr, &midCloudsOverrideChanged, midCloudsNative)) {
         if (detachedEdit) {
             editData.midCloudsEnabled = false;
             editData.midClouds = 1.0f;
@@ -1598,11 +2015,12 @@ void DrawAtmosphereTab() {
         editChanged = true;
     } else if (cloudEnabled && midCloudsChanged) {
         if (detachedEdit) {
-            editData.midClouds = min(15.0f, max(0.0f, midClouds));
+            editData.midClouds = ClampSliderValue(midClouds, midCloudsRange);
             editData.midCloudsEnabled = fabsf(editData.midClouds - 1.0f) > 0.001f;
             if (regionScoped) overrideMask.midClouds = true;
             editChanged = true;
         } else {
+            midClouds = ClampSliderValue(midClouds, midCloudsRange);
             fabsf(midClouds - 1.0f) <= 0.001f ? g_oHighClouds.clear() : g_oHighClouds.set(midClouds);
         }
     }
@@ -1611,7 +2029,8 @@ void DrawAtmosphereTab() {
     const bool highCloudsNative = detachedEdit ? !editData.highCloudsEnabled : !g_oAtmoAlpha.active.load();
     bool highCloudsChanged = false;
     bool highCloudsOverrideChanged = false;
-    if (DrawSliderFloatRow("High Clouds", "high_clouds", &highClouds, 0.0f, 15.0f, "x%.2f", &highCloudsChanged, regionScoped ? &overrideMask.highClouds : nullptr, &highCloudsOverrideChanged, highCloudsNative)) {
+    const SliderRange highCloudsRange = ActiveSliderRange(0.0f, 15.0f, 0.0f, 50.0f);
+    if (DrawSliderFloatRow("High Clouds", "high_clouds", &highClouds, highCloudsRange.lo, highCloudsRange.hi, "x%.2f", &highCloudsChanged, regionScoped ? &overrideMask.highClouds : nullptr, &highCloudsOverrideChanged, highCloudsNative)) {
         if (detachedEdit) {
             editData.highCloudsEnabled = false;
             editData.highClouds = 1.0f;
@@ -1624,18 +2043,23 @@ void DrawAtmosphereTab() {
         editChanged = true;
     } else if (cloudEnabled && highCloudsChanged) {
         if (detachedEdit) {
-            editData.highClouds = min(15.0f, max(0.0f, highClouds));
+            editData.highClouds = ClampSliderValue(highClouds, highCloudsRange);
             editData.highCloudsEnabled = fabsf(editData.highClouds - 1.0f) > 0.001f;
             if (regionScoped) overrideMask.highClouds = true;
             editChanged = true;
         } else {
+            highClouds = ClampSliderValue(highClouds, highCloudsRange);
             fabsf(highClouds - 1.0f) <= 0.001f ? g_oAtmoAlpha.clear() : g_oAtmoAlpha.set(highClouds);
         }
     }
 
     if (!cloudEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::CloudControls);
+        if (!RuntimeFeatureAvailable(RuntimeFeatureId::CloudControls)) {
+            DrawFeatureUnavailable(RuntimeFeatureId::CloudControls);
+        } else if (!(detachedEdit ? editData.forceClearSky : g_forceClear.load())) {
+            DrawHookUnavailable(RuntimeHookId::WindPack);
+        }
     }
 
     ImGui::Spacing();
@@ -1644,13 +2068,14 @@ void DrawAtmosphereTab() {
     float fogFromWind = detachedEdit ? editData.nativeFog : (g_oNativeFog.active.load() ? g_oNativeFog.value.load() : 1.0f);
     const bool fogFromWindNative = detachedEdit ? !editData.nativeFogEnabled : !g_oNativeFog.active.load();
     const bool fogBlocked = detachedEdit ? (editData.forceClearSky || editData.noFog) : (g_forceClear.load() || g_noFog.load());
-    const bool windEnabled = !fogBlocked && RuntimeFeatureAvailable(RuntimeFeatureId::WindControls);
+    const bool windEnabled = !fogBlocked && RuntimeFeatureAvailable(RuntimeFeatureId::WindControls) && WindPackReady();
     if (!windEnabled) {
         ImGui::BeginDisabled();
     }
     bool fogFromWindChanged = false;
     bool fogFromWindOverrideChanged = false;
-    if (DrawSliderFloatRow("Fog", "fog_from_wind", &fogFromWind, 0.0f, 15.0f, "%.2f", &fogFromWindChanged, regionScoped ? &overrideMask.nativeFog : nullptr, &fogFromWindOverrideChanged, fogFromWindNative)) {
+    const SliderRange fogFromWindRange = ActiveSliderRange(0.0f, 15.0f, 0.0f, 50.0f);
+    if (DrawSliderFloatRow("Fog", "fog_from_wind", &fogFromWind, fogFromWindRange.lo, fogFromWindRange.hi, "%.2f", &fogFromWindChanged, regionScoped ? &overrideMask.nativeFog : nullptr, &fogFromWindOverrideChanged, fogFromWindNative)) {
         if (detachedEdit) {
             editData.nativeFogEnabled = false;
             editData.nativeFog = 1.0f;
@@ -1663,11 +2088,12 @@ void DrawAtmosphereTab() {
         editChanged = true;
     } else if (windEnabled && fogFromWindChanged) {
         if (detachedEdit) {
-            editData.nativeFog = min(15.0f, max(0.0f, fogFromWind));
+            editData.nativeFog = ClampSliderValue(fogFromWind, fogFromWindRange);
             editData.nativeFogEnabled = fabsf(editData.nativeFog - 1.0f) > 0.001f;
             if (regionScoped) overrideMask.nativeFog = true;
             editChanged = true;
         } else {
+            fogFromWind = ClampSliderValue(fogFromWind, fogFromWindRange);
             if (fabsf(fogFromWind - 1.0f) > 0.001f) {
                 g_oNativeFog.set(fogFromWind);
             } else {
@@ -1678,7 +2104,11 @@ void DrawAtmosphereTab() {
     if (!windEnabled) {
         ImGui::EndDisabled();
         if (!fogBlocked) {
-            DrawFeatureUnavailable(RuntimeFeatureId::WindControls);
+            if (!RuntimeFeatureAvailable(RuntimeFeatureId::WindControls)) {
+                DrawFeatureUnavailable(RuntimeFeatureId::WindControls);
+            } else {
+                DrawHookUnavailable(RuntimeHookId::WindPack);
+            }
         }
     }
 
@@ -1722,7 +2152,9 @@ void DrawExperimentTab() {
     bool editChanged = false;
 
     ImGui::SeparatorText("Cloud Experiments");
-    const bool enabled = !(detachedEdit ? editData.forceClearSky : g_forceClear.load()) && RuntimeFeatureAvailable(RuntimeFeatureId::ExperimentControls);
+    const bool enabled = !(detachedEdit ? editData.forceClearSky : g_forceClear.load()) &&
+                         RuntimeFeatureAvailable(RuntimeFeatureId::ExperimentControls) &&
+                         WindPackReady();
     if (!enabled) {
         ImGui::BeginDisabled();
     }
@@ -1731,7 +2163,8 @@ void DrawExperimentTab() {
     const bool value2CNative = detachedEdit ? !editData.exp2CEnabled : !g_oExpCloud2C.active.load();
     bool value2CChanged = false;
     bool value2COverrideChanged = false;
-    if (DrawSliderFloatRow("2C", "2c", &value2C, 0.0f, 15.0f, "x%.2f", &value2CChanged, regionScoped ? &overrideMask.exp2C : nullptr, &value2COverrideChanged, value2CNative)) {
+    const SliderRange value2CRange = ActiveSliderRange(0.0f, 15.0f, 0.0f, 50.0f);
+    if (DrawSliderFloatRow("2C", "2c", &value2C, value2CRange.lo, value2CRange.hi, "x%.2f", &value2CChanged, regionScoped ? &overrideMask.exp2C : nullptr, &value2COverrideChanged, value2CNative)) {
         if (detachedEdit) {
             editData.exp2CEnabled = false;
             editData.exp2C = 1.0f;
@@ -1744,11 +2177,12 @@ void DrawExperimentTab() {
         editChanged = true;
     } else if (enabled && value2CChanged) {
         if (detachedEdit) {
-            editData.exp2C = min(15.0f, max(0.0f, value2C));
+            editData.exp2C = ClampSliderValue(value2C, value2CRange);
             editData.exp2CEnabled = fabsf(editData.exp2C - 1.0f) > 0.001f;
             if (regionScoped) overrideMask.exp2C = true;
             editChanged = true;
         } else {
+            value2C = ClampSliderValue(value2C, value2CRange);
             fabsf(value2C - 1.0f) <= 0.001f ? g_oExpCloud2C.clear() : g_oExpCloud2C.set(value2C);
         }
     }
@@ -1757,7 +2191,8 @@ void DrawExperimentTab() {
     const bool value2DNative = detachedEdit ? !editData.exp2DEnabled : !g_oExpCloud2D.active.load();
     bool value2DChanged = false;
     bool value2DOverrideChanged = false;
-    if (DrawSliderFloatRow("2D", "2d", &value2D, 0.0f, 15.0f, "x%.2f", &value2DChanged, regionScoped ? &overrideMask.exp2D : nullptr, &value2DOverrideChanged, value2DNative)) {
+    const SliderRange value2DRange = ActiveSliderRange(0.0f, 15.0f, 0.0f, 50.0f);
+    if (DrawSliderFloatRow("2D", "2d", &value2D, value2DRange.lo, value2DRange.hi, "x%.2f", &value2DChanged, regionScoped ? &overrideMask.exp2D : nullptr, &value2DOverrideChanged, value2DNative)) {
         if (detachedEdit) {
             editData.exp2DEnabled = false;
             editData.exp2D = 1.0f;
@@ -1770,11 +2205,12 @@ void DrawExperimentTab() {
         editChanged = true;
     } else if (enabled && value2DChanged) {
         if (detachedEdit) {
-            editData.exp2D = min(15.0f, max(0.0f, value2D));
+            editData.exp2D = ClampSliderValue(value2D, value2DRange);
             editData.exp2DEnabled = fabsf(editData.exp2D - 1.0f) > 0.001f;
             if (regionScoped) overrideMask.exp2D = true;
             editChanged = true;
         } else {
+            value2D = ClampSliderValue(value2D, value2DRange);
             fabsf(value2D - 1.0f) <= 0.001f ? g_oExpCloud2D.clear() : g_oExpCloud2D.set(value2D);
         }
     }
@@ -1783,7 +2219,8 @@ void DrawExperimentTab() {
     const bool cloudVariationNative = detachedEdit ? !editData.cloudVariationEnabled : !g_oCloudVariation.active.load();
     bool cloudVariationChanged = false;
     bool cloudVariationOverrideChanged = false;
-    if (DrawSliderFloatRow("Cloud Variation [32]", "cloud_variation", &cloudVariation, 0.0f, 15.0f, "x%.2f", &cloudVariationChanged, regionScoped ? &overrideMask.cloudVariation : nullptr, &cloudVariationOverrideChanged, cloudVariationNative)) {
+    const SliderRange cloudVariationRange = ActiveSliderRange(0.0f, 15.0f, 0.0f, 50.0f);
+    if (DrawSliderFloatRow("Cloud Variation [32]", "cloud_variation", &cloudVariation, cloudVariationRange.lo, cloudVariationRange.hi, "x%.2f", &cloudVariationChanged, regionScoped ? &overrideMask.cloudVariation : nullptr, &cloudVariationOverrideChanged, cloudVariationNative)) {
         if (detachedEdit) {
             editData.cloudVariationEnabled = false;
             editData.cloudVariation = 1.0f;
@@ -1796,37 +2233,45 @@ void DrawExperimentTab() {
         editChanged = true;
     } else if (enabled && cloudVariationChanged) {
         if (detachedEdit) {
-            editData.cloudVariation = min(15.0f, max(0.0f, cloudVariation));
+            editData.cloudVariation = ClampSliderValue(cloudVariation, cloudVariationRange);
             editData.cloudVariationEnabled = fabsf(editData.cloudVariation - 1.0f) > 0.001f;
             if (regionScoped) overrideMask.cloudVariation = true;
             editChanged = true;
         } else {
+            cloudVariation = ClampSliderValue(cloudVariation, cloudVariationRange);
             fabsf(cloudVariation - 1.0f) <= 0.001f ? g_oCloudVariation.clear() : g_oCloudVariation.set(cloudVariation);
         }
     }
 
     if (!enabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::ExperimentControls);
+        if (!RuntimeFeatureAvailable(RuntimeFeatureId::ExperimentControls)) {
+            DrawFeatureUnavailable(RuntimeFeatureId::ExperimentControls);
+        } else if (!(detachedEdit ? editData.forceClearSky : g_forceClear.load())) {
+            DrawHookUnavailable(RuntimeHookId::WindPack);
+        }
     }
 
     ImGui::Spacing();
     ImGui::SeparatorText("Legacy Fog");
     float fogPct = detachedEdit ? editData.fogPercent : 0.0f;
     if (!detachedEdit && g_oFog.active.load()) {
-        const float fogN = sqrtf(min(1.0f, max(0.0f, g_oFog.value.load() / 100.0f)));
+        const float fogN = sqrtf(max(0.0f, g_oFog.value.load() / 100.0f));
         fogPct = fogN * 100.0f;
     }
 
     const bool fogBlocked = detachedEdit ? (editData.forceClearSky || editData.noFog) : (g_forceClear.load() || g_noFog.load());
-    const bool fogFeatureAvailable = !fogBlocked && RuntimeFeatureAvailable(RuntimeFeatureId::FogControls);
+    const bool fogFeatureAvailable = !fogBlocked &&
+                                     RuntimeFeatureAvailable(RuntimeFeatureId::FogControls) &&
+                                     WeatherFrameReady();
     if (!fogFeatureAvailable) {
         ImGui::BeginDisabled();
     }
     const bool fogNative = detachedEdit ? !editData.fogEnabled : !g_oFog.active.load();
     bool fogChanged = false;
     bool fogOverrideChanged = false;
-    const bool fogReset = DrawSliderFloatRow("Fog [LEGACY]", "fog_legacy", &fogPct, 0.0f, 100.0f, "%.1f%%", &fogChanged, regionScoped ? &overrideMask.fog : nullptr, &fogOverrideChanged, fogNative);
+    const SliderRange fogPctRange = ActiveSliderRange(0.0f, 100.0f, 0.0f, 500.0f);
+    const bool fogReset = DrawSliderFloatRow("Fog [LEGACY]", "fog_legacy", &fogPct, fogPctRange.lo, fogPctRange.hi, "%.1f%%", &fogChanged, regionScoped ? &overrideMask.fog : nullptr, &fogOverrideChanged, fogNative);
 
     if (fogReset) {
         if (detachedEdit) {
@@ -1841,11 +2286,12 @@ void DrawExperimentTab() {
         editChanged = true;
     } else if (fogFeatureAvailable && fogChanged) {
         if (detachedEdit) {
-            editData.fogPercent = min(100.0f, max(0.0f, fogPct));
+            editData.fogPercent = ClampSliderValue(fogPct, fogPctRange);
             editData.fogEnabled = editData.fogPercent > 0.001f;
             if (regionScoped) overrideMask.fog = true;
             editChanged = true;
         } else {
+            fogPct = ClampSliderValue(fogPct, fogPctRange);
             const float t = fogPct * 0.01f;
             g_oFog.set(t * t * 100.0f);
         }
@@ -1854,7 +2300,11 @@ void DrawExperimentTab() {
     if (!fogFeatureAvailable) {
         ImGui::EndDisabled();
         if (!fogBlocked) {
-            DrawFeatureUnavailable(RuntimeFeatureId::FogControls);
+            if (!RuntimeFeatureAvailable(RuntimeFeatureId::FogControls)) {
+                DrawFeatureUnavailable(RuntimeFeatureId::FogControls);
+            } else {
+                DrawHookUnavailable(RuntimeHookId::WeatherFrameUpdate);
+            }
         }
     }
 
@@ -1862,13 +2312,14 @@ void DrawExperimentTab() {
     ImGui::SeparatorText("Details");
     float puddleScale = detachedEdit ? editData.puddleScale : (g_oCloudThk.active.load() ? g_oCloudThk.value.load() : 0.0f);
     const bool puddleScaleNative = detachedEdit ? !editData.puddleScaleEnabled : !g_oCloudThk.active.load();
-    const bool detailEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::DetailControls);
+    const bool detailEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::DetailControls) && WeatherTickReady();
     if (!detailEnabled) {
         ImGui::BeginDisabled();
     }
     bool puddleScaleChanged = false;
     bool puddleScaleOverrideChanged = false;
-    if (DrawSliderFloatRow("Puddle Scale", "puddle", &puddleScale, 0.0f, 1.0f, "%.3f", &puddleScaleChanged, regionScoped ? &overrideMask.puddleScale : nullptr, &puddleScaleOverrideChanged, puddleScaleNative)) {
+    const SliderRange puddleScaleRange = ActiveSliderRange(0.0f, 1.0f, 0.0f, 5.0f);
+    if (DrawSliderFloatRow("Puddle Scale", "puddle", &puddleScale, puddleScaleRange.lo, puddleScaleRange.hi, "%.3f", &puddleScaleChanged, regionScoped ? &overrideMask.puddleScale : nullptr, &puddleScaleOverrideChanged, puddleScaleNative)) {
         if (detachedEdit) {
             editData.puddleScaleEnabled = false;
             editData.puddleScale = 0.0f;
@@ -1881,17 +2332,22 @@ void DrawExperimentTab() {
         editChanged = true;
     } else if (detailEnabled && puddleScaleChanged) {
         if (detachedEdit) {
-            editData.puddleScale = min(1.0f, max(0.0f, puddleScale));
+            editData.puddleScale = ClampSliderValue(puddleScale, puddleScaleRange);
             editData.puddleScaleEnabled = editData.puddleScale > 0.001f;
             if (regionScoped) overrideMask.puddleScale = true;
             editChanged = true;
         } else {
+            puddleScale = ClampSliderValue(puddleScale, puddleScaleRange);
             g_oCloudThk.set(puddleScale);
         }
     }
     if (!detailEnabled) {
         ImGui::EndDisabled();
-        DrawFeatureUnavailable(RuntimeFeatureId::DetailControls);
+        if (!RuntimeFeatureAvailable(RuntimeFeatureId::DetailControls)) {
+            DrawFeatureUnavailable(RuntimeFeatureId::DetailControls);
+        } else {
+            DrawHookUnavailable(RuntimeHookId::WeatherTick);
+        }
     }
 
     if (detachedEdit && editChanged) {
@@ -1931,6 +2387,8 @@ void DrawCelestialTab() {
     const float nativeMoonYaw = g_sceneBaseMoonYaw.load();
     const float nativeMoonPitch = g_sceneBaseMoonPitch.load();
     const float nativeMoonRoll = 0.0f;
+    const bool celestialWindPackReady = celestialEnabled && WindPackReady();
+    const bool celestialSceneFrameReady = celestialEnabled && SceneFrameReady();
 
     int milkywayTexture = detachedEdit
         ? (editData.milkywayTextureEnabled ? MilkywayTextureFindOptionByName(editData.milkywayTexture.c_str()) : 0)
@@ -2035,7 +2493,11 @@ void DrawCelestialTab() {
     const bool nightSkyPitchNative = detachedEdit ? !editData.nightSkyRotationEnabled : !g_oExpNightSkyRot.active.load();
     bool nightSkyPitchChanged = false;
     bool nightSkyPitchOverrideChanged = false;
-    if (DrawSliderFloatRow("Night Sky Tilt", "night_sky_tilt", &nightSkyPitch, -89.0f, 89.0f, "%.2f", &nightSkyPitchChanged, regionScoped ? &overrideMask.nightSkyRotation : nullptr, &nightSkyPitchOverrideChanged, nightSkyPitchNative)) {
+    const SliderRange nightSkyPitchRange = ActiveSliderRange(-89.0f, 89.0f, -180.0f, 180.0f);
+    if (!celestialWindPackReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Night Sky Tilt", "night_sky_tilt", &nightSkyPitch, nightSkyPitchRange.lo, nightSkyPitchRange.hi, "%.2f", &nightSkyPitchChanged, regionScoped ? &overrideMask.nightSkyRotation : nullptr, &nightSkyPitchOverrideChanged, nightSkyPitchNative)) {
         if (detachedEdit) {
             editData.nightSkyRotationEnabled = false;
             editData.nightSkyRotation = nativeNightSkyPitch;
@@ -2046,15 +2508,21 @@ void DrawCelestialTab() {
         }
     } else if (nightSkyPitchOverrideChanged) {
         editChanged = true;
-    } else if (celestialEnabled && nightSkyPitchChanged) {
+    } else if (celestialWindPackReady && nightSkyPitchChanged) {
         if (detachedEdit) {
-            editData.nightSkyRotation = min(89.0f, max(-89.0f, nightSkyPitch));
+            editData.nightSkyRotation = ClampSliderValue(nightSkyPitch, nightSkyPitchRange);
             editData.nightSkyRotationEnabled = fabsf(editData.nightSkyRotation - nativeNightSkyPitch) > 0.001f;
             if (regionScoped) overrideMask.nightSkyRotation = true;
             editChanged = true;
         } else {
-            nightSkyPitch = min(89.0f, max(-89.0f, nightSkyPitch));
+            nightSkyPitch = ClampSliderValue(nightSkyPitch, nightSkyPitchRange);
             fabsf(nightSkyPitch - nativeNightSkyPitch) <= 0.001f ? g_oExpNightSkyRot.clear() : g_oExpNightSkyRot.set(nightSkyPitch);
+        }
+    }
+    if (!celestialWindPackReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::WindPack);
         }
     }
 
@@ -2064,7 +2532,11 @@ void DrawCelestialTab() {
     const bool nightSkyYawNative = detachedEdit ? !editData.nightSkyYawEnabled : !g_oNightSkyYaw.active.load();
     bool nightSkyYawChanged = false;
     bool nightSkyYawOverrideChanged = false;
-    if (DrawSliderFloatRow("Night Sky Phase", "night_sky_phase", &nightSkyYaw, -180.0f, 180.0f, "%.2f", &nightSkyYawChanged, regionScoped ? &overrideMask.nightSkyYaw : nullptr, &nightSkyYawOverrideChanged, nightSkyYawNative)) {
+    const SliderRange nightSkyYawRange = ActiveSliderRange(-180.0f, 180.0f, -360.0f, 360.0f);
+    if (!celestialSceneFrameReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Night Sky Phase", "night_sky_phase", &nightSkyYaw, nightSkyYawRange.lo, nightSkyYawRange.hi, "%.2f", &nightSkyYawChanged, regionScoped ? &overrideMask.nightSkyYaw : nullptr, &nightSkyYawOverrideChanged, nightSkyYawNative)) {
         if (detachedEdit) {
             editData.nightSkyYawEnabled = false;
             editData.nightSkyYaw = nativeNightSkyYaw;
@@ -2075,15 +2547,21 @@ void DrawCelestialTab() {
         }
     } else if (nightSkyYawOverrideChanged) {
         editChanged = true;
-    } else if (celestialEnabled && nightSkyYawChanged) {
+    } else if (celestialSceneFrameReady && nightSkyYawChanged) {
         if (detachedEdit) {
-            editData.nightSkyYaw = min(180.0f, max(-180.0f, nightSkyYaw));
+            editData.nightSkyYaw = ClampSliderValue(nightSkyYaw, nightSkyYawRange);
             editData.nightSkyYawEnabled = fabsf(editData.nightSkyYaw - nativeNightSkyYaw) > 0.001f;
             if (regionScoped) overrideMask.nightSkyYaw = true;
             editChanged = true;
         } else {
-            nightSkyYaw = min(180.0f, max(-180.0f, nightSkyYaw));
+            nightSkyYaw = ClampSliderValue(nightSkyYaw, nightSkyYawRange);
             fabsf(nightSkyYaw - nativeNightSkyYaw) <= 0.001f ? g_oNightSkyYaw.clear() : g_oNightSkyYaw.set(nightSkyYaw);
+        }
+    }
+    if (!celestialSceneFrameReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::SceneFrameUpdate);
         }
     }
 
@@ -2096,7 +2574,11 @@ void DrawCelestialTab() {
     const bool sunSizeNative = detachedEdit ? !editData.sunSizeEnabled : !g_oSunSize.active.load();
     bool sunSizeChanged = false;
     bool sunSizeOverrideChanged = false;
-    if (DrawSliderFloatRow("Sun Size", "sun_size", &sunSize, 0.01f, 10.0f, "%.3f", &sunSizeChanged, regionScoped ? &overrideMask.sunSize : nullptr, &sunSizeOverrideChanged, sunSizeNative)) {
+    const SliderRange sunSizeRange = ActiveSliderRange(0.01f, 10.0f, 0.001f, 100.0f);
+    if (!celestialWindPackReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Sun Size", "sun_size", &sunSize, sunSizeRange.lo, sunSizeRange.hi, "%.3f", &sunSizeChanged, regionScoped ? &overrideMask.sunSize : nullptr, &sunSizeOverrideChanged, sunSizeNative)) {
         if (detachedEdit) {
             editData.sunSizeEnabled = false;
             editData.sunSize = nativeSunSize;
@@ -2107,15 +2589,21 @@ void DrawCelestialTab() {
         }
     } else if (sunSizeOverrideChanged) {
         editChanged = true;
-    } else if (celestialEnabled && sunSizeChanged) {
+    } else if (celestialWindPackReady && sunSizeChanged) {
         if (detachedEdit) {
-            editData.sunSize = min(10.0f, max(0.01f, sunSize));
+            editData.sunSize = ClampSliderValue(sunSize, sunSizeRange);
             editData.sunSizeEnabled = fabsf(editData.sunSize - nativeSunSize) > 0.001f;
             if (regionScoped) overrideMask.sunSize = true;
             editChanged = true;
         } else {
-            sunSize = min(10.0f, max(0.01f, sunSize));
+            sunSize = ClampSliderValue(sunSize, sunSizeRange);
             fabsf(sunSize - nativeSunSize) <= 0.001f ? g_oSunSize.clear() : g_oSunSize.set(sunSize);
+        }
+    }
+    if (!celestialWindPackReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::WindPack);
         }
     }
 
@@ -2125,7 +2613,11 @@ void DrawCelestialTab() {
     const bool sunYawNative = detachedEdit ? !editData.sunYawEnabled : !g_oSunDirX.active.load();
     bool sunYawChanged = false;
     bool sunYawOverrideChanged = false;
-    if (DrawSliderFloatRow("Sun Yaw Lock", "sun_yaw", &sunYaw, -180.0f, 180.0f, "%.2f", &sunYawChanged, regionScoped ? &overrideMask.sunYaw : nullptr, &sunYawOverrideChanged, sunYawNative)) {
+    const SliderRange sunYawRange = ActiveSliderRange(-180.0f, 180.0f, -360.0f, 360.0f);
+    if (!celestialSceneFrameReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Sun Yaw Lock", "sun_yaw", &sunYaw, sunYawRange.lo, sunYawRange.hi, "%.2f", &sunYawChanged, regionScoped ? &overrideMask.sunYaw : nullptr, &sunYawOverrideChanged, sunYawNative)) {
         if (detachedEdit) {
             editData.sunYawEnabled = false;
             editData.sunYaw = nativeSunYaw;
@@ -2136,15 +2628,21 @@ void DrawCelestialTab() {
         }
     } else if (sunYawOverrideChanged) {
         editChanged = true;
-    } else if (celestialEnabled && sunYawChanged) {
+    } else if (celestialSceneFrameReady && sunYawChanged) {
         if (detachedEdit) {
-            editData.sunYaw = min(180.0f, max(-180.0f, sunYaw));
+            editData.sunYaw = ClampSliderValue(sunYaw, sunYawRange);
             editData.sunYawEnabled = fabsf(editData.sunYaw - nativeSunYaw) > 0.001f;
             if (regionScoped) overrideMask.sunYaw = true;
             editChanged = true;
         } else {
-            sunYaw = min(180.0f, max(-180.0f, sunYaw));
+            sunYaw = ClampSliderValue(sunYaw, sunYawRange);
             fabsf(sunYaw - nativeSunYaw) <= 0.001f ? g_oSunDirX.clear() : g_oSunDirX.set(sunYaw);
+        }
+    }
+    if (!celestialSceneFrameReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::SceneFrameUpdate);
         }
     }
 
@@ -2154,7 +2652,11 @@ void DrawCelestialTab() {
     const bool sunPitchNative = detachedEdit ? !editData.sunPitchEnabled : !g_oSunDirY.active.load();
     bool sunPitchChanged = false;
     bool sunPitchOverrideChanged = false;
-    if (DrawSliderFloatRow("Sun Pitch Lock", "sun_pitch", &sunPitch, -89.0f, 89.0f, "%.2f", &sunPitchChanged, regionScoped ? &overrideMask.sunPitch : nullptr, &sunPitchOverrideChanged, sunPitchNative)) {
+    const SliderRange sunPitchRange = ActiveSliderRange(-89.0f, 89.0f, -180.0f, 180.0f);
+    if (!celestialSceneFrameReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Sun Pitch Lock", "sun_pitch", &sunPitch, sunPitchRange.lo, sunPitchRange.hi, "%.2f", &sunPitchChanged, regionScoped ? &overrideMask.sunPitch : nullptr, &sunPitchOverrideChanged, sunPitchNative)) {
         if (detachedEdit) {
             editData.sunPitchEnabled = false;
             editData.sunPitch = nativeSunPitch;
@@ -2165,15 +2667,21 @@ void DrawCelestialTab() {
         }
     } else if (sunPitchOverrideChanged) {
         editChanged = true;
-    } else if (celestialEnabled && sunPitchChanged) {
+    } else if (celestialSceneFrameReady && sunPitchChanged) {
         if (detachedEdit) {
-            editData.sunPitch = min(89.0f, max(-89.0f, sunPitch));
+            editData.sunPitch = ClampSliderValue(sunPitch, sunPitchRange);
             editData.sunPitchEnabled = fabsf(editData.sunPitch - nativeSunPitch) > 0.001f;
             if (regionScoped) overrideMask.sunPitch = true;
             editChanged = true;
         } else {
-            sunPitch = min(89.0f, max(-89.0f, sunPitch));
+            sunPitch = ClampSliderValue(sunPitch, sunPitchRange);
             fabsf(sunPitch - nativeSunPitch) <= 0.001f ? g_oSunDirY.clear() : g_oSunDirY.set(sunPitch);
+        }
+    }
+    if (!celestialSceneFrameReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::SceneFrameUpdate);
         }
     }
 
@@ -2282,7 +2790,11 @@ void DrawCelestialTab() {
     const bool moonSizeNative = detachedEdit ? !editData.moonSizeEnabled : !g_oMoonSize.active.load();
     bool moonSizeChanged = false;
     bool moonSizeOverrideChanged = false;
-    if (DrawSliderFloatRow("Moon Size", "moon_size", &moonSize, 0.020f, 20.0f, "%.3f", &moonSizeChanged, regionScoped ? &overrideMask.moonSize : nullptr, &moonSizeOverrideChanged, moonSizeNative)) {
+    const SliderRange moonSizeRange = ActiveSliderRange(0.020f, 20.0f, 0.001f, 100.0f);
+    if (!celestialWindPackReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Moon Size", "moon_size", &moonSize, moonSizeRange.lo, moonSizeRange.hi, "%.3f", &moonSizeChanged, regionScoped ? &overrideMask.moonSize : nullptr, &moonSizeOverrideChanged, moonSizeNative)) {
         if (detachedEdit) {
             editData.moonSizeEnabled = false;
             editData.moonSize = nativeMoonSize;
@@ -2293,15 +2805,21 @@ void DrawCelestialTab() {
         }
     } else if (moonSizeOverrideChanged) {
         editChanged = true;
-    } else if (celestialEnabled && moonSizeChanged) {
+    } else if (celestialWindPackReady && moonSizeChanged) {
         if (detachedEdit) {
-            editData.moonSize = min(20.0f, max(0.020f, moonSize));
+            editData.moonSize = ClampSliderValue(moonSize, moonSizeRange);
             editData.moonSizeEnabled = fabsf(editData.moonSize - nativeMoonSize) > 0.001f;
             if (regionScoped) overrideMask.moonSize = true;
             editChanged = true;
         } else {
-            moonSize = min(20.0f, max(0.020f, moonSize));
+            moonSize = ClampSliderValue(moonSize, moonSizeRange);
             fabsf(moonSize - nativeMoonSize) <= 0.001f ? g_oMoonSize.clear() : g_oMoonSize.set(moonSize);
+        }
+    }
+    if (!celestialWindPackReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::WindPack);
         }
     }
 
@@ -2311,7 +2829,11 @@ void DrawCelestialTab() {
     const bool moonYawNative = detachedEdit ? !editData.moonYawEnabled : !g_oMoonDirX.active.load();
     bool moonYawChanged = false;
     bool moonYawOverrideChanged = false;
-    if (DrawSliderFloatRow("Moon Yaw Lock", "moon_yaw", &moonYaw, -180.0f, 180.0f, "%.2f", &moonYawChanged, regionScoped ? &overrideMask.moonYaw : nullptr, &moonYawOverrideChanged, moonYawNative)) {
+    const SliderRange moonYawRange = ActiveSliderRange(-180.0f, 180.0f, -360.0f, 360.0f);
+    if (!celestialSceneFrameReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Moon Yaw Lock", "moon_yaw", &moonYaw, moonYawRange.lo, moonYawRange.hi, "%.2f", &moonYawChanged, regionScoped ? &overrideMask.moonYaw : nullptr, &moonYawOverrideChanged, moonYawNative)) {
         if (detachedEdit) {
             editData.moonYawEnabled = false;
             editData.moonYaw = nativeMoonYaw;
@@ -2322,15 +2844,21 @@ void DrawCelestialTab() {
         }
     } else if (moonYawOverrideChanged) {
         editChanged = true;
-    } else if (celestialEnabled && moonYawChanged) {
+    } else if (celestialSceneFrameReady && moonYawChanged) {
         if (detachedEdit) {
-            editData.moonYaw = min(180.0f, max(-180.0f, moonYaw));
+            editData.moonYaw = ClampSliderValue(moonYaw, moonYawRange);
             editData.moonYawEnabled = fabsf(editData.moonYaw - nativeMoonYaw) > 0.001f;
             if (regionScoped) overrideMask.moonYaw = true;
             editChanged = true;
         } else {
-            moonYaw = min(180.0f, max(-180.0f, moonYaw));
+            moonYaw = ClampSliderValue(moonYaw, moonYawRange);
             fabsf(moonYaw - nativeMoonYaw) <= 0.001f ? g_oMoonDirX.clear() : g_oMoonDirX.set(moonYaw);
+        }
+    }
+    if (!celestialSceneFrameReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::SceneFrameUpdate);
         }
     }
 
@@ -2340,7 +2868,11 @@ void DrawCelestialTab() {
     const bool moonPitchNative = detachedEdit ? !editData.moonPitchEnabled : !g_oMoonDirY.active.load();
     bool moonPitchChanged = false;
     bool moonPitchOverrideChanged = false;
-    if (DrawSliderFloatRow("Moon Pitch Lock", "moon_pitch", &moonPitch, -89.0f, 89.0f, "%.2f", &moonPitchChanged, regionScoped ? &overrideMask.moonPitch : nullptr, &moonPitchOverrideChanged, moonPitchNative)) {
+    const SliderRange moonPitchRange = ActiveSliderRange(-89.0f, 89.0f, -180.0f, 180.0f);
+    if (!celestialSceneFrameReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Moon Pitch Lock", "moon_pitch", &moonPitch, moonPitchRange.lo, moonPitchRange.hi, "%.2f", &moonPitchChanged, regionScoped ? &overrideMask.moonPitch : nullptr, &moonPitchOverrideChanged, moonPitchNative)) {
         if (detachedEdit) {
             editData.moonPitchEnabled = false;
             editData.moonPitch = nativeMoonPitch;
@@ -2351,15 +2883,21 @@ void DrawCelestialTab() {
         }
     } else if (moonPitchOverrideChanged) {
         editChanged = true;
-    } else if (celestialEnabled && moonPitchChanged) {
+    } else if (celestialSceneFrameReady && moonPitchChanged) {
         if (detachedEdit) {
-            editData.moonPitch = min(89.0f, max(-89.0f, moonPitch));
+            editData.moonPitch = ClampSliderValue(moonPitch, moonPitchRange);
             editData.moonPitchEnabled = fabsf(editData.moonPitch - nativeMoonPitch) > 0.001f;
             if (regionScoped) overrideMask.moonPitch = true;
             editChanged = true;
         } else {
-            moonPitch = min(89.0f, max(-89.0f, moonPitch));
+            moonPitch = ClampSliderValue(moonPitch, moonPitchRange);
             fabsf(moonPitch - nativeMoonPitch) <= 0.001f ? g_oMoonDirY.clear() : g_oMoonDirY.set(moonPitch);
+        }
+    }
+    if (!celestialSceneFrameReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::SceneFrameUpdate);
         }
     }
 
@@ -2369,7 +2907,11 @@ void DrawCelestialTab() {
     const bool moonRollNative = detachedEdit ? !editData.moonRollEnabled : !g_oMoonRoll.active.load();
     bool moonRollChanged = false;
     bool moonRollOverrideChanged = false;
-    if (DrawSliderFloatRow("Moon Rotation", "moon_roll", &moonRoll, -180.0f, 180.0f, "%.2f", &moonRollChanged, regionScoped ? &overrideMask.moonRoll : nullptr, &moonRollOverrideChanged, moonRollNative)) {
+    const SliderRange moonRollRange = ActiveSliderRange(-180.0f, 180.0f, -360.0f, 360.0f);
+    if (!celestialSceneFrameReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Moon Rotation", "moon_roll", &moonRoll, moonRollRange.lo, moonRollRange.hi, "%.2f", &moonRollChanged, regionScoped ? &overrideMask.moonRoll : nullptr, &moonRollOverrideChanged, moonRollNative)) {
         if (detachedEdit) {
             editData.moonRollEnabled = false;
             editData.moonRoll = nativeMoonRoll;
@@ -2380,15 +2922,21 @@ void DrawCelestialTab() {
         }
     } else if (moonRollOverrideChanged) {
         editChanged = true;
-    } else if (celestialEnabled && moonRollChanged) {
+    } else if (celestialSceneFrameReady && moonRollChanged) {
         if (detachedEdit) {
-            editData.moonRoll = min(180.0f, max(-180.0f, moonRoll));
+            editData.moonRoll = ClampSliderValue(moonRoll, moonRollRange);
             editData.moonRollEnabled = fabsf(editData.moonRoll - nativeMoonRoll) > 0.001f;
             if (regionScoped) overrideMask.moonRoll = true;
             editChanged = true;
         } else {
-            moonRoll = min(180.0f, max(-180.0f, moonRoll));
+            moonRoll = ClampSliderValue(moonRoll, moonRollRange);
             fabsf(moonRoll - nativeMoonRoll) <= 0.001f ? g_oMoonRoll.clear() : g_oMoonRoll.set(moonRoll);
+        }
+    }
+    if (!celestialSceneFrameReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::SceneFrameUpdate);
         }
     }
 
@@ -2421,13 +2969,16 @@ void DrawOverlay(reshade::api::effect_runtime*) {
     }
 
     ImGui::Text("%s %s", MOD_NAME, MOD_VERSION);
-    ImGui::SameLine();
-    DrawEditScopeCombo();
-    ImGui::Spacing();
-    if (DrawStartupGate()) {
+    if (g_addonStartupState.load() != AddonStartupState::Ready) {
+        ImGui::Spacing();
+        DrawStartupGate();
         ImGui::End();
         return;
     }
+
+    ImGui::SameLine();
+    DrawEditScopeCombo();
+    ImGui::Spacing();
 
     if (ImGui::BeginTabBar("cw_tabs")) {
         if (ImGui::BeginTabItem("Presets")) {
@@ -2450,6 +3001,11 @@ void DrawOverlay(reshade::api::effect_runtime*) {
             DrawExperimentTab();
             ImGui::EndTabItem();
         }
+#if defined(CW_DEV_BUILD)
+        if (ImGui::BeginTabItem("Dev")) {
+            ImGui::EndTabItem();
+        }
+#endif
         if (ImGui::BeginTabItem("Status")) {
             DrawStatusTab();
             ImGui::EndTabItem();
@@ -2469,6 +3025,14 @@ void DrawOverlay(reshade::api::effect_runtime*) {
 #endif
 }
 
+static void OnReShadeInitDevice(reshade::api::device* device) {
+    if (device->get_api() != reshade::api::device_api::d3d12)
+        return;
+    Log("[moon-main] init_device event device=%p\n", device->get_native());
+    SkyTextureOnInitDevice(
+        reinterpret_cast<ID3D12Device*>(device->get_native()));
+}
+
 } // namespace
 
 bool InitializeOverlayBridge(HMODULE module) {
@@ -2477,6 +3041,9 @@ bool InitializeOverlayBridge(HMODULE module) {
     }
 
     reshade::register_overlay(MOD_NAME, &DrawOverlay);
+
+    reshade::register_event<reshade::addon_event::init_device>(&OnReShadeInitDevice);
+
     g_overlayModule = module;
     g_overlayRegistered = true;
     return true;
@@ -2486,6 +3053,8 @@ void ShutdownOverlayBridge() {
     if (!g_overlayRegistered) {
         return;
     }
+
+    reshade::unregister_event<reshade::addon_event::init_device>(&OnReShadeInitDevice);
 
     reshade::unregister_overlay(MOD_NAME, &DrawOverlay);
     reshade::unregister_addon(g_overlayModule);

@@ -28,7 +28,12 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_VERSION "0.5.7"
+#define MOD_BASE_VERSION "0.5.9"
+#if defined(CW_DEV_BUILD)
+#define MOD_VERSION MOD_BASE_VERSION " DEV"
+#else
+#define MOD_VERSION MOD_BASE_VERSION
+#endif
 
 struct Config {
     bool logEnabled = true;
@@ -36,10 +41,69 @@ struct Config {
     int effectToggleVK = VK_F10;
     WORD controllerEffectToggleMask = 0;
     bool reshadeDiagnostics = false;
+#if defined(CW_DEV_BUILD)
+    bool devPerfLog = true;
+    int devPerfLogIntervalSec = 10;
+#endif
 };
 
+#if defined(CW_DEV_BUILD)
+enum class DevLaunchOption : uint8_t {
+    Full = 0,
+    None,
+    TextureHook,
+    WeatherTickHook,
+    IntensityHooks,
+    WindHooks,
+    FrameHooks,
+    FogHooks,
+    RegionHook,
+};
+
+const char* DevLaunchOptionName(DevLaunchOption option);
+const char* DevLaunchOptionDescription(DevLaunchOption option);
+DevLaunchOption ParseDevLaunchOption(const char* text);
+bool DevLaunchOptionUsesTextureHook(DevLaunchOption option);
+bool DevLaunchOptionUsesRuntimeStartup(DevLaunchOption option);
+bool DevLaunchOptionBypassesStartupHealth(DevLaunchOption option);
+#endif
+
 inline Config g_cfg{};
+#if defined(CW_DEV_BUILD)
+inline std::atomic<DevLaunchOption> g_devLaunchOption{ DevLaunchOption::Full };
+
+enum class DevPerfHookId : uint8_t {
+    WeatherTick = 0,
+    RainIntensity,
+    SnowIntensity,
+    DustIntensity,
+    AtmosFogBlend,
+    WeatherFrameUpdate,
+    ProcessWindState,
+    WindPack,
+    SceneFrameUpdate,
+    MinimapRegionLabels,
+    D3D12CreateDevice,
+    D3D12CreateShaderResourceView,
+    D3D12CopyDescriptors,
+    D3D12CopyDescriptorsSimple,
+    Count
+};
+
+inline std::array<std::atomic<unsigned long long>, static_cast<size_t>(DevPerfHookId::Count)> g_devPerfHookCounts{};
+
+const char* DevPerfHookLabel(DevPerfHookId id);
+inline void DevPerf_CountHook(DevPerfHookId id) {
+    if (!g_cfg.devPerfLog) {
+        return;
+    }
+    g_devPerfHookCounts[static_cast<size_t>(id)].fetch_add(1, std::memory_order_relaxed);
+}
+#endif
 inline FILE* g_logFile = nullptr;
+#if defined(CW_DEV_BUILD)
+inline FILE* g_devLaunchLogFile = nullptr;
+#endif
 inline bool g_logEnabled = true;
 inline char g_pluginDir[MAX_PATH] = {};
 
@@ -50,6 +114,7 @@ WORD ControllerTokenToMask(const char* token);
 WORD ParseControllerCombo(const char* text, WORD fallback);
 bool IsControllerComboPressed(WORD buttons, WORD comboMask);
 void LoadConfig(const char* dir);
+void SaveGeneralConfig();
 void SaveWindOnlyConfig();
 void OpenLogFile(const char* dir);
 void GUI_SetStatus(const char* msg);
@@ -309,15 +374,55 @@ enum class RuntimeFeatureId : uint8_t {
     Count
 };
 
+enum class RuntimeHookId : uint8_t {
+    WeatherTick = 0,
+    GetRainIntensity,
+    GetSnowIntensity,
+    GetDustIntensity,
+    ProcessWindState,
+    WindPack,
+    SceneFrameUpdate,
+    WeatherFrameUpdate,
+    AtmosFogBlend,
+    FogSet0,
+    FogSet1,
+    FogSet2,
+    FogSet3,
+    FogSet4,
+    MinimapRegionLabels,
+    Count
+};
+
 struct RuntimeHealthEntry {
     RuntimeHealthState state = RuntimeHealthState::Disabled;
     uintptr_t addr = 0;
     std::string note;
 };
 
+struct RuntimeHookControlEntry {
+    void* target = nullptr;
+    void* detour = nullptr;
+    void** pointerSlot = nullptr;
+    void* original = nullptr;
+    std::atomic<bool> installed{ false };
+    std::atomic<bool> enabled{ false };
+    std::atomic<bool> pointerPatch{ false };
+};
+
+struct RuntimeHookStatusEntry {
+    RuntimeHookId id = RuntimeHookId::WeatherTick;
+    const char* name = "";
+    const char* kind = "";
+    void* target = nullptr;
+    bool installed = false;
+    bool enabled = false;
+    bool pointerPatch = false;
+};
+
 inline std::array<RuntimeHealthEntry, static_cast<size_t>(AobTargetId::Count)> g_aobTargetHealth{};
 inline std::array<RuntimeHealthEntry, static_cast<size_t>(RuntimeHealthGroup::Count)> g_runtimeGroupHealth{};
 inline std::array<RuntimeHealthEntry, static_cast<size_t>(RuntimeFeatureId::Count)> g_runtimeFeatureHealth{};
+inline std::array<RuntimeHookControlEntry, static_cast<size_t>(RuntimeHookId::Count)> g_runtimeHookControls{};
 
 const char* RuntimeHealthStateLabel(RuntimeHealthState state);
 const char* AobTargetLabel(AobTargetId id);
@@ -332,6 +437,15 @@ bool RuntimeFeatureAvailable(RuntimeFeatureId id);
 bool RuntimeFeatureDegraded(RuntimeFeatureId id);
 const char* RuntimeFeatureNote(RuntimeFeatureId id);
 bool RuntimeStartupHealthy(char* outReason, size_t outReasonSize);
+const char* RuntimeHookLabel(RuntimeHookId id);
+RuntimeHookId RuntimeHookIdFromName(const char* name);
+void ResetRuntimeHookControls();
+void RegisterRuntimeMinHook(RuntimeHookId id, void* target, void* detour);
+void RegisterRuntimePointerHook(RuntimeHookId id, void* target, void* detour, void** slot, void* original);
+size_t GetRuntimeHookStatusEntries(RuntimeHookStatusEntry* outEntries, size_t maxEntries);
+bool RuntimeHookInstalled(RuntimeHookId id);
+bool RuntimeHookEnabled(RuntimeHookId id);
+bool SetRuntimeHookEnabled(RuntimeHookId id, bool enabled, char* outMessage, size_t outMessageSize);
 
 bool InstallHook(void* target, void* detour, void** trampoline, const char* name, bool required = true);
 uintptr_t FindFunctionStartViaUnwind(uintptr_t pc);
@@ -390,6 +504,7 @@ inline std::atomic<bool> g_noSnow{ false };
 inline std::atomic<bool> g_noWind{ false };
 inline std::atomic<bool> g_noFog{ false };
 inline std::atomic<bool> g_modEnabled{ true };
+inline std::atomic<bool> g_extendedSliderRange{ false };
 inline std::atomic<bool> g_modSuspendRequested{ false };
 inline std::atomic<bool> g_regionStateValid{ false };
 inline std::atomic<int> g_regionMajorId{ 0 };
@@ -426,9 +541,25 @@ inline char g_startupDetailText[128] = "Waiting for user";
 inline char g_startupLogLines[kStartupLogLineCount][kStartupLogLineLength] = {};
 inline std::atomic<bool> g_timeCtrlActive{ false };
 inline std::atomic<bool> g_timeFreeze{ false };
+inline std::atomic<bool> g_timeProgressVisualTime{ false };
+inline std::atomic<unsigned long long> g_timeProgressLastTick{ 0 };
+inline std::atomic<float> g_timeProgressCadenceMs{ 0.0f };
 inline std::atomic<bool> g_timeApplyRequest{ false };
 inline std::atomic<float> g_timeTargetHour{ 12.0f };
 inline std::atomic<float> g_timeCurrentHour{ 12.0f };
+inline std::atomic<bool> g_timeCurrentHourValid{ false };
+#if defined(CW_DEV_BUILD)
+inline std::atomic<bool> g_timeUiClockSourceValid{ false };
+inline std::atomic<float> g_timeUiClockHour{ 12.0f };
+inline std::atomic<bool> g_timeUiClockValid{ false };
+inline std::atomic<unsigned long long> g_timeUiClockTick{ 0 };
+inline std::atomic<unsigned long long> g_timeFieldClockRaw{ 0 };
+inline std::atomic<float> g_timeFieldClockSecondsHour{ NAN };
+inline std::atomic<float> g_timeFieldClockMillisHour{ NAN };
+inline std::atomic<float> g_timeFieldClockMinutesHour{ NAN };
+inline std::atomic<bool> g_timeFieldClockValid{ false };
+inline std::atomic<unsigned long long> g_timeFieldClockTick{ 0 };
+#endif
 inline std::atomic<float> g_timeOriginalHour{ 12.0f };
 inline std::atomic<bool> g_timeOriginalHourValid{ false };
 inline std::atomic<bool> g_timeDomainKnown{ false };

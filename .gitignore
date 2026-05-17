@@ -14,6 +14,7 @@ TEMP/
 *.idb
 *.iobj
 *.ipdb
+*.json
 
 CrimsonWeatherReshade/.vs/
 CrimsonWeatherReshade/x64/
