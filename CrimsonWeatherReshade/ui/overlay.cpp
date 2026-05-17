@@ -12,9 +12,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cctype>
+#include <cstring>
 #include <string>
 
 namespace {
+
+constexpr float kCloudScatteringCoefficientMin = 0.00001f;
 
 HMODULE g_overlayModule = nullptr;
 bool g_overlayRegistered = false;
@@ -141,6 +144,50 @@ float ClampSliderValue(float value, const SliderRange& range) {
     return min(range.hi, max(range.lo, value));
 }
 
+float ClampColorValue(float value) {
+    if (!std::isfinite(value)) {
+        return 0.0f;
+    }
+    return min(10.0f, max(0.0f, value));
+}
+
+void ClampColorValues(float* color, bool includeAlpha) {
+    if (!color) return;
+    color[0] = ClampColorValue(color[0]);
+    color[1] = ClampColorValue(color[1]);
+    color[2] = ClampColorValue(color[2]);
+    if (includeAlpha) {
+        color[3] = ClampColorValue(color[3]);
+    } else {
+        color[3] = 1.0f;
+    }
+}
+
+WeatherPresetColor ColorFromArray(const float* color, bool includeAlpha) {
+    return {
+        color ? color[0] : 1.0f,
+        color ? color[1] : 1.0f,
+        color ? color[2] : 1.0f,
+        includeAlpha && color ? color[3] : 1.0f,
+    };
+}
+
+unsigned int PackUiRgbBits(float r, float g, float b) {
+    const auto toByte = [](float value) -> unsigned int {
+        return static_cast<unsigned int>(min(1.0f, max(0.0f, value)) * 255.0f + 0.5f);
+    };
+    return (toByte(r) << 16) | (toByte(g) << 8) | toByte(b);
+}
+
+WeatherPresetColor RayleighColorFromUiBits(unsigned int bits) {
+    return {
+        static_cast<float>((bits >> 16) & 0xFFu) / 255.0f,
+        static_cast<float>((bits >> 8) & 0xFFu) / 255.0f,
+        static_cast<float>(bits & 0xFFu) / 255.0f,
+        1.0f,
+    };
+}
+
 bool TryParseClockText(const char* text, int* outMinuteOfDay) {
     if (!text || !outMinuteOfDay) {
         return false;
@@ -246,6 +293,255 @@ bool DustHookReady() { return HookReady(RuntimeHookId::GetDustIntensity); }
 bool WindPackReady() { return HookReady(RuntimeHookId::WindPack); }
 bool SceneFrameReady() { return HookReady(RuntimeHookId::SceneFrameUpdate); }
 bool WeatherFrameReady() { return HookReady(RuntimeHookId::WeatherFrameUpdate); }
+
+#if defined(CW_DEV_BUILD)
+float DevAtmosphereLabDisplayValue(size_t index) {
+    if (index >= kDevAtmosphereLabFieldCount) {
+        return 0.0f;
+    }
+    return g_devAtmosphereLabActive[index].load()
+        ? g_devAtmosphereLabValue[index].load()
+        : g_devAtmosphereLabLast[index].load();
+}
+
+bool DevAtmosphereLabAnyActive(size_t baseIndex, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        const size_t index = baseIndex + i;
+        if (index < kDevAtmosphereLabFieldCount && g_devAtmosphereLabActive[index].load()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void DevAtmosphereLabSetValues(size_t baseIndex, const float* values, size_t count) {
+    if (!values) {
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const size_t index = baseIndex + i;
+        if (index >= kDevAtmosphereLabFieldCount) {
+            return;
+        }
+        g_devAtmosphereLabValue[index].store(values[i]);
+        g_devAtmosphereLabActive[index].store(true);
+    }
+}
+
+void DevAtmosphereLabClearValues(size_t baseIndex, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        const size_t index = baseIndex + i;
+        if (index >= kDevAtmosphereLabFieldCount) {
+            return;
+        }
+        g_devAtmosphereLabActive[index].store(false);
+    }
+}
+
+uint32_t DevAtmosphereLabFloatBits(float value) {
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+float DevAtmosphereLabBitsToFloat(uint32_t bits) {
+    float value = 0.0f;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+void DevAtmosphereLabSetRawBits(size_t index, uint32_t bits) {
+    if (index >= kDevAtmosphereLabFieldCount) {
+        return;
+    }
+    g_devAtmosphereLabValue[index].store(DevAtmosphereLabBitsToFloat(bits));
+    g_devAtmosphereLabActive[index].store(true);
+}
+
+void DrawDevAtmosphereScalarField(
+    const char* label,
+    size_t index,
+    float minValue,
+    float maxValue,
+    const char* format = "%.3f") {
+    if (index >= kDevAtmosphereLabFieldCount) {
+        return;
+    }
+
+    ImGui::PushID(label);
+    float value = DevAtmosphereLabDisplayValue(index);
+    const float nativeValue = g_devAtmosphereLabLast[index].load();
+    const bool active = g_devAtmosphereLabActive[index].load();
+    ImGui::Text("%s %s", label, active ? "(OVERRIDE)" : "(native)");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Use Native")) {
+        g_devAtmosphereLabValue[index].store(nativeValue);
+        g_devAtmosphereLabActive[index].store(true);
+        GUI_SetStatus("Atmosphere Lab copied native scalar");
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear")) {
+        g_devAtmosphereLabActive[index].store(false);
+        GUI_SetStatus("Atmosphere Lab scalar cleared");
+    }
+    if (ImGui::SliderFloat("Value", &value, minValue, maxValue, format)) {
+        g_devAtmosphereLabValue[index].store(value);
+        g_devAtmosphereLabActive[index].store(true);
+        GUI_SetStatus("Atmosphere Lab scalar override active");
+    }
+    ImGui::TextDisabled("Field 0x%02X %s | native %.6g", static_cast<unsigned int>(index), DevAtmosphereLabFieldName(index), nativeValue);
+    ImGui::PopID();
+}
+
+void DrawDevAtmospherePackedRayleighColor() {
+    constexpr size_t kRayleighField = 0x0F;
+    uint32_t bits = DevAtmosphereLabFloatBits(g_devAtmosphereLabActive[kRayleighField].load()
+        ? g_devAtmosphereLabValue[kRayleighField].load()
+        : g_devAtmosphereLabLast[kRayleighField].load());
+    uint32_t nativeBits = DevAtmosphereLabFloatBits(g_devAtmosphereLabLast[kRayleighField].load());
+
+    float value[3] = {
+        static_cast<float>((bits >> 16) & 0xFFu) / 255.0f,
+        static_cast<float>((bits >> 8) & 0xFFu) / 255.0f,
+        static_cast<float>(bits & 0xFFu) / 255.0f,
+    };
+    const float nativeValue[3] = {
+        static_cast<float>((nativeBits >> 16) & 0xFFu) / 255.0f,
+        static_cast<float>((nativeBits >> 8) & 0xFFu) / 255.0f,
+        static_cast<float>(nativeBits & 0xFFu) / 255.0f,
+    };
+
+    ImGui::PushID("RayleighPackedColor");
+    ImGui::Text("Rayleigh Scattering Color 0x0F %s", g_devAtmosphereLabActive[kRayleighField].load() ? "(OVERRIDE)" : "(native)");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Use Native")) {
+        DevAtmosphereLabSetRawBits(kRayleighField, nativeBits);
+        GUI_SetStatus("Atmosphere Lab copied native Rayleigh color");
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear")) {
+        g_devAtmosphereLabActive[kRayleighField].store(false);
+        GUI_SetStatus("Atmosphere Lab Rayleigh color cleared");
+    }
+
+    if (ImGui::ColorEdit3("RGB", value, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR)) {
+        const auto r = static_cast<uint32_t>(min(1.0f, max(0.0f, value[0])) * 255.0f + 0.5f);
+        const auto g = static_cast<uint32_t>(min(1.0f, max(0.0f, value[1])) * 255.0f + 0.5f);
+        const auto b = static_cast<uint32_t>(min(1.0f, max(0.0f, value[2])) * 255.0f + 0.5f);
+        DevAtmosphereLabSetRawBits(kRayleighField, (r << 16) | (g << 8) | b);
+        GUI_SetStatus("Atmosphere Lab Rayleigh color override active");
+    }
+    ImGui::TextDisabled(
+        "Native: R %.3f  G %.3f  B %.3f | bits 0x%08X",
+        nativeValue[0],
+        nativeValue[1],
+        nativeValue[2],
+        nativeBits);
+    ImGui::PopID();
+}
+
+void DrawDevAtmosphereColorEditor(const char* label, size_t baseIndex, bool includeAlpha) {
+    constexpr size_t kColorComponentCount = 4;
+    float value[kColorComponentCount] = {
+        DevAtmosphereLabDisplayValue(baseIndex + 0),
+        DevAtmosphereLabDisplayValue(baseIndex + 1),
+        DevAtmosphereLabDisplayValue(baseIndex + 2),
+        DevAtmosphereLabDisplayValue(baseIndex + 3),
+    };
+    const float nativeValue[kColorComponentCount] = {
+        g_devAtmosphereLabLast[baseIndex + 0].load(),
+        g_devAtmosphereLabLast[baseIndex + 1].load(),
+        g_devAtmosphereLabLast[baseIndex + 2].load(),
+        g_devAtmosphereLabLast[baseIndex + 3].load(),
+    };
+
+    ImGui::PushID(label);
+    const bool active = DevAtmosphereLabAnyActive(baseIndex, includeAlpha ? 4 : 3);
+    ImGui::Text("%s %s", label, active ? "(OVERRIDE)" : "(native)");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Use Native")) {
+        DevAtmosphereLabSetValues(baseIndex, nativeValue, includeAlpha ? 4 : 3);
+        GUI_SetStatus("Atmosphere Lab copied native color");
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear")) {
+        DevAtmosphereLabClearValues(baseIndex, includeAlpha ? 4 : 3);
+        GUI_SetStatus("Atmosphere Lab color cleared");
+    }
+
+    ImGuiColorEditFlags flags = ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR;
+    if (!includeAlpha) {
+        flags |= ImGuiColorEditFlags_NoAlpha;
+    }
+    if (ImGui::ColorEdit4("RGBA", value, flags)) {
+        DevAtmosphereLabSetValues(baseIndex, value, includeAlpha ? 4 : 3);
+        GUI_SetStatus("Atmosphere Lab color override active");
+    }
+
+    ImGui::TextDisabled(
+        "Native: R %.3f  G %.3f  B %.3f  A %.3f",
+        nativeValue[0],
+        nativeValue[1],
+        nativeValue[2],
+        nativeValue[3]);
+    ImGui::PopID();
+}
+
+void DrawDevTab() {
+    ImGui::TextDisabled("DEV-only live controls. These write WindPack atmosphere fields directly and are not saved to presets.");
+    ImGui::SeparatorText("Atmosphere Color Lab");
+
+    if (!WindPackReady()) {
+        ImGui::BeginDisabled();
+    }
+
+    ImGui::Text("WindPack captures: %llu", g_devAtmosphereLabCaptureCount.load());
+    DrawDevAtmospherePackedRayleighColor();
+    ImGui::Spacing();
+    DrawDevAtmosphereColorEditor("Volume Fog Scatter Color 0x34-0x37", 0x34, true);
+    ImGui::Spacing();
+    DrawDevAtmosphereColorEditor("Mie Scatter Color 0x38-0x3B", 0x38, true);
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Light Candidates");
+    DrawDevAtmosphereScalarField("Sun Light Intensity", 0x00, 0.0f, 20.0f, "%.3f");
+    DrawDevAtmosphereScalarField("Moon Light Intensity", 0x05, 0.0f, 20.0f, "%.3f");
+    DrawDevAtmosphereScalarField("Directional Light Luminance Scale", 0x15, 0.0f, 20.0f, "%.3f");
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Fog Candidates");
+    DrawDevAtmosphereScalarField("Mie Scaled Height", 0x10, 10.0f, 20000.0f, "%.1f");
+    DrawDevAtmosphereScalarField("Mie Aerosol Density", 0x11, 0.0f, 20.0f, "%.4f");
+    DrawDevAtmosphereScalarField("Mie Aerosol Absorption", 0x12, 0.0f, 5.0f, "%.4f");
+    DrawDevAtmosphereScalarField("Mie Phase Const", 0x13, -0.99f, 0.99f, "%.4f");
+    DrawDevAtmosphereScalarField("Height Fog Density", 0x17, 0.0f, 1.0f, "%.5f");
+    DrawDevAtmosphereScalarField("Height Fog Baseline", 0x18, -5000.0f, 5000.0f, "%.1f");
+    DrawDevAtmosphereScalarField("Height Fog Falloff", 0x19, 0.0f, 5.0f, "%.4f");
+    DrawDevAtmosphereScalarField("Height Fog Scale", 0x1A, 0.0f, 10.0f, "%.4f");
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Cloud Candidates");
+    DrawDevAtmosphereScalarField("Cloud Base Density", 0x1B, 0.0f, 5.0f, "%.4f");
+    DrawDevAtmosphereScalarField("Cloud Alpha", 0x1E, 0.0f, 50.0f, "%.3f");
+    DrawDevAtmosphereScalarField("Cloud Scattering Coefficient", 0x20, kCloudScatteringCoefficientMin, 1.0f, "%.5f");
+    DrawDevAtmosphereScalarField("Cloud Phase Front", 0x21, -1.0f, 1.0f, "%.4f");
+    DrawDevAtmosphereScalarField("Cloud Phase Back", 0x22, -1.0f, 1.0f, "%.4f");
+    DrawDevAtmosphereScalarField("Cloud Cirrus Density", 0x2D, 0.0f, 5.0f, "%.4f");
+    DrawDevAtmosphereScalarField("Cloud Cirrus Scale", 0x2E, 0.0f, 10.0f, "%.4f");
+    DrawDevAtmosphereColorEditor("Cloud Cirrus Weight RGB 0x2F-0x31", 0x2F, false);
+
+    ImGui::Spacing();
+    if (ImGui::Button("Clear All Atmosphere Lab Overrides")) {
+        DevAtmosphereLabClearValues(0, kDevAtmosphereLabFieldCount);
+        GUI_SetStatus("Atmosphere Lab cleared");
+    }
+
+    if (!WindPackReady()) {
+        ImGui::EndDisabled();
+        DrawHookUnavailable(RuntimeHookId::WindPack);
+    }
+}
+#endif
 
 bool DrawResetButton(const char* id) {
     ImGui::SameLine();
@@ -397,6 +693,64 @@ bool DrawSliderFloatRow(
     if (reset && g_sliderEditId == id) {
         g_sliderEditId.clear();
         g_sliderEditFocusRequest = false;
+    }
+    if (outValueChanged) {
+        *outValueChanged = valueChanged;
+    }
+    if (outOverrideChanged) {
+        *outOverrideChanged = overrideChanged;
+    }
+    ImGui::PopID();
+    return reset;
+}
+
+bool DrawColorRow(
+    const char* label,
+    const char* id,
+    float* color,
+    bool includeAlpha,
+    bool* outValueChanged = nullptr,
+    bool* overrideEnabled = nullptr,
+    bool* outOverrideChanged = nullptr,
+    bool nativeDisplay = false) {
+    ImGui::PushID(id);
+    const bool overrideChanged = DrawOverrideToggle(overrideEnabled);
+    const bool regionOverride = !overrideEnabled || *overrideEnabled;
+    if (!regionOverride) {
+        ImGui::BeginDisabled();
+    }
+    ImGui::TextUnformatted(label);
+    if (!regionOverride) {
+        ImGui::EndDisabled();
+    }
+    if (overrideEnabled) {
+        DrawOverrideBadge(*overrideEnabled);
+    }
+    ImGui::SameLine();
+    const float resetWidth = 28.0f;
+    const float resetX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - resetWidth;
+    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), resetX));
+    const bool disabled = overrideEnabled && !*overrideEnabled;
+    if (disabled) {
+        ImGui::BeginDisabled();
+    }
+    const bool reset = ImGui::Button("R", ImVec2(resetWidth, 0.0f));
+    if (disabled) {
+        ImGui::EndDisabled();
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    if (disabled) {
+        ImGui::BeginDisabled();
+    }
+    bool valueChanged = includeAlpha
+        ? ImGui::ColorEdit4("##color", color, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR)
+        : ImGui::ColorEdit3("##color", color, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+    if (disabled) {
+        ImGui::EndDisabled();
+    }
+    if (nativeDisplay) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("NATIVE");
     }
     if (outValueChanged) {
         *outValueChanged = valueChanged;
@@ -1031,18 +1385,31 @@ void DrawStatusTab() {
             DrawStatusRowHookDisabled(snapshot, "Cloud Density", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Mid Clouds", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "High Clouds", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Cloud Alpha", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Cloud Phase Front", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Cloud Scattering Coefficient", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Rayleigh Scattering Color", RuntimeHookId::WindPack);
         } else if (snapshot.effective.forceClearSky) {
             DrawStatusRowBlocked(snapshot, "Cloud Amount", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud amount overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "Cloud Height", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud height overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "Cloud Density", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud density overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "Mid Clouds", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so mid-cloud overrides are not applied.");
             DrawStatusRowBlocked(snapshot, "High Clouds", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so high-cloud overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "Cloud Alpha", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud alpha overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "Cloud Phase Front", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud phase overrides are not applied.");
+            DrawStatusRowBlocked(snapshot, "Cloud Scattering Coefficient", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so cloud scattering overrides are not applied.");
         } else {
             DrawStatusRowEnabledFloat(snapshot, "Cloud Amount", snapshot.effective.cloudAmountEnabled, snapshot.effective.cloudAmount, "x%.2f", snapshot.regionSource.cloudAmount, "Crimson Weather currently multiplies cloud amount by %s.");
             DrawStatusRowEnabledFloat(snapshot, "Cloud Height", snapshot.effective.cloudHeightEnabled, snapshot.effective.cloudHeight, "x%.2f", snapshot.regionSource.cloudHeight, "Crimson Weather currently multiplies cloud height by %s.");
             DrawStatusRowEnabledFloat(snapshot, "Cloud Density", snapshot.effective.cloudDensityEnabled, snapshot.effective.cloudDensity, "x%.2f", snapshot.regionSource.cloudDensity, "Crimson Weather currently multiplies cloud density by %s.");
             DrawStatusRowEnabledFloat(snapshot, "Mid Clouds", snapshot.effective.midCloudsEnabled, snapshot.effective.midClouds, "x%.2f", snapshot.regionSource.midClouds, "Crimson Weather currently multiplies mid clouds by %s.");
             DrawStatusRowEnabledFloat(snapshot, "High Clouds", snapshot.effective.highCloudsEnabled, snapshot.effective.highClouds, "x%.2f", snapshot.regionSource.highClouds, "Crimson Weather currently multiplies high clouds by %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Cloud Alpha", snapshot.effective.cloudAlphaEnabled, snapshot.effective.cloudAlpha, "%.3f", snapshot.regionSource.cloudAlpha, "Crimson Weather currently sets cloud alpha to %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Cloud Phase Front", snapshot.effective.cloudPhaseFrontEnabled, snapshot.effective.cloudPhaseFront, "%.4f", snapshot.regionSource.cloudPhaseFront, "Crimson Weather currently sets cloud phase front to %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Cloud Scattering Coefficient", snapshot.effective.cloudScatteringCoefficientEnabled, snapshot.effective.cloudScatteringCoefficient, "%.5f", snapshot.regionSource.cloudScatteringCoefficient, "Crimson Weather currently sets cloud scattering coefficient to %s.");
+        }
+        if (WindPackReady()) {
+            DrawStatusRowText(snapshot, "Rayleigh Scattering Color", snapshot.effective.rayleighScatteringColorEnabled ? "ACTIVE" : "NATIVE", snapshot.regionSource.rayleighScatteringColor, "Crimson Weather currently overrides Rayleigh scattering color.");
         }
 
         if (!WindPackReady()) {
@@ -1075,8 +1442,10 @@ void DrawStatusTab() {
             DrawStatusRowHookDisabled(snapshot, "Night Sky Phase", RuntimeHookId::SceneFrameUpdate);
         }
         if (WindPackReady()) {
+            DrawStatusRowEnabledFloat(snapshot, "Sun Light Intensity", snapshot.effective.sunLightIntensityEnabled, snapshot.effective.sunLightIntensity, "%.3f", snapshot.regionSource.sunLightIntensity, "Crimson Weather currently sets sun light intensity to %s.");
             DrawStatusRowEnabledFloat(snapshot, "Sun Size", snapshot.effective.sunSizeEnabled, snapshot.effective.sunSize, "%.3f", snapshot.regionSource.sunSize, "Crimson Weather currently sets sun size to %s.");
         } else {
+            DrawStatusRowHookDisabled(snapshot, "Sun Light Intensity", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Sun Size", RuntimeHookId::WindPack);
         }
         if (SceneFrameReady()) {
@@ -1087,8 +1456,10 @@ void DrawStatusTab() {
             DrawStatusRowHookDisabled(snapshot, "Sun Pitch Lock", RuntimeHookId::SceneFrameUpdate);
         }
         if (WindPackReady()) {
+            DrawStatusRowEnabledFloat(snapshot, "Moon Light Intensity", snapshot.effective.moonLightIntensityEnabled, snapshot.effective.moonLightIntensity, "%.3f", snapshot.regionSource.moonLightIntensity, "Crimson Weather currently sets moon light intensity to %s.");
             DrawStatusRowEnabledFloat(snapshot, "Moon Size", snapshot.effective.moonSizeEnabled, snapshot.effective.moonSize, "%.3f", snapshot.regionSource.moonSize, "Crimson Weather currently sets moon size to %s.");
         } else {
+            DrawStatusRowHookDisabled(snapshot, "Moon Light Intensity", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Moon Size", RuntimeHookId::WindPack);
         }
         if (SceneFrameReady()) {
@@ -1130,10 +1501,28 @@ void DrawStatusTab() {
         }
         if (!WindPackReady()) {
             DrawStatusRowHookDisabled(snapshot, "Fog", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Volume Fog Scatter Color", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Aerosol Height", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Aerosol Density", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Aerosol Absorption", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Fog Height Baseline", RuntimeHookId::WindPack);
+            DrawStatusRowHookDisabled(snapshot, "Fog Height Falloff", RuntimeHookId::WindPack);
         } else if (fogForcedZero) {
             DrawStatusRowBlocked(snapshot, "Fog", fogForceSource, nativeFogForceTooltip);
+            DrawStatusRowBlocked(snapshot, "Volume Fog Scatter Color", fogForceSource, nativeFogForceTooltip);
+            DrawStatusRowBlocked(snapshot, "Aerosol Height", fogForceSource, nativeFogForceTooltip);
+            DrawStatusRowBlocked(snapshot, "Aerosol Density", fogForceSource, nativeFogForceTooltip);
+            DrawStatusRowBlocked(snapshot, "Aerosol Absorption", fogForceSource, nativeFogForceTooltip);
+            DrawStatusRowBlocked(snapshot, "Fog Height Baseline", fogForceSource, nativeFogForceTooltip);
+            DrawStatusRowBlocked(snapshot, "Fog Height Falloff", fogForceSource, nativeFogForceTooltip);
         } else {
             DrawStatusRowEnabledFloat(snapshot, "Fog", snapshot.effective.nativeFogEnabled, snapshot.effective.nativeFog, "%.2f", snapshot.regionSource.nativeFog, "Crimson Weather currently scales native fog by %s.");
+            DrawStatusRowText(snapshot, "Volume Fog Scatter Color", snapshot.effective.volumeFogScatterColorEnabled ? "ACTIVE" : "NATIVE", snapshot.regionSource.volumeFogScatterColor, "Crimson Weather currently overrides volume fog scatter color.");
+            DrawStatusRowEnabledFloat(snapshot, "Aerosol Height", snapshot.effective.mieScaleHeightEnabled, snapshot.effective.mieScaleHeight, "%.1f", snapshot.regionSource.mieScaleHeight, "Crimson Weather currently sets aerosol height to %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Aerosol Density", snapshot.effective.mieAerosolDensityEnabled, snapshot.effective.mieAerosolDensity, "%.4f", snapshot.regionSource.mieAerosolDensity, "Crimson Weather currently sets aerosol density to %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Aerosol Absorption", snapshot.effective.mieAerosolAbsorptionEnabled, snapshot.effective.mieAerosolAbsorption, "%.4f", snapshot.regionSource.mieAerosolAbsorption, "Crimson Weather currently sets aerosol absorption to %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Fog Height Baseline", snapshot.effective.heightFogBaselineEnabled, snapshot.effective.heightFogBaseline, "%.1f", snapshot.regionSource.heightFogBaseline, "Crimson Weather currently sets fog height baseline to %s.");
+            DrawStatusRowEnabledFloat(snapshot, "Fog Height Falloff", snapshot.effective.heightFogFalloffEnabled, snapshot.effective.heightFogFalloff, "%.4f", snapshot.regionSource.heightFogFalloff, "Crimson Weather currently sets fog height falloff to %s.");
         }
         if (WeatherFrameReady() || WindPackReady()) {
             DrawStatusRowBool(snapshot, "No Fog", snapshot.effective.noFog, snapshot.regionSource.noFog, "Crimson Weather currently disables fog.");
@@ -1905,6 +2294,49 @@ void DrawAtmosphereTab() {
     WeatherPresetSourceMask overrideMask = regionScoped ? Preset_GetEditRegionOverrideMask() : WeatherPresetSourceMask{};
     bool editChanged = false;
 
+    const bool windPackAvailable = RuntimeFeatureAvailable(RuntimeFeatureId::CloudControls) && WindPackReady();
+    ImGui::SeparatorText("Rayleigh");
+    if (!windPackAvailable) {
+        ImGui::BeginDisabled();
+    }
+    const WeatherPresetColor nativeRayleigh = RayleighColorFromUiBits(g_windPackBase0FBits.load());
+    WeatherPresetColor rayleighColorData = detachedEdit
+        ? (editData.rayleighScatteringColorEnabled ? editData.rayleighScatteringColor : nativeRayleigh)
+        : (g_oRayleighScatteringColor.active.load()
+            ? WeatherPresetColor{ g_oRayleighScatteringColor.r.load(), g_oRayleighScatteringColor.g.load(), g_oRayleighScatteringColor.b.load(), 1.0f }
+            : nativeRayleigh);
+    float rayleighColor[4] = { rayleighColorData.r, rayleighColorData.g, rayleighColorData.b, 1.0f };
+    const bool rayleighNative = detachedEdit ? !editData.rayleighScatteringColorEnabled : !g_oRayleighScatteringColor.active.load();
+    bool rayleighColorChanged = false;
+    bool rayleighColorOverrideChanged = false;
+    if (DrawColorRow("Rayleigh Scattering Color", "rayleigh_scattering_color", rayleighColor, false, &rayleighColorChanged, regionScoped ? &overrideMask.rayleighScatteringColor : nullptr, &rayleighColorOverrideChanged, rayleighNative)) {
+        if (detachedEdit) {
+            editData.rayleighScatteringColorEnabled = false;
+            editData.rayleighScatteringColor = nativeRayleigh;
+            if (regionScoped) overrideMask.rayleighScatteringColor = true;
+            editChanged = true;
+        } else {
+            g_oRayleighScatteringColor.clear();
+        }
+    } else if (rayleighColorOverrideChanged) {
+        editChanged = true;
+    } else if (windPackAvailable && rayleighColorChanged) {
+        ClampColorValues(rayleighColor, false);
+        if (detachedEdit) {
+            editData.rayleighScatteringColor = ColorFromArray(rayleighColor, false);
+            editData.rayleighScatteringColorEnabled = true;
+            if (regionScoped) overrideMask.rayleighScatteringColor = true;
+            editChanged = true;
+        } else {
+            g_oRayleighScatteringColor.set(rayleighColor[0], rayleighColor[1], rayleighColor[2], 1.0f);
+        }
+    }
+    if (!windPackAvailable) {
+        ImGui::EndDisabled();
+        DrawHookUnavailable(RuntimeHookId::WindPack);
+    }
+
+    ImGui::Spacing();
     const bool cloudEnabled = !(detachedEdit ? editData.forceClearSky : g_forceClear.load()) &&
                               RuntimeFeatureAvailable(RuntimeFeatureId::CloudControls) &&
                               WindPackReady();
@@ -2053,6 +2485,87 @@ void DrawAtmosphereTab() {
         }
     }
 
+    float cloudAlpha = detachedEdit ? editData.cloudAlpha : (g_oCloudAlpha.active.load() ? g_oCloudAlpha.value.load() : g_windPackBase1E.load());
+    const bool cloudAlphaNative = detachedEdit ? !editData.cloudAlphaEnabled : !g_oCloudAlpha.active.load();
+    bool cloudAlphaChanged = false;
+    bool cloudAlphaOverrideChanged = false;
+    const SliderRange cloudAlphaRange = ActiveSliderRange(0.0f, 50.0f, 0.0f, 100.0f);
+    if (DrawSliderFloatRow("Cloud Alpha", "cloud_alpha", &cloudAlpha, cloudAlphaRange.lo, cloudAlphaRange.hi, "%.3f", &cloudAlphaChanged, regionScoped ? &overrideMask.cloudAlpha : nullptr, &cloudAlphaOverrideChanged, cloudAlphaNative)) {
+        if (detachedEdit) {
+            editData.cloudAlphaEnabled = false;
+            editData.cloudAlpha = g_windPackBase1E.load();
+            if (regionScoped) overrideMask.cloudAlpha = true;
+            editChanged = true;
+        } else {
+            g_oCloudAlpha.clear();
+        }
+    } else if (cloudAlphaOverrideChanged) {
+        editChanged = true;
+    } else if (cloudEnabled && cloudAlphaChanged) {
+        if (detachedEdit) {
+            editData.cloudAlpha = ClampSliderValue(cloudAlpha, cloudAlphaRange);
+            editData.cloudAlphaEnabled = true;
+            if (regionScoped) overrideMask.cloudAlpha = true;
+            editChanged = true;
+        } else {
+            g_oCloudAlpha.set(ClampSliderValue(cloudAlpha, cloudAlphaRange));
+        }
+    }
+
+    float cloudPhaseFront = detachedEdit ? editData.cloudPhaseFront : (g_oCloudPhaseFront.active.load() ? g_oCloudPhaseFront.value.load() : g_windPackBase21.load());
+    const bool cloudPhaseFrontNative = detachedEdit ? !editData.cloudPhaseFrontEnabled : !g_oCloudPhaseFront.active.load();
+    bool cloudPhaseFrontChanged = false;
+    bool cloudPhaseFrontOverrideChanged = false;
+    const SliderRange cloudPhaseFrontRange = ActiveSliderRange(-1.0f, 1.0f, -1.0f, 1.0f);
+    if (DrawSliderFloatRow("Cloud Phase Front", "cloud_phase_front", &cloudPhaseFront, cloudPhaseFrontRange.lo, cloudPhaseFrontRange.hi, "%.4f", &cloudPhaseFrontChanged, regionScoped ? &overrideMask.cloudPhaseFront : nullptr, &cloudPhaseFrontOverrideChanged, cloudPhaseFrontNative)) {
+        if (detachedEdit) {
+            editData.cloudPhaseFrontEnabled = false;
+            editData.cloudPhaseFront = g_windPackBase21.load();
+            if (regionScoped) overrideMask.cloudPhaseFront = true;
+            editChanged = true;
+        } else {
+            g_oCloudPhaseFront.clear();
+        }
+    } else if (cloudPhaseFrontOverrideChanged) {
+        editChanged = true;
+    } else if (cloudEnabled && cloudPhaseFrontChanged) {
+        if (detachedEdit) {
+            editData.cloudPhaseFront = ClampSliderValue(cloudPhaseFront, cloudPhaseFrontRange);
+            editData.cloudPhaseFrontEnabled = true;
+            if (regionScoped) overrideMask.cloudPhaseFront = true;
+            editChanged = true;
+        } else {
+            g_oCloudPhaseFront.set(ClampSliderValue(cloudPhaseFront, cloudPhaseFrontRange));
+        }
+    }
+
+    float cloudScatter = detachedEdit ? editData.cloudScatteringCoefficient : (g_oCloudScatteringCoefficient.active.load() ? g_oCloudScatteringCoefficient.value.load() : g_windPackBase20.load());
+    const bool cloudScatterNative = detachedEdit ? !editData.cloudScatteringCoefficientEnabled : !g_oCloudScatteringCoefficient.active.load();
+    bool cloudScatterChanged = false;
+    bool cloudScatterOverrideChanged = false;
+    const SliderRange cloudScatterRange = ActiveSliderRange(kCloudScatteringCoefficientMin, 1.0f, kCloudScatteringCoefficientMin, 100.0f);
+    if (DrawSliderFloatRow("Cloud Scattering Coefficient", "cloud_scattering_coefficient", &cloudScatter, cloudScatterRange.lo, cloudScatterRange.hi, "%.5f", &cloudScatterChanged, regionScoped ? &overrideMask.cloudScatteringCoefficient : nullptr, &cloudScatterOverrideChanged, cloudScatterNative)) {
+        if (detachedEdit) {
+            editData.cloudScatteringCoefficientEnabled = false;
+            editData.cloudScatteringCoefficient = g_windPackBase20.load();
+            if (regionScoped) overrideMask.cloudScatteringCoefficient = true;
+            editChanged = true;
+        } else {
+            g_oCloudScatteringCoefficient.clear();
+        }
+    } else if (cloudScatterOverrideChanged) {
+        editChanged = true;
+    } else if (cloudEnabled && cloudScatterChanged) {
+        if (detachedEdit) {
+            editData.cloudScatteringCoefficient = ClampSliderValue(cloudScatter, cloudScatterRange);
+            editData.cloudScatteringCoefficientEnabled = true;
+            if (regionScoped) overrideMask.cloudScatteringCoefficient = true;
+            editChanged = true;
+        } else {
+            g_oCloudScatteringCoefficient.set(ClampSliderValue(cloudScatter, cloudScatterRange));
+        }
+    }
+
     if (!cloudEnabled) {
         ImGui::EndDisabled();
         if (!RuntimeFeatureAvailable(RuntimeFeatureId::CloudControls)) {
@@ -2063,7 +2576,7 @@ void DrawAtmosphereTab() {
     }
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Atmosphere");
+    ImGui::SeparatorText("Fog");
 
     float fogFromWind = detachedEdit ? editData.nativeFog : (g_oNativeFog.active.load() ? g_oNativeFog.value.load() : 1.0f);
     const bool fogFromWindNative = detachedEdit ? !editData.nativeFogEnabled : !g_oNativeFog.active.load();
@@ -2072,6 +2585,45 @@ void DrawAtmosphereTab() {
     if (!windEnabled) {
         ImGui::BeginDisabled();
     }
+
+    WeatherPresetColor nativeVolumeFogColor{
+        g_windPackBase34.load(),
+        g_windPackBase35.load(),
+        g_windPackBase36.load(),
+        g_windPackBase37.load(),
+    };
+    WeatherPresetColor volumeFogColorData = detachedEdit
+        ? (editData.volumeFogScatterColorEnabled ? editData.volumeFogScatterColor : nativeVolumeFogColor)
+        : (g_oVolumeFogScatterColor.active.load()
+            ? WeatherPresetColor{ g_oVolumeFogScatterColor.r.load(), g_oVolumeFogScatterColor.g.load(), g_oVolumeFogScatterColor.b.load(), g_oVolumeFogScatterColor.a.load() }
+            : nativeVolumeFogColor);
+    float volumeFogColor[4] = { volumeFogColorData.r, volumeFogColorData.g, volumeFogColorData.b, volumeFogColorData.a };
+    const bool volumeFogNative = detachedEdit ? !editData.volumeFogScatterColorEnabled : !g_oVolumeFogScatterColor.active.load();
+    bool volumeFogColorChanged = false;
+    bool volumeFogColorOverrideChanged = false;
+    if (DrawColorRow("Volume Fog Scatter Color", "volume_fog_scatter_color", volumeFogColor, true, &volumeFogColorChanged, regionScoped ? &overrideMask.volumeFogScatterColor : nullptr, &volumeFogColorOverrideChanged, volumeFogNative)) {
+        if (detachedEdit) {
+            editData.volumeFogScatterColorEnabled = false;
+            editData.volumeFogScatterColor = nativeVolumeFogColor;
+            if (regionScoped) overrideMask.volumeFogScatterColor = true;
+            editChanged = true;
+        } else {
+            g_oVolumeFogScatterColor.clear();
+        }
+    } else if (volumeFogColorOverrideChanged) {
+        editChanged = true;
+    } else if (windEnabled && volumeFogColorChanged) {
+        ClampColorValues(volumeFogColor, true);
+        if (detachedEdit) {
+            editData.volumeFogScatterColor = ColorFromArray(volumeFogColor, true);
+            editData.volumeFogScatterColorEnabled = true;
+            if (regionScoped) overrideMask.volumeFogScatterColor = true;
+            editChanged = true;
+        } else {
+            g_oVolumeFogScatterColor.set(volumeFogColor[0], volumeFogColor[1], volumeFogColor[2], volumeFogColor[3]);
+        }
+    }
+
     bool fogFromWindChanged = false;
     bool fogFromWindOverrideChanged = false;
     const SliderRange fogFromWindRange = ActiveSliderRange(0.0f, 15.0f, 0.0f, 50.0f);
@@ -2101,6 +2653,142 @@ void DrawAtmosphereTab() {
             }
         }
     }
+
+    float aerosolHeight = detachedEdit ? editData.mieScaleHeight : (g_oMieScaleHeight.active.load() ? g_oMieScaleHeight.value.load() : g_windPackBase10.load());
+    const bool aerosolHeightNative = detachedEdit ? !editData.mieScaleHeightEnabled : !g_oMieScaleHeight.active.load();
+    bool aerosolHeightChanged = false;
+    bool aerosolHeightOverrideChanged = false;
+    const SliderRange aerosolHeightRange = ActiveSliderRange(10.0f, 20000.0f, 1.0f, 200000.0f);
+    if (DrawSliderFloatRow("Aerosol Height", "mie_scale_height", &aerosolHeight, aerosolHeightRange.lo, aerosolHeightRange.hi, "%.1f", &aerosolHeightChanged, regionScoped ? &overrideMask.mieScaleHeight : nullptr, &aerosolHeightOverrideChanged, aerosolHeightNative)) {
+        if (detachedEdit) {
+            editData.mieScaleHeightEnabled = false;
+            editData.mieScaleHeight = g_windPackBase10.load();
+            if (regionScoped) overrideMask.mieScaleHeight = true;
+            editChanged = true;
+        } else {
+            g_oMieScaleHeight.clear();
+        }
+    } else if (aerosolHeightOverrideChanged) {
+        editChanged = true;
+    } else if (windEnabled && aerosolHeightChanged) {
+        if (detachedEdit) {
+            editData.mieScaleHeight = ClampSliderValue(aerosolHeight, aerosolHeightRange);
+            editData.mieScaleHeightEnabled = true;
+            if (regionScoped) overrideMask.mieScaleHeight = true;
+            editChanged = true;
+        } else {
+            g_oMieScaleHeight.set(ClampSliderValue(aerosolHeight, aerosolHeightRange));
+        }
+    }
+
+    float aerosolDensity = detachedEdit ? editData.mieAerosolDensity : (g_oMieAerosolDensity.active.load() ? g_oMieAerosolDensity.value.load() : g_windPackBase11.load());
+    const bool aerosolDensityNative = detachedEdit ? !editData.mieAerosolDensityEnabled : !g_oMieAerosolDensity.active.load();
+    bool aerosolDensityChanged = false;
+    bool aerosolDensityOverrideChanged = false;
+    const SliderRange aerosolDensityRange = ActiveSliderRange(0.0f, 20.0f, 0.0f, 100.0f);
+    if (DrawSliderFloatRow("Aerosol Density", "mie_aerosol_density", &aerosolDensity, aerosolDensityRange.lo, aerosolDensityRange.hi, "%.4f", &aerosolDensityChanged, regionScoped ? &overrideMask.mieAerosolDensity : nullptr, &aerosolDensityOverrideChanged, aerosolDensityNative)) {
+        if (detachedEdit) {
+            editData.mieAerosolDensityEnabled = false;
+            editData.mieAerosolDensity = g_windPackBase11.load();
+            if (regionScoped) overrideMask.mieAerosolDensity = true;
+            editChanged = true;
+        } else {
+            g_oMieAerosolDensity.clear();
+        }
+    } else if (aerosolDensityOverrideChanged) {
+        editChanged = true;
+    } else if (windEnabled && aerosolDensityChanged) {
+        if (detachedEdit) {
+            editData.mieAerosolDensity = ClampSliderValue(aerosolDensity, aerosolDensityRange);
+            editData.mieAerosolDensityEnabled = true;
+            if (regionScoped) overrideMask.mieAerosolDensity = true;
+            editChanged = true;
+        } else {
+            g_oMieAerosolDensity.set(ClampSliderValue(aerosolDensity, aerosolDensityRange));
+        }
+    }
+
+    float aerosolAbsorption = detachedEdit ? editData.mieAerosolAbsorption : (g_oMieAerosolAbsorption.active.load() ? g_oMieAerosolAbsorption.value.load() : g_windPackBase12.load());
+    const bool aerosolAbsorptionNative = detachedEdit ? !editData.mieAerosolAbsorptionEnabled : !g_oMieAerosolAbsorption.active.load();
+    bool aerosolAbsorptionChanged = false;
+    bool aerosolAbsorptionOverrideChanged = false;
+    const SliderRange aerosolAbsorptionRange = ActiveSliderRange(0.0f, 5.0f, 0.0f, 100.0f);
+    if (DrawSliderFloatRow("Aerosol Absorption", "mie_aerosol_absorption", &aerosolAbsorption, aerosolAbsorptionRange.lo, aerosolAbsorptionRange.hi, "%.4f", &aerosolAbsorptionChanged, regionScoped ? &overrideMask.mieAerosolAbsorption : nullptr, &aerosolAbsorptionOverrideChanged, aerosolAbsorptionNative)) {
+        if (detachedEdit) {
+            editData.mieAerosolAbsorptionEnabled = false;
+            editData.mieAerosolAbsorption = g_windPackBase12.load();
+            if (regionScoped) overrideMask.mieAerosolAbsorption = true;
+            editChanged = true;
+        } else {
+            g_oMieAerosolAbsorption.clear();
+        }
+    } else if (aerosolAbsorptionOverrideChanged) {
+        editChanged = true;
+    } else if (windEnabled && aerosolAbsorptionChanged) {
+        if (detachedEdit) {
+            editData.mieAerosolAbsorption = ClampSliderValue(aerosolAbsorption, aerosolAbsorptionRange);
+            editData.mieAerosolAbsorptionEnabled = true;
+            if (regionScoped) overrideMask.mieAerosolAbsorption = true;
+            editChanged = true;
+        } else {
+            g_oMieAerosolAbsorption.set(ClampSliderValue(aerosolAbsorption, aerosolAbsorptionRange));
+        }
+    }
+
+    float fogBaseline = detachedEdit ? editData.heightFogBaseline : (g_oHeightFogBaseline.active.load() ? g_oHeightFogBaseline.value.load() : g_windPackBase18.load());
+    const bool fogBaselineNative = detachedEdit ? !editData.heightFogBaselineEnabled : !g_oHeightFogBaseline.active.load();
+    bool fogBaselineChanged = false;
+    bool fogBaselineOverrideChanged = false;
+    const SliderRange fogBaselineRange = ActiveSliderRange(-5000.0f, 5000.0f, -50000.0f, 50000.0f);
+    if (DrawSliderFloatRow("Fog Height Baseline", "height_fog_baseline", &fogBaseline, fogBaselineRange.lo, fogBaselineRange.hi, "%.1f", &fogBaselineChanged, regionScoped ? &overrideMask.heightFogBaseline : nullptr, &fogBaselineOverrideChanged, fogBaselineNative)) {
+        if (detachedEdit) {
+            editData.heightFogBaselineEnabled = false;
+            editData.heightFogBaseline = g_windPackBase18.load();
+            if (regionScoped) overrideMask.heightFogBaseline = true;
+            editChanged = true;
+        } else {
+            g_oHeightFogBaseline.clear();
+        }
+    } else if (fogBaselineOverrideChanged) {
+        editChanged = true;
+    } else if (windEnabled && fogBaselineChanged) {
+        if (detachedEdit) {
+            editData.heightFogBaseline = ClampSliderValue(fogBaseline, fogBaselineRange);
+            editData.heightFogBaselineEnabled = true;
+            if (regionScoped) overrideMask.heightFogBaseline = true;
+            editChanged = true;
+        } else {
+            g_oHeightFogBaseline.set(ClampSliderValue(fogBaseline, fogBaselineRange));
+        }
+    }
+
+    float fogFalloff = detachedEdit ? editData.heightFogFalloff : (g_oHeightFogFalloff.active.load() ? g_oHeightFogFalloff.value.load() : g_windPackBase19.load());
+    const bool fogFalloffNative = detachedEdit ? !editData.heightFogFalloffEnabled : !g_oHeightFogFalloff.active.load();
+    bool fogFalloffChanged = false;
+    bool fogFalloffOverrideChanged = false;
+    const SliderRange fogFalloffRange = ActiveSliderRange(0.0f, 5.0f, 0.0f, 100.0f);
+    if (DrawSliderFloatRow("Fog Height Falloff", "height_fog_falloff", &fogFalloff, fogFalloffRange.lo, fogFalloffRange.hi, "%.4f", &fogFalloffChanged, regionScoped ? &overrideMask.heightFogFalloff : nullptr, &fogFalloffOverrideChanged, fogFalloffNative)) {
+        if (detachedEdit) {
+            editData.heightFogFalloffEnabled = false;
+            editData.heightFogFalloff = g_windPackBase19.load();
+            if (regionScoped) overrideMask.heightFogFalloff = true;
+            editChanged = true;
+        } else {
+            g_oHeightFogFalloff.clear();
+        }
+    } else if (fogFalloffOverrideChanged) {
+        editChanged = true;
+    } else if (windEnabled && fogFalloffChanged) {
+        if (detachedEdit) {
+            editData.heightFogFalloff = ClampSliderValue(fogFalloff, fogFalloffRange);
+            editData.heightFogFalloffEnabled = true;
+            if (regionScoped) overrideMask.heightFogFalloff = true;
+            editChanged = true;
+        } else {
+            g_oHeightFogFalloff.set(ClampSliderValue(fogFalloff, fogFalloffRange));
+        }
+    }
+
     if (!windEnabled) {
         ImGui::EndDisabled();
         if (!fogBlocked) {
@@ -2423,65 +3111,69 @@ void DrawCelestialTab() {
         milkywayTexturePreview = inheritedMilkywayTexture;
     }
     ImGui::TextDisabled("Selected: %s", milkywayTexturePreview);
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputTextWithHint("##milkyway_texture_filter", "Search...", g_milkywayTextureFilter, IM_ARRAYSIZE(g_milkywayTextureFilter));
-    if (!milkywayTextureReady || !milkywayTextureRegionOverride) {
-        ImGui::BeginDisabled();
-    }
-    const float milkywayListHeight = min(220.0f, max(112.0f, ImGui::GetTextLineHeightWithSpacing() * 9.0f));
-    if (ImGui::BeginChild("MilkywayTextureLibrary", ImVec2(0.0f, milkywayListHeight), true)) {
-        const int optionCount = MilkywayTextureOptionCount();
-        const char* currentPack = nullptr;
-        int visibleCount = 0;
-        for (int i = 0; i < optionCount; ++i) {
-            const char* optionName = MilkywayTextureOptionName(i);
-            const char* optionLabel = MilkywayTextureOptionLabel(i);
-            const bool visible = i == 0
-                ? TextContainsNoCase("Native", g_milkywayTextureFilter)
-                : (TextContainsNoCase(optionLabel, g_milkywayTextureFilter) ||
-                   TextContainsNoCase(optionName, g_milkywayTextureFilter) ||
-                   TextContainsNoCase(MilkywayTextureOptionPack(i), g_milkywayTextureFilter));
-            if (!visible) {
-                continue;
-            }
-            if (i > 0) {
-                const char* pack = MilkywayTextureOptionPack(i);
-                const char* group = (pack && pack[0]) ? pack : "Loose";
-                if (!currentPack || strcmp(currentPack, group) != 0) {
-                    DrawTexturePackHeader(group);
-                    currentPack = group;
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (ImGui::CollapsingHeader("Browse Milky Way Textures##milkyway_texture_browser")) {
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##milkyway_texture_filter", "Search...", g_milkywayTextureFilter, IM_ARRAYSIZE(g_milkywayTextureFilter));
+        if (!milkywayTextureReady || !milkywayTextureRegionOverride) {
+            ImGui::BeginDisabled();
+        }
+        const float milkywayListHeight = min(220.0f, max(112.0f, ImGui::GetTextLineHeightWithSpacing() * 9.0f));
+        if (ImGui::BeginChild("MilkywayTextureLibrary", ImVec2(0.0f, milkywayListHeight), true)) {
+            const int optionCount = MilkywayTextureOptionCount();
+            const char* currentPack = nullptr;
+            int visibleCount = 0;
+            for (int i = 0; i < optionCount; ++i) {
+                const char* optionName = MilkywayTextureOptionName(i);
+                const char* optionLabel = MilkywayTextureOptionLabel(i);
+                const bool visible = i == 0
+                    ? TextContainsNoCase("Native", g_milkywayTextureFilter)
+                    : (TextContainsNoCase(optionLabel, g_milkywayTextureFilter) ||
+                       TextContainsNoCase(optionName, g_milkywayTextureFilter) ||
+                       TextContainsNoCase(MilkywayTextureOptionPack(i), g_milkywayTextureFilter));
+                if (!visible) {
+                    continue;
+                }
+                if (i > 0) {
+                    const char* pack = MilkywayTextureOptionPack(i);
+                    const char* group = (pack && pack[0]) ? pack : "Loose";
+                    if (!currentPack || strcmp(currentPack, group) != 0) {
+                        DrawTexturePackHeader(group);
+                        currentPack = group;
+                    }
+                }
+                ++visibleCount;
+                const bool selected = i == milkywayTexture;
+                if (i > 0) {
+                    ImGui::Indent(12.0f);
+                }
+                if (ImGui::Selectable(optionLabel, selected)) {
+                    milkywayTexture = i;
+                    if (detachedEdit) {
+                        editData.milkywayTextureEnabled = i > 0;
+                        editData.milkywayTexture = i > 0 ? optionName : "";
+                        if (regionScoped) overrideMask.milkywayTexture = true;
+                        editChanged = true;
+                    } else {
+                        MilkywayTextureSelectOption(i);
+                    }
+                }
+                if (i > 0) {
+                    ImGui::Unindent(12.0f);
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
                 }
             }
-            ++visibleCount;
-            const bool selected = i == milkywayTexture;
-            if (i > 0) {
-                ImGui::Indent(12.0f);
-            }
-            if (ImGui::Selectable(optionLabel, selected)) {
-                milkywayTexture = i;
-                if (detachedEdit) {
-                    editData.milkywayTextureEnabled = i > 0;
-                    editData.milkywayTexture = i > 0 ? optionName : "";
-                    if (regionScoped) overrideMask.milkywayTexture = true;
-                    editChanged = true;
-                } else {
-                    MilkywayTextureSelectOption(i);
-                }
-            }
-            if (i > 0) {
-                ImGui::Unindent(12.0f);
-            }
-            if (selected) {
-                ImGui::SetItemDefaultFocus();
+            if (visibleCount == 0) {
+                ImGui::TextDisabled("No Milky Way texture matches");
             }
         }
-        if (visibleCount == 0) {
-            ImGui::TextDisabled("No Milky Way texture matches");
+        ImGui::EndChild();
+        if (!milkywayTextureReady || !milkywayTextureRegionOverride) {
+            ImGui::EndDisabled();
         }
-    }
-    ImGui::EndChild();
-    if (!milkywayTextureReady || !milkywayTextureRegionOverride) {
-        ImGui::EndDisabled();
     }
     if (milkywayTextureOverrideChanged) {
         editChanged = true;
@@ -2567,6 +3259,44 @@ void DrawCelestialTab() {
 
     ImGui::Spacing();
     ImGui::SeparatorText("Sun");
+
+    float sunLightIntensity = detachedEdit
+        ? (editData.sunLightIntensityEnabled ? editData.sunLightIntensity : g_windPackBase00.load())
+        : (g_oSunLightIntensity.active.load() ? g_oSunLightIntensity.value.load() : g_windPackBase00.load());
+    const bool sunLightIntensityNative = detachedEdit ? !editData.sunLightIntensityEnabled : !g_oSunLightIntensity.active.load();
+    bool sunLightIntensityChanged = false;
+    bool sunLightIntensityOverrideChanged = false;
+    const SliderRange sunLightIntensityRange = ActiveSliderRange(0.0f, 20.0f, 0.0f, 100.0f);
+    if (!celestialWindPackReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Sun Light Intensity", "sun_light_intensity", &sunLightIntensity, sunLightIntensityRange.lo, sunLightIntensityRange.hi, "%.3f", &sunLightIntensityChanged, regionScoped ? &overrideMask.sunLightIntensity : nullptr, &sunLightIntensityOverrideChanged, sunLightIntensityNative)) {
+        if (detachedEdit) {
+            editData.sunLightIntensityEnabled = false;
+            editData.sunLightIntensity = g_windPackBase00.load();
+            if (regionScoped) overrideMask.sunLightIntensity = true;
+            editChanged = true;
+        } else {
+            g_oSunLightIntensity.clear();
+        }
+    } else if (sunLightIntensityOverrideChanged) {
+        editChanged = true;
+    } else if (celestialWindPackReady && sunLightIntensityChanged) {
+        if (detachedEdit) {
+            editData.sunLightIntensity = ClampSliderValue(sunLightIntensity, sunLightIntensityRange);
+            editData.sunLightIntensityEnabled = true;
+            if (regionScoped) overrideMask.sunLightIntensity = true;
+            editChanged = true;
+        } else {
+            g_oSunLightIntensity.set(ClampSliderValue(sunLightIntensity, sunLightIntensityRange));
+        }
+    }
+    if (!celestialWindPackReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::WindPack);
+        }
+    }
 
     float sunSize = detachedEdit
         ? (editData.sunSizeEnabled ? editData.sunSize : nativeSunSize)
@@ -2720,68 +3450,110 @@ void DrawCelestialTab() {
         moonTexturePreview = inheritedMoonTexture;
     }
     ImGui::TextDisabled("Selected: %s", moonTexturePreview);
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputTextWithHint("##moon_texture_filter", "Search...", g_moonTextureFilter, IM_ARRAYSIZE(g_moonTextureFilter));
-    if (!moonTextureReady || !moonTextureRegionOverride) {
-        ImGui::BeginDisabled();
-    }
-    const float moonListHeight = min(220.0f, max(112.0f, ImGui::GetTextLineHeightWithSpacing() * 9.0f));
-    if (ImGui::BeginChild("MoonTextureLibrary", ImVec2(0.0f, moonListHeight), true)) {
-        const int optionCount = MoonTextureOptionCount();
-        const char* currentPack = nullptr;
-        int visibleCount = 0;
-        for (int i = 0; i < optionCount; ++i) {
-            const char* optionName = MoonTextureOptionName(i);
-            const char* optionLabel = MoonTextureOptionLabel(i);
-            const bool visible = i == 0
-                ? TextContainsNoCase("Native", g_moonTextureFilter)
-                : (TextContainsNoCase(optionLabel, g_moonTextureFilter) ||
-                   TextContainsNoCase(optionName, g_moonTextureFilter) ||
-                   TextContainsNoCase(MoonTextureOptionPack(i), g_moonTextureFilter));
-            if (!visible) {
-                continue;
-            }
-            if (i > 0) {
-                const char* pack = MoonTextureOptionPack(i);
-                const char* group = (pack && pack[0]) ? pack : "Loose";
-                if (!currentPack || strcmp(currentPack, group) != 0) {
-                    DrawTexturePackHeader(group);
-                    currentPack = group;
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (ImGui::CollapsingHeader("Browse Moon Textures##moon_texture_browser")) {
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##moon_texture_filter", "Search...", g_moonTextureFilter, IM_ARRAYSIZE(g_moonTextureFilter));
+        if (!moonTextureReady || !moonTextureRegionOverride) {
+            ImGui::BeginDisabled();
+        }
+        const float moonListHeight = min(220.0f, max(112.0f, ImGui::GetTextLineHeightWithSpacing() * 9.0f));
+        if (ImGui::BeginChild("MoonTextureLibrary", ImVec2(0.0f, moonListHeight), true)) {
+            const int optionCount = MoonTextureOptionCount();
+            const char* currentPack = nullptr;
+            int visibleCount = 0;
+            for (int i = 0; i < optionCount; ++i) {
+                const char* optionName = MoonTextureOptionName(i);
+                const char* optionLabel = MoonTextureOptionLabel(i);
+                const bool visible = i == 0
+                    ? TextContainsNoCase("Native", g_moonTextureFilter)
+                    : (TextContainsNoCase(optionLabel, g_moonTextureFilter) ||
+                       TextContainsNoCase(optionName, g_moonTextureFilter) ||
+                       TextContainsNoCase(MoonTextureOptionPack(i), g_moonTextureFilter));
+                if (!visible) {
+                    continue;
+                }
+                if (i > 0) {
+                    const char* pack = MoonTextureOptionPack(i);
+                    const char* group = (pack && pack[0]) ? pack : "Loose";
+                    if (!currentPack || strcmp(currentPack, group) != 0) {
+                        DrawTexturePackHeader(group);
+                        currentPack = group;
+                    }
+                }
+                ++visibleCount;
+                const bool selected = i == moonTexture;
+                if (i > 0) {
+                    ImGui::Indent(12.0f);
+                }
+                if (ImGui::Selectable(optionLabel, selected)) {
+                    moonTexture = i;
+                    if (detachedEdit) {
+                        editData.moonTextureEnabled = i > 0;
+                        editData.moonTexture = i > 0 ? optionName : "";
+                        if (regionScoped) overrideMask.moonTexture = true;
+                        editChanged = true;
+                    } else {
+                        MoonTextureSelectOption(i);
+                    }
+                }
+                if (i > 0) {
+                    ImGui::Unindent(12.0f);
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
                 }
             }
-            ++visibleCount;
-            const bool selected = i == moonTexture;
-            if (i > 0) {
-                ImGui::Indent(12.0f);
-            }
-            if (ImGui::Selectable(optionLabel, selected)) {
-                moonTexture = i;
-                if (detachedEdit) {
-                    editData.moonTextureEnabled = i > 0;
-                    editData.moonTexture = i > 0 ? optionName : "";
-                    if (regionScoped) overrideMask.moonTexture = true;
-                    editChanged = true;
-                } else {
-                    MoonTextureSelectOption(i);
-                }
-            }
-            if (i > 0) {
-                ImGui::Unindent(12.0f);
-            }
-            if (selected) {
-                ImGui::SetItemDefaultFocus();
+            if (visibleCount == 0) {
+                ImGui::TextDisabled("No moon texture matches");
             }
         }
-        if (visibleCount == 0) {
-            ImGui::TextDisabled("No moon texture matches");
+        ImGui::EndChild();
+        if (!moonTextureReady || !moonTextureRegionOverride) {
+            ImGui::EndDisabled();
         }
-    }
-    ImGui::EndChild();
-    if (!moonTextureReady || !moonTextureRegionOverride) {
-        ImGui::EndDisabled();
     }
     if (moonTextureOverrideChanged) {
         editChanged = true;
+    }
+
+    float moonLightIntensity = detachedEdit
+        ? (editData.moonLightIntensityEnabled ? editData.moonLightIntensity : g_windPackBase05.load())
+        : (g_oMoonLightIntensity.active.load() ? g_oMoonLightIntensity.value.load() : g_windPackBase05.load());
+    const bool moonLightIntensityNative = detachedEdit ? !editData.moonLightIntensityEnabled : !g_oMoonLightIntensity.active.load();
+    bool moonLightIntensityChanged = false;
+    bool moonLightIntensityOverrideChanged = false;
+    const SliderRange moonLightIntensityRange = ActiveSliderRange(0.0f, 20.0f, 0.0f, 100.0f);
+    if (!celestialWindPackReady) {
+        ImGui::BeginDisabled();
+    }
+    if (DrawSliderFloatRow("Moon Light Intensity", "moon_light_intensity", &moonLightIntensity, moonLightIntensityRange.lo, moonLightIntensityRange.hi, "%.3f", &moonLightIntensityChanged, regionScoped ? &overrideMask.moonLightIntensity : nullptr, &moonLightIntensityOverrideChanged, moonLightIntensityNative)) {
+        if (detachedEdit) {
+            editData.moonLightIntensityEnabled = false;
+            editData.moonLightIntensity = g_windPackBase05.load();
+            if (regionScoped) overrideMask.moonLightIntensity = true;
+            editChanged = true;
+        } else {
+            g_oMoonLightIntensity.clear();
+        }
+    } else if (moonLightIntensityOverrideChanged) {
+        editChanged = true;
+    } else if (celestialWindPackReady && moonLightIntensityChanged) {
+        if (detachedEdit) {
+            editData.moonLightIntensity = ClampSliderValue(moonLightIntensity, moonLightIntensityRange);
+            editData.moonLightIntensityEnabled = true;
+            if (regionScoped) overrideMask.moonLightIntensity = true;
+            editChanged = true;
+        } else {
+            g_oMoonLightIntensity.set(ClampSliderValue(moonLightIntensity, moonLightIntensityRange));
+        }
+    }
+    if (!celestialWindPackReady) {
+        ImGui::EndDisabled();
+        if (celestialEnabled) {
+            DrawHookUnavailable(RuntimeHookId::WindPack);
+        }
     }
 
     float moonSize = detachedEdit
@@ -3003,6 +3775,7 @@ void DrawOverlay(reshade::api::effect_runtime*) {
         }
 #if defined(CW_DEV_BUILD)
         if (ImGui::BeginTabItem("Dev")) {
+            DrawDevTab();
             ImGui::EndTabItem();
         }
 #endif

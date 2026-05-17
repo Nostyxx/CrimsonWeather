@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_BASE_VERSION "0.5.9"
+#define MOD_BASE_VERSION "0.6.0"
 #if defined(CW_DEV_BUILD)
 #define MOD_VERSION MOD_BASE_VERSION " DEV"
 #else
@@ -42,7 +42,7 @@ struct Config {
     WORD controllerEffectToggleMask = 0;
     bool reshadeDiagnostics = false;
 #if defined(CW_DEV_BUILD)
-    bool devPerfLog = true;
+    bool devPerfLog = false;
     int devPerfLogIntervalSec = 10;
 #endif
 };
@@ -469,6 +469,26 @@ struct SliderOverride {
     }
 };
 
+struct ColorOverride {
+    std::atomic<bool> active{ false };
+    std::atomic<float> r{ 1.0f };
+    std::atomic<float> g{ 1.0f };
+    std::atomic<float> b{ 1.0f };
+    std::atomic<float> a{ 1.0f };
+
+    void set(float nr, float ng, float nb, float na = 1.0f) {
+        r.store(nr);
+        g.store(ng);
+        b.store(nb);
+        a.store(na);
+        active.store(true);
+    }
+
+    void clear() {
+        active.store(false);
+    }
+};
+
 inline SliderOverride g_oRain;
 inline SliderOverride g_oThunder;
 inline SliderOverride g_oSnow;
@@ -495,6 +515,18 @@ inline SliderOverride g_oMoonDirY;
 inline SliderOverride g_oMoonRoll;
 inline SliderOverride g_oSunSize;
 inline SliderOverride g_oMoonSize;
+inline SliderOverride g_oSunLightIntensity;
+inline SliderOverride g_oMoonLightIntensity;
+inline SliderOverride g_oMieScaleHeight;
+inline SliderOverride g_oMieAerosolDensity;
+inline SliderOverride g_oMieAerosolAbsorption;
+inline SliderOverride g_oHeightFogBaseline;
+inline SliderOverride g_oHeightFogFalloff;
+inline SliderOverride g_oCloudAlpha;
+inline SliderOverride g_oCloudPhaseFront;
+inline SliderOverride g_oCloudScatteringCoefficient;
+inline ColorOverride g_oRayleighScatteringColor;
+inline ColorOverride g_oVolumeFogScatterColor;
 inline std::atomic<float> g_thunderSchedulerRainBias{ 0.0f };
 inline std::atomic<uintptr_t> g_lastGameGlobalEffectManager{ 0 };
 inline std::atomic<bool> g_forceClear{ false };
@@ -559,6 +591,11 @@ inline std::atomic<float> g_timeFieldClockMillisHour{ NAN };
 inline std::atomic<float> g_timeFieldClockMinutesHour{ NAN };
 inline std::atomic<bool> g_timeFieldClockValid{ false };
 inline std::atomic<unsigned long long> g_timeFieldClockTick{ 0 };
+inline constexpr size_t kDevAtmosphereLabFieldCount = 0x3C;
+inline std::array<std::atomic<bool>, kDevAtmosphereLabFieldCount> g_devAtmosphereLabActive{};
+inline std::array<std::atomic<float>, kDevAtmosphereLabFieldCount> g_devAtmosphereLabValue{};
+inline std::array<std::atomic<float>, kDevAtmosphereLabFieldCount> g_devAtmosphereLabLast{};
+inline std::atomic<unsigned long long> g_devAtmosphereLabCaptureCount{ 0 };
 #endif
 inline std::atomic<float> g_timeOriginalHour{ 12.0f };
 inline std::atomic<bool> g_timeOriginalHourValid{ false };
@@ -598,6 +635,31 @@ inline std::atomic<bool> g_windPackBase17Valid{ false };
 inline std::atomic<float> g_windPackBase17{ 0.0f };
 inline std::atomic<bool> g_windPackBase1BValid{ false };
 inline std::atomic<float> g_windPackBase1B{ 0.0f };
+inline std::atomic<bool> g_windPackBase00Valid{ false };
+inline std::atomic<float> g_windPackBase00{ 1.0f };
+inline std::atomic<bool> g_windPackBase05Valid{ false };
+inline std::atomic<float> g_windPackBase05{ 1.0f };
+inline std::atomic<bool> g_windPackBase0FValid{ false };
+inline std::atomic<unsigned int> g_windPackBase0FBits{ 0xFFFFFFu };
+inline std::atomic<bool> g_windPackBase10Valid{ false };
+inline std::atomic<float> g_windPackBase10{ 1200.0f };
+inline std::atomic<bool> g_windPackBase12Valid{ false };
+inline std::atomic<float> g_windPackBase12{ 0.0f };
+inline std::atomic<bool> g_windPackBase18Valid{ false };
+inline std::atomic<float> g_windPackBase18{ 0.0f };
+inline std::atomic<bool> g_windPackBase19Valid{ false };
+inline std::atomic<float> g_windPackBase19{ 0.0f };
+inline std::atomic<bool> g_windPackBase1EValid{ false };
+inline std::atomic<float> g_windPackBase1E{ 1.0f };
+inline std::atomic<bool> g_windPackBase20Valid{ false };
+inline std::atomic<float> g_windPackBase20{ 0.0f };
+inline std::atomic<bool> g_windPackBase21Valid{ false };
+inline std::atomic<float> g_windPackBase21{ 0.0f };
+inline std::atomic<bool> g_windPackBaseVolumeFogColorValid{ false };
+inline std::atomic<float> g_windPackBase34{ 1.0f };
+inline std::atomic<float> g_windPackBase35{ 1.0f };
+inline std::atomic<float> g_windPackBase36{ 1.0f };
+inline std::atomic<float> g_windPackBase37{ 1.0f };
 inline std::atomic<bool> g_windNodeBaseValid{ false };
 inline std::atomic<float> g_windNodeBaseSpeed{ 0.0f };
 inline std::atomic<float> g_windNodeBaseGust{ 0.0f };
@@ -620,7 +682,6 @@ struct ResolvedEnv {
     long long weatherState = 0;
     long long cloudNode = 0;
     long long windNode = 0;
-    long long atmosphereNode = 0;
     long long particleMgr = 0;
     bool valid = false;
 };
@@ -656,6 +717,12 @@ bool NativeToastReady();
 void ShowNativeToast(const char* msg);
 bool StartHotkeyService();
 void StopHotkeyService();
+
+#if defined(CW_DEV_BUILD)
+const char* DevAtmosphereLabFieldName(size_t index);
+void DevAtmosphereLabCaptureNative(const float* packedOut);
+void DevAtmosphereLabApplyOverrides(float* packedOut);
+#endif
 
 bool RunAOBScan();
 void RestoreRuntimePatches();

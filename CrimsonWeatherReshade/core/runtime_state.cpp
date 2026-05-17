@@ -4,6 +4,7 @@
 
 #include <cctype>
 #include <fstream>
+#include <share.h>
 #include <vector>
 
 namespace {
@@ -111,7 +112,7 @@ void WriteDefaultConfig(const char* path) {
         "_LaunchOptionValues",
         "full, none, texturehook, weathertickhook, intensityhooks, windhooks, framehooks, foghooks, regionhook",
         path);
-    WritePrivateProfileStringA("Dev", "PerfLog", "1", path);
+    WritePrivateProfileStringA("Dev", "PerfLog", "0", path);
     WritePrivateProfileStringA("Dev", "PerfLogIntervalSec", "10", path);
 #endif
 }
@@ -170,7 +171,7 @@ void PatchMissingConfigKeys(const char* path) {
             path);
     }
     if (GetPrivateProfileStringA("Dev", "PerfLog", "", buf, sizeof(buf), path) == 0) {
-        WritePrivateProfileStringA("Dev", "PerfLog", "1", path);
+        WritePrivateProfileStringA("Dev", "PerfLog", "0", path);
     }
     if (GetPrivateProfileStringA("Dev", "PerfLogIntervalSec", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("Dev", "PerfLogIntervalSec", "10", path);
@@ -703,7 +704,7 @@ void LoadConfig(const char* dir) {
         DevLaunchOptionName(launchOption),
         DevLaunchOptionDescription(launchOption));
 
-    GetPrivateProfileStringA("Dev", "PerfLog", "1", buf, sizeof(buf), path);
+    GetPrivateProfileStringA("Dev", "PerfLog", "0", buf, sizeof(buf), path);
     g_cfg.devPerfLog = atoi(buf) != 0;
     GetPrivateProfileStringA("Dev", "PerfLogIntervalSec", "10", buf, sizeof(buf), path);
     g_cfg.devPerfLogIntervalSec = min(120, max(1, atoi(buf)));
@@ -742,7 +743,7 @@ void OpenLogFile(const char* dir) {
         } else {
             strcpy_s(path, MOD_LOG_FILE);
         }
-        fopen_s(&g_logFile, path, "w");
+        g_logFile = _fsopen(path, "w", _SH_DENYNO);
     }
     if (g_cfg.logEnabled && !g_logFile) {
         g_logEnabled = false;
@@ -756,7 +757,7 @@ void OpenLogFile(const char* dir) {
         sprintf_s(devPath, sizeof(devPath), "%s\\crimsonweather_%s.log",
             kDevOptimizationLogDir,
             DevLaunchOptionName(launchOption));
-        fopen_s(&g_devLaunchLogFile, devPath, "w");
+        g_devLaunchLogFile = _fsopen(devPath, "w", _SH_DENYNO);
         if (g_devLaunchLogFile) {
             Log("[dev] Optimization isolation log opened: %s\n", devPath);
         }
@@ -798,6 +799,19 @@ void ResetAllSliders() {
     g_oMoonRoll.clear();
     g_oSunSize.clear();
     g_oMoonSize.clear();
+    g_oSunLightIntensity.clear();
+    g_oMoonLightIntensity.clear();
+    g_oMieScaleHeight.clear();
+    g_oMieAerosolDensity.clear();
+    g_oMieAerosolAbsorption.clear();
+    g_oHeightFogBaseline.clear();
+    g_oHeightFogFalloff.clear();
+    g_oCloudAlpha.clear();
+    g_oCloudPhaseFront.clear();
+    g_oCloudScatteringCoefficient.clear();
+    g_oRayleighScatteringColor.clear();
+    g_oVolumeFogScatterColor.clear();
+    g_forceClear.store(false);
     g_noRain.store(false);
     g_noDust.store(false);
     g_noSnow.store(false);
@@ -832,6 +846,31 @@ void ResetAllSliders() {
     g_windPackBase17.store(0.0f);
     g_windPackBase1BValid.store(false);
     g_windPackBase1B.store(0.0f);
+    g_windPackBase00Valid.store(false);
+    g_windPackBase00.store(1.0f);
+    g_windPackBase05Valid.store(false);
+    g_windPackBase05.store(1.0f);
+    g_windPackBase0FValid.store(false);
+    g_windPackBase0FBits.store(0xFFFFFFu);
+    g_windPackBase10Valid.store(false);
+    g_windPackBase10.store(1200.0f);
+    g_windPackBase12Valid.store(false);
+    g_windPackBase12.store(0.0f);
+    g_windPackBase18Valid.store(false);
+    g_windPackBase18.store(0.0f);
+    g_windPackBase19Valid.store(false);
+    g_windPackBase19.store(0.0f);
+    g_windPackBase1EValid.store(false);
+    g_windPackBase1E.store(1.0f);
+    g_windPackBase20Valid.store(false);
+    g_windPackBase20.store(0.0f);
+    g_windPackBase21Valid.store(false);
+    g_windPackBase21.store(0.0f);
+    g_windPackBaseVolumeFogColorValid.store(false);
+    g_windPackBase34.store(1.0f);
+    g_windPackBase35.store(1.0f);
+    g_windPackBase36.store(1.0f);
+    g_windPackBase37.store(1.0f);
     g_windNodeBaseValid.store(false);
     g_windNodeBaseSpeed.store(0.0f);
     g_windNodeBaseGust.store(0.0f);
@@ -848,26 +887,39 @@ void ResetAllSliders() {
 }
 
 bool AnySliderActive() {
-    return g_oRain.active.load() || g_oThunder.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
+    return g_forceClear.load() ||
+           g_oRain.active.load() || g_oThunder.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
            g_oCloudAmount.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oExpCloud2C.active.load() || g_oExpCloud2D.active.load() ||
            g_oCloudVariation.active.load() || g_oExpNightSkyRot.active.load() || g_oNightSkyYaw.active.load() ||
            g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
+           g_oSunLightIntensity.active.load() || g_oMoonLightIntensity.active.load() ||
+           g_oMieScaleHeight.active.load() || g_oMieAerosolDensity.active.load() || g_oMieAerosolAbsorption.active.load() ||
+           g_oHeightFogBaseline.active.load() || g_oHeightFogFalloff.active.load() ||
+           g_oCloudAlpha.active.load() || g_oCloudPhaseFront.active.load() || g_oCloudScatteringCoefficient.active.load() ||
+           g_oRayleighScatteringColor.active.load() || g_oVolumeFogScatterColor.active.load() ||
            g_noRain.load() || g_noDust.load() || g_noSnow.load() ||
-           g_noFog.load() ||
+           g_noFog.load() || g_noWind.load() ||
            fabsf(g_windMul.load() - 1.0f) > 0.001f ||
+           g_oWind.active.load() || g_oWindActual.active.load() ||
            g_oSunDirX.active.load() || g_oSunDirY.active.load() ||
            g_oMoonDirX.active.load() || g_oMoonDirY.active.load() || g_oMoonRoll.active.load() ||
            g_oSunSize.active.load() || g_oMoonSize.active.load();
 }
 
 bool AnyCustomWeatherSliderActive() {
-    return g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
+    return g_forceClear.load() ||
+           g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
            g_oCloudAmount.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
            g_oCloudVariation.active.load() ||
+           g_oSunLightIntensity.active.load() || g_oMoonLightIntensity.active.load() ||
+           g_oMieScaleHeight.active.load() || g_oMieAerosolDensity.active.load() || g_oMieAerosolAbsorption.active.load() ||
+           g_oHeightFogBaseline.active.load() || g_oHeightFogFalloff.active.load() ||
+           g_oCloudAlpha.active.load() || g_oCloudPhaseFront.active.load() || g_oCloudScatteringCoefficient.active.load() ||
+           g_oRayleighScatteringColor.active.load() || g_oVolumeFogScatterColor.active.load() ||
            g_oWindActual.active.load() ||
            fabsf(g_windMul.load() - 1.0f) > 0.001f;
 }
@@ -945,20 +997,6 @@ bool LooksLikeAtmosphereConst0(long long candidate) {
     }
 }
 
-long long ResolveAtmosphereNode(long long atmosphereSource) {
-    static long long s_lastLoggedAtmosphereNode = 0;
-    if (!atmosphereSource) {
-        return 0;
-    }
-
-    if (atmosphereSource != s_lastLoggedAtmosphereNode) {
-        s_lastLoggedAtmosphereNode = atmosphereSource;
-        Log("[atmo] AtmosphereConst0 source = cont+0x20 %p\n", reinterpret_cast<void*>(atmosphereSource));
-    }
-
-    return atmosphereSource;
-}
-
 } // namespace
 
 ResolvedEnv ResolveEnv() {
@@ -1011,7 +1049,6 @@ ResolvedEnv ResolveEnv() {
             r.windNode = 0;
         }
 
-        r.atmosphereNode = ResolveAtmosphereNode(r.windNode);
         r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE0);
         if (r.particleMgr && !IsReadablePointer(static_cast<uintptr_t>(r.particleMgr), 0x20)) {
             r.particleMgr = 0;

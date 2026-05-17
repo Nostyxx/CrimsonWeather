@@ -16,6 +16,100 @@ static __m128 PackScalar(float v) {
     return _mm_set_ss(v);
 }
 
+static constexpr float kCloudScatteringCoefficientMin = 0.00001f;
+
+#if defined(CW_DEV_BUILD)
+const char* DevAtmosphereLabFieldName(size_t index) {
+    static constexpr const char* kNames[kDevAtmosphereLabFieldCount] = {
+        "sunLightIntensity",
+        "sunLightPreset",
+        "sunSizeAngle",
+        "sunDirX",
+        "sunDirY",
+        "moonLightIntensity",
+        "moonLightPreset",
+        "moonSizeAngle",
+        "moonDirX",
+        "moonDirY",
+        "earthAxisTilt",
+        "latitude",
+        "earthRadius",
+        "atmosphereThickness",
+        "rayleighScaledHeight",
+        "rayleighScatteringColorPacked",
+        "mieScaledHeight",
+        "mieAerosolDensity",
+        "mieAerosolAbsorption",
+        "miePhaseConst",
+        "ozoneRatio",
+        "directionalLightLuminanceScale",
+        "distanceScale",
+        "heightFogDensity",
+        "heightFogBaseline",
+        "heightFogFalloff",
+        "heightFogScale",
+        "cloudBaseDensity",
+        "cloudBaseContrast",
+        "cloudBaseScale",
+        "cloudAlpha",
+        "cloudScrollMultiplier",
+        "cloudScatteringCoefficient",
+        "cloudPhaseConstFront",
+        "cloudPhaseConstBack",
+        "cloudAltitude",
+        "cloudThickness",
+        "cloudVisibleRange",
+        "cloudNear",
+        "cloudFadeRange",
+        "cloudDetailRatio",
+        "cloudDetailScale",
+        "cloudMultiRatio",
+        "cloudBeerPowderRatio",
+        "cloudCirrusAltitude",
+        "cloudCirrusDensity",
+        "cloudCirrusScale",
+        "cloudCirrusWeightR",
+        "cloudCirrusWeightG",
+        "cloudCirrusWeightB",
+        "cloudFlow",
+        "cloudSeed",
+        "volumeFogScatterColorR",
+        "volumeFogScatterColorG",
+        "volumeFogScatterColorB",
+        "volumeFogScatterColorA",
+        "mieScatterColorR",
+        "mieScatterColorG",
+        "mieScatterColorB",
+        "mieScatterColorA",
+    };
+    if (index >= kDevAtmosphereLabFieldCount) {
+        return "unknown";
+    }
+    return kNames[index];
+}
+
+void DevAtmosphereLabCaptureNative(const float* packedOut) {
+    if (!packedOut) {
+        return;
+    }
+    for (size_t i = 0; i < kDevAtmosphereLabFieldCount; ++i) {
+        g_devAtmosphereLabLast[i].store(packedOut[i]);
+    }
+    g_devAtmosphereLabCaptureCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void DevAtmosphereLabApplyOverrides(float* packedOut) {
+    if (!packedOut) {
+        return;
+    }
+    for (size_t i = 0; i < kDevAtmosphereLabFieldCount; ++i) {
+        if (g_devAtmosphereLabActive[i].load()) {
+            packedOut[i] = g_devAtmosphereLabValue[i].load();
+        }
+    }
+}
+#endif
+
 static float DustSliderToNative(float dust) {
     float d = max(0.0f, dust);
     return d * 15.0f;
@@ -129,7 +223,6 @@ static ResolvedEnv ResolveTickEnvCurrentBuild() {
             r.windNode = 0;
         }
 
-        r.atmosphereNode = r.windNode;
         r.valid = r.entity != 0 && r.weatherState != 0 && r.cloudNode != 0 && r.windNode != 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         r = ResolvedEnv{};
@@ -460,6 +553,43 @@ static inline void ApplyAuthoritativeFogProfile(float fogValue,
     v4 = max(0.01f, 2.0f * (1.0f - 0.995f * fogN));
 }
 
+struct FogProfile {
+    float v[5];
+};
+
+static bool BuildForcedFogProfile(FogProfile& out) {
+    const bool forceClear = g_forceClear.load();
+    const bool noFog = g_noFog.load();
+    if (forceClear || noFog) {
+        out.v[0] = 0.0f;
+        out.v[1] = 0.0f;
+        out.v[2] = 0.0f;
+        out.v[3] = 0.0f;
+        out.v[4] = 2.0f;
+        return true;
+    }
+    if (!g_oFog.active.load()) {
+        return false;
+    }
+    ApplyAuthoritativeFogProfile(max(0.0f, g_oFog.value.load()), out.v[0], out.v[1], out.v[2], out.v[3], out.v[4]);
+    return true;
+}
+
+static void StoreForcedFogProfile(const FogProfile& profile) {
+    for (int i = 0; i < 5; ++i) {
+        g_forcedFogSet[i].store(profile.v[i]);
+    }
+}
+
+static bool FogProfileNearlyEqual(const FogProfile& a, const FogProfile& b) {
+    for (int i = 0; i < 5; ++i) {
+        if (fabsf(a.v[i] - b.v[i]) > 0.0005f) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams) {
 #if defined(CW_DEV_BUILD)
     DevPerf_CountHook(DevPerfHookId::AtmosFogBlend);
@@ -468,29 +598,14 @@ void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams) {
     if (!g_modEnabled.load()) return;
     if (!outParams) return;
 
-    if (g_forceClear.load() || g_noFog.load()) {
+    FogProfile profile{};
+    if (BuildForcedFogProfile(profile)) {
         __try {
             float* p = reinterpret_cast<float*>(outParams + 0x10);
-            p[0] = 0.0f; p[1] = 0.0f; p[2] = 0.0f; p[3] = 0.0f; p[4] = 2.0f;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return;
-    }
-
-    if (!g_oFog.active.load()) return;
-
-    __try {
-        float* p = reinterpret_cast<float*>(outParams + 0x10);
-        float profile[5] = {};
-        float fog = max(0.0f, g_oFog.value.load());
-        ApplyAuthoritativeFogProfile(fog, profile[0], profile[1], profile[2], profile[3], profile[4]);
-        for (int i = 0; i < 5; ++i) {
-            if ((kFogReceiverOverrideMask & (1u << i)) != 0) {
-                p[i] = profile[i];
+            for (int i = 0; i < 5; ++i) {
+                p[i] = profile.v[i];
             }
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        Log("[W] fog override exception in AtmosFogBlend\n");
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 }
 
@@ -574,71 +689,79 @@ static void TryInstallFogSetHooks(uintptr_t* rVt) {
     g_fogSetHooksInstalled.store(anyInstalled);
 }
 
-static void PrimeFogSetHooksFromFrame(long long* self) {
-    if (!g_pOrigAtmosFogBlend) return;
-    if (!self || g_fogSetHooksInstalled.load() || g_fogSetHooksAttempted.load()) return;
+static bool ResolveFogReceiverFromFrame(long long* self, long long*& receiver, FogReceiverSet_fn* setters) {
+    receiver = nullptr;
+    if (setters) {
+        for (int i = 0; i < 5; ++i) {
+            setters[i] = nullptr;
+        }
+    }
+    if (!self) return false;
     __try {
         long long provider = *reinterpret_cast<long long*>(reinterpret_cast<uint8_t*>(self) + 0x48);
-        if (!provider) return;
+        if (!provider) return false;
         auto pVt = *reinterpret_cast<uintptr_t**>(provider);
-        if (!pVt) return;
+        if (!pVt) return false;
         auto getReceiver = reinterpret_cast<FogReceiverGetter_fn>(pVt[0x190 / 8]);
-        if (!getReceiver) return;
-        long long* receiver = getReceiver(provider);
-        if (!receiver) return;
+        if (!getReceiver) return false;
+        receiver = getReceiver(provider);
+        if (!receiver) return false;
         auto rVt = *reinterpret_cast<uintptr_t**>(receiver);
-        if (!rVt) return;
+        if (!rVt) return false;
+
         TryInstallFogSetHooks(rVt);
+        if (setters) {
+            setters[0] = reinterpret_cast<FogReceiverSet_fn>(rVt[0x08 / 8]);
+            setters[1] = reinterpret_cast<FogReceiverSet_fn>(rVt[0x10 / 8]);
+            setters[2] = reinterpret_cast<FogReceiverSet_fn>(rVt[0x18 / 8]);
+            setters[3] = reinterpret_cast<FogReceiverSet_fn>(rVt[0x28 / 8]);
+            setters[4] = reinterpret_cast<FogReceiverSet_fn>(rVt[0x20 / 8]);
+        }
+        return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        receiver = nullptr;
+        return false;
     }
 }
 
 static void ForceApplyFogFromFrame(long long* self) {
-    const bool forceClear = g_forceClear.load();
-    const bool noFog = g_noFog.load();
-    if (!self || (!forceClear && !noFog && !g_oFog.active.load()) || !g_pOrigAtmosFogBlend) return;
+    FogProfile profile{};
+    if (!BuildForcedFogProfile(profile)) return;
+    StoreForcedFogProfile(profile);
+
+    static FogProfile s_lastProfile{ { NAN, NAN, NAN, NAN, NAN } };
+    static uintptr_t s_lastReceiver = 0;
+    static DWORD64 s_lastRefreshMs = 0;
+    const DWORD64 now = GetTickCount64();
+    const bool profileChanged = !FogProfileNearlyEqual(profile, s_lastProfile);
+    const bool refreshDue = now - s_lastRefreshMs >= 250;
+    if (!profileChanged && !refreshDue) {
+        return;
+    }
+
+    long long* receiver = nullptr;
+    FogReceiverSet_fn setters[5] = {};
+    if (!ResolveFogReceiverFromFrame(self, receiver, setters)) {
+        return;
+    }
+
+    const uintptr_t receiverAddr = reinterpret_cast<uintptr_t>(receiver);
+    const bool receiverChanged = receiverAddr != s_lastReceiver;
+    if (!profileChanged && !receiverChanged && !refreshDue) {
+        return;
+    }
 
     __try {
-        struct FogOut {
-            uint8_t pad[0x10];
-            float v0, v1, v2, v3, v4;
-        } out = {};
-
-        g_pOrigAtmosFogBlend((long long)self, (long long)&out);
-
-        float fog = (forceClear || noFog) ? 0.0f : max(0.0f, g_oFog.value.load());
-        ApplyAuthoritativeFogProfile(fog, out.v0, out.v1, out.v2, out.v3, out.v4);
-
-        long long provider = *reinterpret_cast<long long*>(reinterpret_cast<uint8_t*>(self) + 0x48);
-        if (!provider) return;
-        auto pVt = *reinterpret_cast<uintptr_t**>(provider);
-        if (!pVt) return;
-        auto getReceiver = reinterpret_cast<FogReceiverGetter_fn>(pVt[0x190 / 8]);
-        if (!getReceiver) return;
-        long long* receiver = getReceiver(provider);
-        if (!receiver) return;
-        auto rVt = *reinterpret_cast<uintptr_t**>(receiver);
-        if (!rVt) return;
-
-        TryInstallFogSetHooks(rVt);
-        g_forcedFogSet[0].store(out.v0);
-        g_forcedFogSet[1].store(out.v1);
-        g_forcedFogSet[2].store(out.v2);
-        g_forcedFogSet[3].store(out.v3);
-        g_forcedFogSet[4].store(out.v4);
-
-        auto set0 = reinterpret_cast<FogReceiverSet_fn>(rVt[0x08 / 8]);
-        auto set1 = reinterpret_cast<FogReceiverSet_fn>(rVt[0x10 / 8]);
-        auto set2 = reinterpret_cast<FogReceiverSet_fn>(rVt[0x18 / 8]);
-        auto set3 = reinterpret_cast<FogReceiverSet_fn>(rVt[0x28 / 8]);
-        auto set4 = reinterpret_cast<FogReceiverSet_fn>(rVt[0x20 / 8]);
-        if ((kFogReceiverOverrideMask & (1u << 0)) != 0 && set0) set0(receiver, out.v0);
-        if ((kFogReceiverOverrideMask & (1u << 1)) != 0 && set1) set1(receiver, out.v1);
-        if ((kFogReceiverOverrideMask & (1u << 2)) != 0 && set2) set2(receiver, out.v2);
-        if ((kFogReceiverOverrideMask & (1u << 3)) != 0 && set3) set3(receiver, out.v3);
-        if ((kFogReceiverOverrideMask & (1u << 4)) != 0 && set4) set4(receiver, out.v4);
-
+        if ((kFogReceiverOverrideMask & (1u << 0)) != 0 && setters[0]) setters[0](receiver, profile.v[0]);
+        if ((kFogReceiverOverrideMask & (1u << 1)) != 0 && setters[1]) setters[1](receiver, profile.v[1]);
+        if ((kFogReceiverOverrideMask & (1u << 2)) != 0 && setters[2]) setters[2](receiver, profile.v[2]);
+        if ((kFogReceiverOverrideMask & (1u << 3)) != 0 && setters[3]) setters[3](receiver, profile.v[3]);
+        if ((kFogReceiverOverrideMask & (1u << 4)) != 0 && setters[4]) setters[4](receiver, profile.v[4]);
+        s_lastProfile = profile;
+        s_lastReceiver = receiverAddr;
+        s_lastRefreshMs = now;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        s_lastReceiver = 0;
     }
 }
 
@@ -652,6 +775,32 @@ static void RememberGameGlobalEffectManager(long long* self) {
         if (manager && IsReadableTickPtr(manager, 0x100)) {
             g_lastGameGlobalEffectManager.store(manager);
         }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+static bool WeatherFrameFogWorkNeeded() {
+    return g_forceClear.load() || g_noFog.load() || g_oFog.active.load();
+}
+
+static bool WeatherFrameThunderWorkNeeded() {
+    if (!g_oThunder.active.load()) {
+        return false;
+    }
+    const float thunder = g_oThunder.value.load();
+    return std::isfinite(thunder) && thunder > 0.0001f;
+}
+
+static void ResetFogBlendWeightsForNativeRefresh(long long* self) {
+    if (!self) {
+        return;
+    }
+    __try {
+        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x98) = 0.0f;
+        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x9C) = 0.0f;
+        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0xA0) = 0.0f;
+        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0xA4) = 0.0f;
+        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0xA8) = 0.0f;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
@@ -928,6 +1077,25 @@ static float ClampFloat(float v, float lo, float hi) {
     return min(hi, max(lo, v));
 }
 
+static unsigned int FloatBits(float value) {
+    unsigned int bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static float FloatFromBits(unsigned int bits) {
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static unsigned int PackRgbBits(float r, float g, float b) {
+    const auto toByte = [](float value) -> unsigned int {
+        return static_cast<unsigned int>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    return (toByte(r) << 16) | (toByte(g) << 8) | toByte(b);
+}
+
 static float NormalizeSignedDegrees(float v) {
     while (v > 180.0f) v -= 360.0f;
     while (v < -180.0f) v += 360.0f;
@@ -1036,6 +1204,20 @@ static void CapturePackedCelestialBase(const float* packedOut) {
 static void ApplyPackedCelestialOverrides(float* packedOut) {
     if (!packedOut) return;
     CapturePackedCelestialBase(packedOut);
+
+    if (g_oSunLightIntensity.active.load() && std::isfinite(g_oSunLightIntensity.value.load())) {
+        packedOut[0x00] = ClampFloat(g_oSunLightIntensity.value.load(), 0.0f, 100.0f);
+    }
+    if (g_oMoonLightIntensity.active.load() && std::isfinite(g_oMoonLightIntensity.value.load())) {
+        packedOut[0x05] = ClampFloat(g_oMoonLightIntensity.value.load(), 0.0f, 100.0f);
+    }
+    if (g_oRayleighScatteringColor.active.load()) {
+        packedOut[0x0F] = FloatFromBits(PackRgbBits(
+            g_oRayleighScatteringColor.r.load(),
+            g_oRayleighScatteringColor.g.load(),
+            g_oRayleighScatteringColor.b.load()));
+    }
+
     if (!AnyPackedCelestialOverrideActive() || !g_atmoCelestialBaseValid.load()) return;
 
     if (g_oSunSize.active.load()) {
@@ -1151,8 +1333,11 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
 #endif
     const bool modEnabled = g_modEnabled.load();
     if (g_pOrigWindPack) g_pOrigWindPack(windNodePtr, packedOut);
-    if (!modEnabled) return;
     if (!packedOut) return;
+#if defined(CW_DEV_BUILD)
+    DevAtmosphereLabCaptureNative(packedOut);
+#endif
+    if (!modEnabled) return;
 
     ApplyPackedCelestialOverrides(packedOut);
 
@@ -1189,7 +1374,7 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         g_windPackBase2D.store(packedOut[0x2D]);
         g_windPackBase2DValid.store(true);
     }
-    if (!g_oNativeFog.active.load() && std::isfinite(packedOut[0x11])) {
+    if (!g_oNativeFog.active.load() && !g_oMieAerosolDensity.active.load() && std::isfinite(packedOut[0x11])) {
         g_windPackBase11.store(packedOut[0x11]);
         g_windPackBase11Valid.store(true);
     }
@@ -1201,6 +1386,59 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         g_windPackBase1B.store(packedOut[0x1B]);
         g_windPackBase1BValid.store(true);
     }
+    if (!g_oSunLightIntensity.active.load() && std::isfinite(packedOut[0x00])) {
+        g_windPackBase00.store(packedOut[0x00]);
+        g_windPackBase00Valid.store(true);
+    }
+    if (!g_oMoonLightIntensity.active.load() && std::isfinite(packedOut[0x05])) {
+        g_windPackBase05.store(packedOut[0x05]);
+        g_windPackBase05Valid.store(true);
+    }
+    if (!g_oRayleighScatteringColor.active.load()) {
+        g_windPackBase0FBits.store(FloatBits(packedOut[0x0F]));
+        g_windPackBase0FValid.store(true);
+    }
+    if (!g_oMieScaleHeight.active.load() && std::isfinite(packedOut[0x10])) {
+        g_windPackBase10.store(packedOut[0x10]);
+        g_windPackBase10Valid.store(true);
+    }
+    if (!g_oMieAerosolDensity.active.load() && !g_oNativeFog.active.load() && std::isfinite(packedOut[0x11])) {
+        g_windPackBase11.store(packedOut[0x11]);
+        g_windPackBase11Valid.store(true);
+    }
+    if (!g_oMieAerosolAbsorption.active.load() && std::isfinite(packedOut[0x12])) {
+        g_windPackBase12.store(packedOut[0x12]);
+        g_windPackBase12Valid.store(true);
+    }
+    if (!g_oHeightFogBaseline.active.load() && std::isfinite(packedOut[0x18])) {
+        g_windPackBase18.store(packedOut[0x18]);
+        g_windPackBase18Valid.store(true);
+    }
+    if (!g_oHeightFogFalloff.active.load() && std::isfinite(packedOut[0x19])) {
+        g_windPackBase19.store(packedOut[0x19]);
+        g_windPackBase19Valid.store(true);
+    }
+    if (!g_oCloudAlpha.active.load() && std::isfinite(packedOut[0x1E])) {
+        g_windPackBase1E.store(packedOut[0x1E]);
+        g_windPackBase1EValid.store(true);
+    }
+    if (!g_oCloudScatteringCoefficient.active.load() && std::isfinite(packedOut[0x20])) {
+        g_windPackBase20.store(packedOut[0x20]);
+        g_windPackBase20Valid.store(true);
+    }
+    if (!g_oCloudPhaseFront.active.load() && std::isfinite(packedOut[0x21])) {
+        g_windPackBase21.store(packedOut[0x21]);
+        g_windPackBase21Valid.store(true);
+    }
+    if (!g_oVolumeFogScatterColor.active.load() &&
+        std::isfinite(packedOut[0x34]) && std::isfinite(packedOut[0x35]) &&
+        std::isfinite(packedOut[0x36]) && std::isfinite(packedOut[0x37])) {
+        g_windPackBase34.store(packedOut[0x34]);
+        g_windPackBase35.store(packedOut[0x35]);
+        g_windPackBase36.store(packedOut[0x36]);
+        g_windPackBase37.store(packedOut[0x37]);
+        g_windPackBaseVolumeFogColorValid.store(true);
+    }
 
     const bool forceClear = g_forceClear.load();
     const bool noFog = g_noFog.load();
@@ -1208,6 +1446,9 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         packedOut[0x1B] = 0.0f;
         packedOut[0x11] = 0.0f;
         packedOut[0x17] = 0.0f;
+#if defined(CW_DEV_BUILD)
+        DevAtmosphereLabApplyOverrides(packedOut);
+#endif
         return;
     }
     if (noFog) {
@@ -1266,34 +1507,75 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         }
     }
 
+    if (!noFog) {
+        if (g_oMieScaleHeight.active.load()) {
+            packedOut[0x10] = ClampFloat(g_oMieScaleHeight.value.load(), 1.0f, 200000.0f);
+        }
+        if (g_oMieAerosolDensity.active.load()) {
+            packedOut[0x11] = ClampFloat(g_oMieAerosolDensity.value.load(), 0.0f, 100.0f);
+        }
+        if (g_oMieAerosolAbsorption.active.load()) {
+            packedOut[0x12] = ClampFloat(g_oMieAerosolAbsorption.value.load(), 0.0f, 100.0f);
+        }
+        if (g_oHeightFogBaseline.active.load()) {
+            packedOut[0x18] = ClampFloat(g_oHeightFogBaseline.value.load(), -50000.0f, 50000.0f);
+        }
+        if (g_oHeightFogFalloff.active.load()) {
+            packedOut[0x19] = ClampFloat(g_oHeightFogFalloff.value.load(), 0.0f, 100.0f);
+        }
+        if (g_oVolumeFogScatterColor.active.load()) {
+            packedOut[0x34] = g_oVolumeFogScatterColor.r.load();
+            packedOut[0x35] = g_oVolumeFogScatterColor.g.load();
+            packedOut[0x36] = g_oVolumeFogScatterColor.b.load();
+            packedOut[0x37] = g_oVolumeFogScatterColor.a.load();
+        }
+    }
+
+    if (g_oCloudAlpha.active.load()) {
+        packedOut[0x1E] = ClampFloat(g_oCloudAlpha.value.load(), 0.0f, 100.0f);
+    }
+    if (g_oCloudScatteringCoefficient.active.load()) {
+        packedOut[0x20] = ClampFloat(g_oCloudScatteringCoefficient.value.load(), kCloudScatteringCoefficientMin, 100.0f);
+    }
+    if (g_oCloudPhaseFront.active.load()) {
+        packedOut[0x21] = ClampFloat(g_oCloudPhaseFront.value.load(), -1.0f, 1.0f);
+    }
+
+#if defined(CW_DEV_BUILD)
+    DevAtmosphereLabApplyOverrides(packedOut);
+#endif
 }
 
 void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
 #if defined(CW_DEV_BUILD)
     DevPerf_CountHook(DevPerfHookId::WeatherFrameUpdate);
 #endif
-    if (!g_modEnabled.load()) {
+    static bool s_fogOverrideWasActive = false;
+    const bool modEnabled = g_modEnabled.load();
+    const bool fogWorkNeeded = modEnabled && WeatherFrameFogWorkNeeded();
+    const bool thunderWorkNeeded = modEnabled && WeatherFrameThunderWorkNeeded();
+    const bool restoreNativeFog = s_fogOverrideWasActive && !fogWorkNeeded;
+
+    if (!fogWorkNeeded && !thunderWorkNeeded && !restoreNativeFog) {
         if (g_pOrigWeatherFrameUpdate) g_pOrigWeatherFrameUpdate(self, dt);
         return;
     }
-    RememberGameGlobalEffectManager(self);
-    PrimeFogSetHooksFromFrame(self);
 
-    if (self && (g_forceClear.load() || g_noFog.load() || g_oFog.active.load())) {
-        __try {
-            *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x98) = 0.0f;
-            *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x9C) = 0.0f;
-            *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0xA0) = 0.0f;
-            *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0xA4) = 0.0f;
-            *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0xA8) = 0.0f;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-        }
+    if (restoreNativeFog) {
+        ResetFogBlendWeightsForNativeRefresh(self);
     }
 
     if (g_pOrigWeatherFrameUpdate) g_pOrigWeatherFrameUpdate(self, dt);
 
-    RememberGameGlobalEffectManager(self);
-    ForceApplyFogFromFrame(self);
+    if (thunderWorkNeeded) {
+        RememberGameGlobalEffectManager(self);
+    }
+    if (fogWorkNeeded) {
+        ForceApplyFogFromFrame(self);
+        s_fogOverrideWasActive = true;
+    } else if (restoreNativeFog) {
+        s_fogOverrideWasActive = false;
+    }
 
     (void)dt;
 }
@@ -1844,6 +2126,60 @@ static void TickNativeLightningBridge(long long self, float dt) {
     }
 }
 
+static bool WeatherTickTimeWorkNeeded() {
+    if (!g_timeLayoutReady.load()) {
+        return false;
+    }
+    return !g_timeCurrentHourValid.load() ||
+        g_timeCtrlActive.load() ||
+        g_timeFreeze.load() ||
+        g_timeApplyRequest.load() ||
+        g_timeFreezeApplied.load() ||
+        g_timeSetHoldTicks.load() > 0;
+}
+
+static bool WeatherTickCloudShapeWorkNeeded() {
+    return g_oCloudSpdY.active.load();
+}
+
+static bool WeatherTickRuntimeWorkNeeded(bool resetStopNow, bool modSuspendNow, bool modEnabled, bool presetNeedsTick) {
+    if (resetStopNow || modSuspendNow || presetNeedsTick || WeatherTickTimeWorkNeeded()) {
+        return true;
+    }
+    if (!modEnabled) {
+        return false;
+    }
+    if (g_forceClear.load() ||
+        AnyCustomWeatherSliderActive() ||
+        g_activeWeather == kCustomWeather ||
+        g_noRain.load() ||
+        g_noSnow.load() ||
+        g_noDust.load() ||
+        g_oThunder.active.load() ||
+        g_noWind.load() ||
+        DustForcesCalmWind()) {
+        return true;
+    }
+    return false;
+}
+
+static bool WeatherTickShouldRunService(float dt, bool forceNow, float& outServiceDt) {
+    constexpr float kServiceIntervalSeconds = 0.20f;
+    static float s_accumulatedDt = 0.0f;
+
+    float frameDt = (std::isfinite(dt) && dt > 0.0f) ? dt : (1.0f / 60.0f);
+    frameDt = min(frameDt, 0.25f);
+    s_accumulatedDt = min(1.0f, s_accumulatedDt + frameDt);
+
+    if (!forceNow && s_accumulatedDt < kServiceIntervalSeconds) {
+        return false;
+    }
+
+    outServiceDt = s_accumulatedDt;
+    s_accumulatedDt = 0.0f;
+    return true;
+}
+
 // Hooked weather tick.
 void __fastcall Hooked_WeatherTick(long long self, float dt) {
 #if defined(CW_DEV_BUILD)
@@ -1851,12 +2187,29 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
 #endif
     const bool resetStopNow = g_resetStopRequested.exchange(false);
     const bool modSuspendNow = g_modSuspendRequested.exchange(false);
+    const bool modEnabled = g_modEnabled.load();
+    const bool presetNeedsTick = Preset_NeedsWorldTick();
+    const bool runtimeWorkNeeded = WeatherTickRuntimeWorkNeeded(resetStopNow, modSuspendNow, modEnabled, presetNeedsTick);
+    if (!runtimeWorkNeeded) {
+        g_pOriginalTick(self, dt);
+        return;
+    }
+
+    float serviceDt = 0.0f;
+    const bool forceServiceNow = resetStopNow || modSuspendNow || g_timeApplyRequest.load();
+    if (!WeatherTickShouldRunService(dt, forceServiceNow, serviceDt)) {
+        g_pOriginalTick(self, dt);
+        return;
+    }
+
     const ResolvedEnv env = ResolveEnv();
     const bool worldReady = env.entity && env.weatherState;
-    UpdateRegionState(env, dt);
-    Preset_OnWorldTick(worldReady, dt);
+    if (presetNeedsTick) {
+        UpdateRegionState(env, serviceDt);
+        Preset_OnWorldTick(worldReady, serviceDt);
+    }
 
-    if (!g_modEnabled.load()) {
+    if (!modEnabled) {
         g_pOriginalTick(self, dt);
         if (modSuspendNow || resetStopNow) {
             StopAllWeatherEffects(self);
@@ -1887,17 +2240,17 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
 
     g_pOriginalTick(self, dt);
     if (g_activeWeather == kCustomWeather) {
-        TickWeatherState(self, dt);
+        TickWeatherState(self, serviceDt);
     }
     const uint32_t suppressedWeatherMask = ComputeSuppressedWeatherEffectMask();
     if (suppressedWeatherMask) {
         StopWeatherEffectsByMask(self, suppressedWeatherMask);
     }
-    TickNativeLightningBridge(self, dt);
+    TickNativeLightningBridge(self, serviceDt);
     if (resetStopNow) {
         StopAllWeatherEffects(self);
     }
-    if (kEnableDirectNodeWrites && env.valid) {
+    if (kEnableDirectNodeWrites && env.valid && WeatherTickCloudShapeWorkNeeded()) {
         CaptureCloudBaseline(env);
         ApplyCloudOverrides(env);
     }

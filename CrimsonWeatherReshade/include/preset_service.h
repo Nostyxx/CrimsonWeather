@@ -2,6 +2,13 @@
 
 #include <string>
 
+struct WeatherPresetColor {
+    float r = 1.0f;
+    float g = 1.0f;
+    float b = 1.0f;
+    float a = 1.0f;
+};
+
 struct WeatherPresetData {
     bool forceClearSky = false;
     bool noRain = false;
@@ -25,6 +32,14 @@ struct WeatherPresetData {
     float midClouds = 1.0f;
     bool highCloudsEnabled = false;
     float highClouds = 1.0f;
+    bool cloudAlphaEnabled = false;
+    float cloudAlpha = 1.0f;
+    bool cloudPhaseFrontEnabled = false;
+    float cloudPhaseFront = 0.0f;
+    bool cloudScatteringCoefficientEnabled = false;
+    float cloudScatteringCoefficient = 0.0f;
+    bool rayleighScatteringColorEnabled = false;
+    WeatherPresetColor rayleighScatteringColor{};
     bool exp2CEnabled = false;
     float exp2C = 1.0f;
     bool exp2DEnabled = false;
@@ -37,12 +52,16 @@ struct WeatherPresetData {
     float nightSkyYaw = 0.0f;
     bool sunSizeEnabled = false;
     float sunSize = 0.267f;
+    bool sunLightIntensityEnabled = false;
+    float sunLightIntensity = 1.0f;
     bool sunYawEnabled = false;
     float sunYaw = 0.0f;
     bool sunPitchEnabled = false;
     float sunPitch = 0.0f;
     bool moonSizeEnabled = false;
     float moonSize = 0.267f;
+    bool moonLightIntensityEnabled = false;
+    float moonLightIntensity = 1.0f;
     bool moonYawEnabled = false;
     float moonYaw = 0.0f;
     bool moonPitchEnabled = false;
@@ -57,6 +76,18 @@ struct WeatherPresetData {
     float fogPercent = 0.0f;
     bool nativeFogEnabled = false;
     float nativeFog = 1.0f;
+    bool volumeFogScatterColorEnabled = false;
+    WeatherPresetColor volumeFogScatterColor{};
+    bool mieScaleHeightEnabled = false;
+    float mieScaleHeight = 1200.0f;
+    bool mieAerosolDensityEnabled = false;
+    float mieAerosolDensity = 1.0f;
+    bool mieAerosolAbsorptionEnabled = false;
+    float mieAerosolAbsorption = 0.0f;
+    bool heightFogBaselineEnabled = false;
+    float heightFogBaseline = 0.0f;
+    bool heightFogFalloffEnabled = false;
+    float heightFogFalloff = 0.0f;
     bool noFog = false;
     float wind = 1.0f;
     bool noWind = false;
@@ -88,15 +119,21 @@ struct WeatherPresetSourceMask {
     bool cloudDensity = false;
     bool midClouds = false;
     bool highClouds = false;
+    bool cloudAlpha = false;
+    bool cloudPhaseFront = false;
+    bool cloudScatteringCoefficient = false;
+    bool rayleighScatteringColor = false;
     bool exp2C = false;
     bool exp2D = false;
     bool cloudVariation = false;
     bool nightSkyRotation = false;
     bool nightSkyYaw = false;
     bool sunSize = false;
+    bool sunLightIntensity = false;
     bool sunYaw = false;
     bool sunPitch = false;
     bool moonSize = false;
+    bool moonLightIntensity = false;
     bool moonYaw = false;
     bool moonPitch = false;
     bool moonRoll = false;
@@ -104,6 +141,12 @@ struct WeatherPresetSourceMask {
     bool milkywayTexture = false;
     bool fog = false;
     bool nativeFog = false;
+    bool volumeFogScatterColor = false;
+    bool mieScaleHeight = false;
+    bool mieAerosolDensity = false;
+    bool mieAerosolAbsorption = false;
+    bool heightFogBaseline = false;
+    bool heightFogFalloff = false;
     bool noFog = false;
     bool wind = false;
     bool noWind = false;
@@ -144,6 +187,7 @@ bool Preset_HasUnsavedChanges();
 bool Preset_CanSaveCurrent();
 WeatherPresetStatusSnapshot Preset_GetStatusSnapshot();
 void Preset_ArmAutoApplyRemembered();
+bool Preset_NeedsWorldTick();
 void Preset_OnWorldTick(bool worldReady, float dt);
 void Preset_TryAutoApplyRemembered();
 bool Preset_SaveSelected();

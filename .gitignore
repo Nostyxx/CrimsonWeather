@@ -15,8 +15,15 @@ TEMP/
 *.iobj
 *.ipdb
 *.json
+__pycache__/
+*.pyc
 
 CrimsonWeatherReshade/.vs/
 CrimsonWeatherReshade/x64/
 CrimsonWeatherReshade/CrimsonW.*/
 CrimsonWeatherReshade/*.vcxproj.user
+
+# Local DEV MCP bridge/control files
+CrimsonWeatherReshade/dev/
+CrimsonWeatherReshade/include/dev_mcp_server.h
+tools/

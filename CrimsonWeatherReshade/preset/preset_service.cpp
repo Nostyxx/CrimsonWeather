@@ -14,6 +14,7 @@
 
 namespace {
 constexpr const char* kPresetHeader = "[CrimsonWeatherPreset]";
+constexpr float kCloudScatteringCoefficientMin = 0.00001f;
 
 struct PresetListItem {
     std::string fileName;
@@ -36,15 +37,21 @@ struct WeatherPresetMask {
     bool cloudDensity = false;
     bool midClouds = false;
     bool highClouds = false;
+    bool cloudAlpha = false;
+    bool cloudPhaseFront = false;
+    bool cloudScatteringCoefficient = false;
+    bool rayleighScatteringColor = false;
     bool exp2C = false;
     bool exp2D = false;
     bool cloudVariation = false;
     bool nightSkyRotation = false;
     bool nightSkyYaw = false;
     bool sunSize = false;
+    bool sunLightIntensity = false;
     bool sunYaw = false;
     bool sunPitch = false;
     bool moonSize = false;
+    bool moonLightIntensity = false;
     bool moonYaw = false;
     bool moonPitch = false;
     bool moonRoll = false;
@@ -52,6 +59,12 @@ struct WeatherPresetMask {
     bool milkywayTexture = false;
     bool fog = false;
     bool nativeFog = false;
+    bool volumeFogScatterColor = false;
+    bool mieScaleHeight = false;
+    bool mieAerosolDensity = false;
+    bool mieAerosolAbsorption = false;
+    bool heightFogBaseline = false;
+    bool heightFogFalloff = false;
     bool noFog = false;
     bool wind = false;
     bool noWind = false;
@@ -87,7 +100,7 @@ constexpr bool kPresetVerboseTestLog = false;
 constexpr const char* kNewPresetDisplayName = "[New Preset]";
 constexpr const char* kPresetConfigSection = "Preset";
 constexpr const char* kPresetConfigKeyLastPreset = "LastPreset";
-constexpr int kPresetFormatVersion = 4;
+constexpr int kPresetFormatVersion = 5;
 std::string TrimCopy(const std::string& value);
 bool EqualsNoCase(const std::string& a, const std::string& b);
 WeatherPresetData CaptureCurrentPresetData();
@@ -119,6 +132,24 @@ float ClampPresetPitch(float value) { return ClampExtendedPresetFloat(value, -89
 float ClampPresetYaw(float value) { return ClampExtendedPresetFloat(value, -180.0f, 180.0f, -360.0f, 360.0f); }
 float ClampPresetSunSize(float value) { return ClampExtendedPresetFloat(value, 0.01f, 10.0f, 0.001f, 100.0f); }
 float ClampPresetMoonSize(float value) { return ClampExtendedPresetFloat(value, 0.020f, 20.0f, 0.001f, 100.0f); }
+float ClampPresetLightIntensity(float value) { return ClampExtendedPresetFloat(value, 0.0f, 20.0f, 0.0f, 100.0f); }
+float ClampPresetMieScaleHeight(float value) { return ClampExtendedPresetFloat(value, 10.0f, 20000.0f, 1.0f, 200000.0f); }
+float ClampPresetMieDensity(float value) { return ClampExtendedPresetFloat(value, 0.0f, 20.0f, 0.0f, 100.0f); }
+float ClampPresetMieAbsorption(float value) { return ClampExtendedPresetFloat(value, 0.0f, 5.0f, 0.0f, 100.0f); }
+float ClampPresetHeightFogBaseline(float value) { return ClampExtendedPresetFloat(value, -5000.0f, 5000.0f, -50000.0f, 50000.0f); }
+float ClampPresetHeightFogFalloff(float value) { return ClampExtendedPresetFloat(value, 0.0f, 5.0f, 0.0f, 100.0f); }
+float ClampPresetCloudAlpha(float value) { return ClampExtendedPresetFloat(value, 0.0f, 50.0f, 0.0f, 100.0f); }
+float ClampPresetCloudPhaseFront(float value) { return ClampExtendedPresetFloat(value, -1.0f, 1.0f, -1.0f, 1.0f); }
+float ClampPresetCloudScatteringCoefficient(float value) { return ClampExtendedPresetFloat(value, kCloudScatteringCoefficientMin, 1.0f, kCloudScatteringCoefficientMin, 100.0f); }
+float ClampPresetColorComponent(float value) { return ClampPresetFloat(value, 0.0f, 10.0f); }
+
+WeatherPresetColor ClampPresetColor(WeatherPresetColor color, bool includeAlpha) {
+    color.r = ClampPresetColorComponent(color.r);
+    color.g = ClampPresetColorComponent(color.g);
+    color.b = ClampPresetColorComponent(color.b);
+    color.a = includeAlpha ? ClampPresetColorComponent(color.a) : 1.0f;
+    return color;
+}
 
 bool HasSelectedPresetIndexInternal() {
     return g_selectedPresetIndex >= 0 && g_selectedPresetIndex < static_cast<int>(g_presetItems.size());
@@ -198,6 +229,20 @@ bool EnabledStringEquals(bool aEnabled, const std::string& a, bool bEnabled, con
     return !aEnabled || EqualsNoCase(a, b);
 }
 
+bool ColorNearlyEqual(const WeatherPresetColor& a, const WeatherPresetColor& b, bool includeAlpha) {
+    return FloatNearlyEqual(a.r, b.r) &&
+        FloatNearlyEqual(a.g, b.g) &&
+        FloatNearlyEqual(a.b, b.b) &&
+        (!includeAlpha || FloatNearlyEqual(a.a, b.a));
+}
+
+bool EnabledColorNearlyEqual(bool aEnabled, const WeatherPresetColor& a, bool bEnabled, const WeatherPresetColor& b, bool includeAlpha) {
+    if (aEnabled != bEnabled) {
+        return false;
+    }
+    return !aEnabled || ColorNearlyEqual(a, b, includeAlpha);
+}
+
 bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
     return a.forceClearSky == b.forceClearSky &&
         a.noRain == b.noRain &&
@@ -213,15 +258,21 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         EnabledFloatNearlyEqual(a.cloudDensityEnabled, a.cloudDensity, b.cloudDensityEnabled, b.cloudDensity) &&
         EnabledFloatNearlyEqual(a.midCloudsEnabled, a.midClouds, b.midCloudsEnabled, b.midClouds) &&
         EnabledFloatNearlyEqual(a.highCloudsEnabled, a.highClouds, b.highCloudsEnabled, b.highClouds) &&
+        EnabledFloatNearlyEqual(a.cloudAlphaEnabled, a.cloudAlpha, b.cloudAlphaEnabled, b.cloudAlpha) &&
+        EnabledFloatNearlyEqual(a.cloudPhaseFrontEnabled, a.cloudPhaseFront, b.cloudPhaseFrontEnabled, b.cloudPhaseFront) &&
+        EnabledFloatNearlyEqual(a.cloudScatteringCoefficientEnabled, a.cloudScatteringCoefficient, b.cloudScatteringCoefficientEnabled, b.cloudScatteringCoefficient) &&
+        EnabledColorNearlyEqual(a.rayleighScatteringColorEnabled, a.rayleighScatteringColor, b.rayleighScatteringColorEnabled, b.rayleighScatteringColor, false) &&
         EnabledFloatNearlyEqual(a.exp2CEnabled, a.exp2C, b.exp2CEnabled, b.exp2C) &&
         EnabledFloatNearlyEqual(a.exp2DEnabled, a.exp2D, b.exp2DEnabled, b.exp2D) &&
         EnabledFloatNearlyEqual(a.cloudVariationEnabled, a.cloudVariation, b.cloudVariationEnabled, b.cloudVariation) &&
         EnabledFloatNearlyEqual(a.nightSkyRotationEnabled, a.nightSkyRotation, b.nightSkyRotationEnabled, b.nightSkyRotation) &&
         EnabledFloatNearlyEqual(a.nightSkyYawEnabled, a.nightSkyYaw, b.nightSkyYawEnabled, b.nightSkyYaw) &&
         EnabledFloatNearlyEqual(a.sunSizeEnabled, a.sunSize, b.sunSizeEnabled, b.sunSize) &&
+        EnabledFloatNearlyEqual(a.sunLightIntensityEnabled, a.sunLightIntensity, b.sunLightIntensityEnabled, b.sunLightIntensity) &&
         EnabledFloatNearlyEqual(a.sunYawEnabled, a.sunYaw, b.sunYawEnabled, b.sunYaw) &&
         EnabledFloatNearlyEqual(a.sunPitchEnabled, a.sunPitch, b.sunPitchEnabled, b.sunPitch) &&
         EnabledFloatNearlyEqual(a.moonSizeEnabled, a.moonSize, b.moonSizeEnabled, b.moonSize) &&
+        EnabledFloatNearlyEqual(a.moonLightIntensityEnabled, a.moonLightIntensity, b.moonLightIntensityEnabled, b.moonLightIntensity) &&
         EnabledFloatNearlyEqual(a.moonYawEnabled, a.moonYaw, b.moonYawEnabled, b.moonYaw) &&
         EnabledFloatNearlyEqual(a.moonPitchEnabled, a.moonPitch, b.moonPitchEnabled, b.moonPitch) &&
         EnabledFloatNearlyEqual(a.moonRollEnabled, a.moonRoll, b.moonRollEnabled, b.moonRoll) &&
@@ -229,6 +280,12 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         EnabledStringEquals(a.milkywayTextureEnabled, a.milkywayTexture, b.milkywayTextureEnabled, b.milkywayTexture) &&
         EnabledFloatNearlyEqual(a.fogEnabled, a.fogPercent, b.fogEnabled, b.fogPercent) &&
         EnabledFloatNearlyEqual(a.nativeFogEnabled, a.nativeFog, b.nativeFogEnabled, b.nativeFog) &&
+        EnabledColorNearlyEqual(a.volumeFogScatterColorEnabled, a.volumeFogScatterColor, b.volumeFogScatterColorEnabled, b.volumeFogScatterColor, true) &&
+        EnabledFloatNearlyEqual(a.mieScaleHeightEnabled, a.mieScaleHeight, b.mieScaleHeightEnabled, b.mieScaleHeight) &&
+        EnabledFloatNearlyEqual(a.mieAerosolDensityEnabled, a.mieAerosolDensity, b.mieAerosolDensityEnabled, b.mieAerosolDensity) &&
+        EnabledFloatNearlyEqual(a.mieAerosolAbsorptionEnabled, a.mieAerosolAbsorption, b.mieAerosolAbsorptionEnabled, b.mieAerosolAbsorption) &&
+        EnabledFloatNearlyEqual(a.heightFogBaselineEnabled, a.heightFogBaseline, b.heightFogBaselineEnabled, b.heightFogBaseline) &&
+        EnabledFloatNearlyEqual(a.heightFogFalloffEnabled, a.heightFogFalloff, b.heightFogFalloffEnabled, b.heightFogFalloff) &&
         a.noFog == b.noFog &&
         FloatNearlyEqual(a.wind, b.wind) &&
         a.noWind == b.noWind &&
@@ -238,10 +295,12 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
 bool PresetMaskAny(const WeatherPresetMask& mask) {
     return mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow || mask.time ||
         mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds ||
-        mask.highClouds || mask.exp2C || mask.exp2D || mask.cloudVariation ||
-        mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunYaw || mask.sunPitch ||
-        mask.moonSize || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture ||
-        mask.fog || mask.nativeFog || mask.noFog || mask.wind ||
+        mask.highClouds || mask.cloudAlpha || mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.rayleighScatteringColor ||
+        mask.exp2C || mask.exp2D || mask.cloudVariation ||
+        mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunLightIntensity || mask.sunYaw || mask.sunPitch ||
+        mask.moonSize || mask.moonLightIntensity || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture ||
+        mask.fog || mask.nativeFog || mask.volumeFogScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
+        mask.mieAerosolAbsorption || mask.heightFogBaseline || mask.heightFogFalloff || mask.noFog || mask.wind ||
         mask.noWind || mask.puddleScale;
 }
 
@@ -261,15 +320,21 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.cloudDensity = mask.cloudDensity;
     out.midClouds = mask.midClouds;
     out.highClouds = mask.highClouds;
+    out.cloudAlpha = mask.cloudAlpha;
+    out.cloudPhaseFront = mask.cloudPhaseFront;
+    out.cloudScatteringCoefficient = mask.cloudScatteringCoefficient;
+    out.rayleighScatteringColor = mask.rayleighScatteringColor;
     out.exp2C = mask.exp2C;
     out.exp2D = mask.exp2D;
     out.cloudVariation = mask.cloudVariation;
     out.nightSkyRotation = mask.nightSkyRotation;
     out.nightSkyYaw = mask.nightSkyYaw;
     out.sunSize = mask.sunSize;
+    out.sunLightIntensity = mask.sunLightIntensity;
     out.sunYaw = mask.sunYaw;
     out.sunPitch = mask.sunPitch;
     out.moonSize = mask.moonSize;
+    out.moonLightIntensity = mask.moonLightIntensity;
     out.moonYaw = mask.moonYaw;
     out.moonPitch = mask.moonPitch;
     out.moonRoll = mask.moonRoll;
@@ -277,6 +342,12 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.milkywayTexture = mask.milkywayTexture;
     out.fog = mask.fog;
     out.nativeFog = mask.nativeFog;
+    out.volumeFogScatterColor = mask.volumeFogScatterColor;
+    out.mieScaleHeight = mask.mieScaleHeight;
+    out.mieAerosolDensity = mask.mieAerosolDensity;
+    out.mieAerosolAbsorption = mask.mieAerosolAbsorption;
+    out.heightFogBaseline = mask.heightFogBaseline;
+    out.heightFogFalloff = mask.heightFogFalloff;
     out.noFog = mask.noFog;
     out.wind = mask.wind;
     out.noWind = mask.noWind;
@@ -300,15 +371,21 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.cloudDensity = source.cloudDensity;
     mask.midClouds = source.midClouds;
     mask.highClouds = source.highClouds;
+    mask.cloudAlpha = source.cloudAlpha;
+    mask.cloudPhaseFront = source.cloudPhaseFront;
+    mask.cloudScatteringCoefficient = source.cloudScatteringCoefficient;
+    mask.rayleighScatteringColor = source.rayleighScatteringColor;
     mask.exp2C = source.exp2C;
     mask.exp2D = source.exp2D;
     mask.cloudVariation = source.cloudVariation;
     mask.nightSkyRotation = source.nightSkyRotation;
     mask.nightSkyYaw = source.nightSkyYaw;
     mask.sunSize = source.sunSize;
+    mask.sunLightIntensity = source.sunLightIntensity;
     mask.sunYaw = source.sunYaw;
     mask.sunPitch = source.sunPitch;
     mask.moonSize = source.moonSize;
+    mask.moonLightIntensity = source.moonLightIntensity;
     mask.moonYaw = source.moonYaw;
     mask.moonPitch = source.moonPitch;
     mask.moonRoll = source.moonRoll;
@@ -316,6 +393,12 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.milkywayTexture = source.milkywayTexture;
     mask.fog = source.fog;
     mask.nativeFog = source.nativeFog;
+    mask.volumeFogScatterColor = source.volumeFogScatterColor;
+    mask.mieScaleHeight = source.mieScaleHeight;
+    mask.mieAerosolDensity = source.mieAerosolDensity;
+    mask.mieAerosolAbsorption = source.mieAerosolAbsorption;
+    mask.heightFogBaseline = source.heightFogBaseline;
+    mask.heightFogFalloff = source.heightFogFalloff;
     mask.noFog = source.noFog;
     mask.wind = source.wind;
     mask.noWind = source.noWind;
@@ -338,15 +421,21 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.cloudDensity == b.cloudDensity &&
         a.midClouds == b.midClouds &&
         a.highClouds == b.highClouds &&
+        a.cloudAlpha == b.cloudAlpha &&
+        a.cloudPhaseFront == b.cloudPhaseFront &&
+        a.cloudScatteringCoefficient == b.cloudScatteringCoefficient &&
+        a.rayleighScatteringColor == b.rayleighScatteringColor &&
         a.exp2C == b.exp2C &&
         a.exp2D == b.exp2D &&
         a.cloudVariation == b.cloudVariation &&
         a.nightSkyRotation == b.nightSkyRotation &&
         a.nightSkyYaw == b.nightSkyYaw &&
         a.sunSize == b.sunSize &&
+        a.sunLightIntensity == b.sunLightIntensity &&
         a.sunYaw == b.sunYaw &&
         a.sunPitch == b.sunPitch &&
         a.moonSize == b.moonSize &&
+        a.moonLightIntensity == b.moonLightIntensity &&
         a.moonYaw == b.moonYaw &&
         a.moonPitch == b.moonPitch &&
         a.moonRoll == b.moonRoll &&
@@ -354,6 +443,12 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.milkywayTexture == b.milkywayTexture &&
         a.fog == b.fog &&
         a.nativeFog == b.nativeFog &&
+        a.volumeFogScatterColor == b.volumeFogScatterColor &&
+        a.mieScaleHeight == b.mieScaleHeight &&
+        a.mieAerosolDensity == b.mieAerosolDensity &&
+        a.mieAerosolAbsorption == b.mieAerosolAbsorption &&
+        a.heightFogBaseline == b.heightFogBaseline &&
+        a.heightFogFalloff == b.heightFogFalloff &&
         a.noFog == b.noFog &&
         a.wind == b.wind &&
         a.noWind == b.noWind &&
@@ -376,15 +471,21 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.cloudDensity = true;
     mask.midClouds = true;
     mask.highClouds = true;
+    mask.cloudAlpha = true;
+    mask.cloudPhaseFront = true;
+    mask.cloudScatteringCoefficient = true;
+    mask.rayleighScatteringColor = true;
     mask.exp2C = true;
     mask.exp2D = true;
     mask.cloudVariation = true;
     mask.nightSkyRotation = true;
     mask.nightSkyYaw = true;
     mask.sunSize = true;
+    mask.sunLightIntensity = true;
     mask.sunYaw = true;
     mask.sunPitch = true;
     mask.moonSize = true;
+    mask.moonLightIntensity = true;
     mask.moonYaw = true;
     mask.moonPitch = true;
     mask.moonRoll = true;
@@ -392,6 +493,12 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.milkywayTexture = true;
     mask.fog = true;
     mask.nativeFog = true;
+    mask.volumeFogScatterColor = true;
+    mask.mieScaleHeight = true;
+    mask.mieAerosolDensity = true;
+    mask.mieAerosolAbsorption = true;
+    mask.heightFogBaseline = true;
+    mask.heightFogFalloff = true;
     mask.noFog = true;
     mask.wind = true;
     mask.noWind = true;
@@ -415,15 +522,21 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.cloudDensity = !EnabledFloatNearlyEqual(base.cloudDensityEnabled, base.cloudDensity, value.cloudDensityEnabled, value.cloudDensity);
     mask.midClouds = !EnabledFloatNearlyEqual(base.midCloudsEnabled, base.midClouds, value.midCloudsEnabled, value.midClouds);
     mask.highClouds = !EnabledFloatNearlyEqual(base.highCloudsEnabled, base.highClouds, value.highCloudsEnabled, value.highClouds);
+    mask.cloudAlpha = !EnabledFloatNearlyEqual(base.cloudAlphaEnabled, base.cloudAlpha, value.cloudAlphaEnabled, value.cloudAlpha);
+    mask.cloudPhaseFront = !EnabledFloatNearlyEqual(base.cloudPhaseFrontEnabled, base.cloudPhaseFront, value.cloudPhaseFrontEnabled, value.cloudPhaseFront);
+    mask.cloudScatteringCoefficient = !EnabledFloatNearlyEqual(base.cloudScatteringCoefficientEnabled, base.cloudScatteringCoefficient, value.cloudScatteringCoefficientEnabled, value.cloudScatteringCoefficient);
+    mask.rayleighScatteringColor = !EnabledColorNearlyEqual(base.rayleighScatteringColorEnabled, base.rayleighScatteringColor, value.rayleighScatteringColorEnabled, value.rayleighScatteringColor, false);
     mask.exp2C = !EnabledFloatNearlyEqual(base.exp2CEnabled, base.exp2C, value.exp2CEnabled, value.exp2C);
     mask.exp2D = !EnabledFloatNearlyEqual(base.exp2DEnabled, base.exp2D, value.exp2DEnabled, value.exp2D);
     mask.cloudVariation = !EnabledFloatNearlyEqual(base.cloudVariationEnabled, base.cloudVariation, value.cloudVariationEnabled, value.cloudVariation);
     mask.nightSkyRotation = !EnabledFloatNearlyEqual(base.nightSkyRotationEnabled, base.nightSkyRotation, value.nightSkyRotationEnabled, value.nightSkyRotation);
     mask.nightSkyYaw = !EnabledFloatNearlyEqual(base.nightSkyYawEnabled, base.nightSkyYaw, value.nightSkyYawEnabled, value.nightSkyYaw);
     mask.sunSize = !EnabledFloatNearlyEqual(base.sunSizeEnabled, base.sunSize, value.sunSizeEnabled, value.sunSize);
+    mask.sunLightIntensity = !EnabledFloatNearlyEqual(base.sunLightIntensityEnabled, base.sunLightIntensity, value.sunLightIntensityEnabled, value.sunLightIntensity);
     mask.sunYaw = !EnabledFloatNearlyEqual(base.sunYawEnabled, base.sunYaw, value.sunYawEnabled, value.sunYaw);
     mask.sunPitch = !EnabledFloatNearlyEqual(base.sunPitchEnabled, base.sunPitch, value.sunPitchEnabled, value.sunPitch);
     mask.moonSize = !EnabledFloatNearlyEqual(base.moonSizeEnabled, base.moonSize, value.moonSizeEnabled, value.moonSize);
+    mask.moonLightIntensity = !EnabledFloatNearlyEqual(base.moonLightIntensityEnabled, base.moonLightIntensity, value.moonLightIntensityEnabled, value.moonLightIntensity);
     mask.moonYaw = !EnabledFloatNearlyEqual(base.moonYawEnabled, base.moonYaw, value.moonYawEnabled, value.moonYaw);
     mask.moonPitch = !EnabledFloatNearlyEqual(base.moonPitchEnabled, base.moonPitch, value.moonPitchEnabled, value.moonPitch);
     mask.moonRoll = !EnabledFloatNearlyEqual(base.moonRollEnabled, base.moonRoll, value.moonRollEnabled, value.moonRoll);
@@ -431,6 +544,12 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.milkywayTexture = !EnabledStringEquals(base.milkywayTextureEnabled, base.milkywayTexture, value.milkywayTextureEnabled, value.milkywayTexture);
     mask.fog = !EnabledFloatNearlyEqual(base.fogEnabled, base.fogPercent, value.fogEnabled, value.fogPercent);
     mask.nativeFog = !EnabledFloatNearlyEqual(base.nativeFogEnabled, base.nativeFog, value.nativeFogEnabled, value.nativeFog);
+    mask.volumeFogScatterColor = !EnabledColorNearlyEqual(base.volumeFogScatterColorEnabled, base.volumeFogScatterColor, value.volumeFogScatterColorEnabled, value.volumeFogScatterColor, true);
+    mask.mieScaleHeight = !EnabledFloatNearlyEqual(base.mieScaleHeightEnabled, base.mieScaleHeight, value.mieScaleHeightEnabled, value.mieScaleHeight);
+    mask.mieAerosolDensity = !EnabledFloatNearlyEqual(base.mieAerosolDensityEnabled, base.mieAerosolDensity, value.mieAerosolDensityEnabled, value.mieAerosolDensity);
+    mask.mieAerosolAbsorption = !EnabledFloatNearlyEqual(base.mieAerosolAbsorptionEnabled, base.mieAerosolAbsorption, value.mieAerosolAbsorptionEnabled, value.mieAerosolAbsorption);
+    mask.heightFogBaseline = !EnabledFloatNearlyEqual(base.heightFogBaselineEnabled, base.heightFogBaseline, value.heightFogBaselineEnabled, value.heightFogBaseline);
+    mask.heightFogFalloff = !EnabledFloatNearlyEqual(base.heightFogFalloffEnabled, base.heightFogFalloff, value.heightFogFalloffEnabled, value.heightFogFalloff);
     mask.noFog = base.noFog != value.noFog;
     mask.wind = !FloatNearlyEqual(base.wind, value.wind);
     mask.noWind = base.noWind != value.noWind;
@@ -473,6 +592,22 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
         target.highCloudsEnabled = source.highCloudsEnabled;
         target.highClouds = source.highClouds;
     }
+    if (mask.cloudAlpha) {
+        target.cloudAlphaEnabled = source.cloudAlphaEnabled;
+        target.cloudAlpha = source.cloudAlpha;
+    }
+    if (mask.cloudPhaseFront) {
+        target.cloudPhaseFrontEnabled = source.cloudPhaseFrontEnabled;
+        target.cloudPhaseFront = source.cloudPhaseFront;
+    }
+    if (mask.cloudScatteringCoefficient) {
+        target.cloudScatteringCoefficientEnabled = source.cloudScatteringCoefficientEnabled;
+        target.cloudScatteringCoefficient = source.cloudScatteringCoefficient;
+    }
+    if (mask.rayleighScatteringColor) {
+        target.rayleighScatteringColorEnabled = source.rayleighScatteringColorEnabled;
+        target.rayleighScatteringColor = source.rayleighScatteringColor;
+    }
     if (mask.exp2C) {
         target.exp2CEnabled = source.exp2CEnabled;
         target.exp2C = source.exp2C;
@@ -497,6 +632,10 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
         target.sunSizeEnabled = source.sunSizeEnabled;
         target.sunSize = source.sunSize;
     }
+    if (mask.sunLightIntensity) {
+        target.sunLightIntensityEnabled = source.sunLightIntensityEnabled;
+        target.sunLightIntensity = source.sunLightIntensity;
+    }
     if (mask.sunYaw) {
         target.sunYawEnabled = source.sunYawEnabled;
         target.sunYaw = source.sunYaw;
@@ -508,6 +647,10 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
     if (mask.moonSize) {
         target.moonSizeEnabled = source.moonSizeEnabled;
         target.moonSize = source.moonSize;
+    }
+    if (mask.moonLightIntensity) {
+        target.moonLightIntensityEnabled = source.moonLightIntensityEnabled;
+        target.moonLightIntensity = source.moonLightIntensity;
     }
     if (mask.moonYaw) {
         target.moonYawEnabled = source.moonYawEnabled;
@@ -537,6 +680,30 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
         target.nativeFogEnabled = source.nativeFogEnabled;
         target.nativeFog = source.nativeFog;
     }
+    if (mask.volumeFogScatterColor) {
+        target.volumeFogScatterColorEnabled = source.volumeFogScatterColorEnabled;
+        target.volumeFogScatterColor = source.volumeFogScatterColor;
+    }
+    if (mask.mieScaleHeight) {
+        target.mieScaleHeightEnabled = source.mieScaleHeightEnabled;
+        target.mieScaleHeight = source.mieScaleHeight;
+    }
+    if (mask.mieAerosolDensity) {
+        target.mieAerosolDensityEnabled = source.mieAerosolDensityEnabled;
+        target.mieAerosolDensity = source.mieAerosolDensity;
+    }
+    if (mask.mieAerosolAbsorption) {
+        target.mieAerosolAbsorptionEnabled = source.mieAerosolAbsorptionEnabled;
+        target.mieAerosolAbsorption = source.mieAerosolAbsorption;
+    }
+    if (mask.heightFogBaseline) {
+        target.heightFogBaselineEnabled = source.heightFogBaselineEnabled;
+        target.heightFogBaseline = source.heightFogBaseline;
+    }
+    if (mask.heightFogFalloff) {
+        target.heightFogFalloffEnabled = source.heightFogFalloffEnabled;
+        target.heightFogFalloff = source.heightFogFalloff;
+    }
     if (mask.noFog) target.noFog = source.noFog;
     if (mask.wind) target.wind = source.wind;
     if (mask.noWind) target.noWind = source.noWind;
@@ -548,6 +715,15 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
 
 float LerpPresetFloat(float a, float b, float t) {
     return a + (b - a) * t;
+}
+
+WeatherPresetColor LerpPresetColor(const WeatherPresetColor& a, const WeatherPresetColor& b, float t) {
+    return {
+        LerpPresetFloat(a.r, b.r, t),
+        LerpPresetFloat(a.g, b.g, t),
+        LerpPresetFloat(a.b, b.b, t),
+        LerpPresetFloat(a.a, b.a, t),
+    };
 }
 
 float LerpPresetHour(float a, float b, float t) {
@@ -604,6 +780,14 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.midClouds = LerpPresetFloat(a.midClouds, b.midClouds, t);
     out.highCloudsEnabled = a.highCloudsEnabled || b.highCloudsEnabled;
     out.highClouds = LerpPresetFloat(a.highClouds, b.highClouds, t);
+    out.cloudAlphaEnabled = a.cloudAlphaEnabled || b.cloudAlphaEnabled;
+    out.cloudAlpha = LerpPresetFloat(a.cloudAlpha, b.cloudAlpha, t);
+    out.cloudPhaseFrontEnabled = a.cloudPhaseFrontEnabled || b.cloudPhaseFrontEnabled;
+    out.cloudPhaseFront = LerpPresetFloat(a.cloudPhaseFront, b.cloudPhaseFront, t);
+    out.cloudScatteringCoefficientEnabled = a.cloudScatteringCoefficientEnabled || b.cloudScatteringCoefficientEnabled;
+    out.cloudScatteringCoefficient = LerpPresetFloat(a.cloudScatteringCoefficient, b.cloudScatteringCoefficient, t);
+    out.rayleighScatteringColorEnabled = a.rayleighScatteringColorEnabled || b.rayleighScatteringColorEnabled;
+    out.rayleighScatteringColor = LerpPresetColor(a.rayleighScatteringColor, b.rayleighScatteringColor, t);
     out.exp2CEnabled = a.exp2CEnabled || b.exp2CEnabled;
     out.exp2C = LerpPresetFloat(a.exp2C, b.exp2C, t);
     out.exp2DEnabled = a.exp2DEnabled || b.exp2DEnabled;
@@ -616,12 +800,16 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.nightSkyYaw = LerpPresetDegrees180(a.nightSkyYaw, b.nightSkyYaw, t);
     out.sunSizeEnabled = a.sunSizeEnabled || b.sunSizeEnabled;
     out.sunSize = LerpPresetFloat(a.sunSize, b.sunSize, t);
+    out.sunLightIntensityEnabled = a.sunLightIntensityEnabled || b.sunLightIntensityEnabled;
+    out.sunLightIntensity = LerpPresetFloat(a.sunLightIntensity, b.sunLightIntensity, t);
     out.sunYawEnabled = a.sunYawEnabled || b.sunYawEnabled;
     out.sunYaw = LerpPresetDegrees180(a.sunYaw, b.sunYaw, t);
     out.sunPitchEnabled = a.sunPitchEnabled || b.sunPitchEnabled;
     out.sunPitch = LerpPresetFloat(a.sunPitch, b.sunPitch, t);
     out.moonSizeEnabled = a.moonSizeEnabled || b.moonSizeEnabled;
     out.moonSize = LerpPresetFloat(a.moonSize, b.moonSize, t);
+    out.moonLightIntensityEnabled = a.moonLightIntensityEnabled || b.moonLightIntensityEnabled;
+    out.moonLightIntensity = LerpPresetFloat(a.moonLightIntensity, b.moonLightIntensity, t);
     out.moonYawEnabled = a.moonYawEnabled || b.moonYawEnabled;
     out.moonYaw = LerpPresetDegrees180(a.moonYaw, b.moonYaw, t);
     out.moonPitchEnabled = a.moonPitchEnabled || b.moonPitchEnabled;
@@ -636,6 +824,18 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.fogPercent = LerpPresetFloat(a.fogPercent, b.fogPercent, t);
     out.nativeFogEnabled = a.nativeFogEnabled || b.nativeFogEnabled;
     out.nativeFog = LerpPresetFloat(a.nativeFog, b.nativeFog, t);
+    out.volumeFogScatterColorEnabled = a.volumeFogScatterColorEnabled || b.volumeFogScatterColorEnabled;
+    out.volumeFogScatterColor = LerpPresetColor(a.volumeFogScatterColor, b.volumeFogScatterColor, t);
+    out.mieScaleHeightEnabled = a.mieScaleHeightEnabled || b.mieScaleHeightEnabled;
+    out.mieScaleHeight = LerpPresetFloat(a.mieScaleHeight, b.mieScaleHeight, t);
+    out.mieAerosolDensityEnabled = a.mieAerosolDensityEnabled || b.mieAerosolDensityEnabled;
+    out.mieAerosolDensity = LerpPresetFloat(a.mieAerosolDensity, b.mieAerosolDensity, t);
+    out.mieAerosolAbsorptionEnabled = a.mieAerosolAbsorptionEnabled || b.mieAerosolAbsorptionEnabled;
+    out.mieAerosolAbsorption = LerpPresetFloat(a.mieAerosolAbsorption, b.mieAerosolAbsorption, t);
+    out.heightFogBaselineEnabled = a.heightFogBaselineEnabled || b.heightFogBaselineEnabled;
+    out.heightFogBaseline = LerpPresetFloat(a.heightFogBaseline, b.heightFogBaseline, t);
+    out.heightFogFalloffEnabled = a.heightFogFalloffEnabled || b.heightFogFalloffEnabled;
+    out.heightFogFalloff = LerpPresetFloat(a.heightFogFalloff, b.heightFogFalloff, t);
     out.noFog = ChoosePresetBool(a.noFog, b.noFog, t);
     out.wind = LerpPresetFloat(a.wind, b.wind, t);
     out.noWind = ChoosePresetBool(a.noWind, b.noWind, t);
@@ -1030,15 +1230,21 @@ struct PresetParseState {
     bool cloudDensityEnabledSeen = false;
     bool midCloudsEnabledSeen = false;
     bool highCloudsEnabledSeen = false;
+    bool cloudAlphaEnabledSeen = false;
+    bool cloudPhaseFrontEnabledSeen = false;
+    bool cloudScatteringCoefficientEnabledSeen = false;
+    bool rayleighScatteringColorEnabledSeen = false;
     bool exp2CEnabledSeen = false;
     bool exp2DEnabledSeen = false;
     bool cloudVariationEnabledSeen = false;
     bool nightSkyRotationEnabledSeen = false;
     bool nightSkyYawEnabledSeen = false;
     bool sunSizeEnabledSeen = false;
+    bool sunLightIntensityEnabledSeen = false;
     bool sunYawEnabledSeen = false;
     bool sunPitchEnabledSeen = false;
     bool moonSizeEnabledSeen = false;
+    bool moonLightIntensityEnabledSeen = false;
     bool moonYawEnabledSeen = false;
     bool moonPitchEnabledSeen = false;
     bool moonRollEnabledSeen = false;
@@ -1046,6 +1252,12 @@ struct PresetParseState {
     bool milkywayTextureEnabledSeen = false;
     bool fogEnabledSeen = false;
     bool nativeFogEnabledSeen = false;
+    bool volumeFogScatterColorEnabledSeen = false;
+    bool mieScaleHeightEnabledSeen = false;
+    bool mieAerosolDensityEnabledSeen = false;
+    bool mieAerosolAbsorptionEnabledSeen = false;
+    bool heightFogBaselineEnabledSeen = false;
+    bool heightFogFalloffEnabledSeen = false;
     bool puddleScaleEnabledSeen = false;
     bool sawLegacyAlias = false;
 };
@@ -1071,6 +1283,13 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
              KeyEquals(key, "HighCloudsEnabled") || KeyEquals(key, "HighClouds") ||
              KeyEquals(key, "CloudScrollEnabled") || KeyEquals(key, "CloudScroll")) mask.midClouds = true;
     else if (KeyEquals(key, "HighCloudLayerEnabled") || KeyEquals(key, "HighCloudLayer")) mask.highClouds = true;
+    else if (KeyEquals(key, "CloudAlphaEnabled") || KeyEquals(key, "CloudAlpha")) mask.cloudAlpha = true;
+    else if (KeyEquals(key, "CloudPhaseFrontEnabled") || KeyEquals(key, "CloudPhaseFront")) mask.cloudPhaseFront = true;
+    else if (KeyEquals(key, "CloudScatteringCoefficientEnabled") || KeyEquals(key, "CloudScatteringCoefficient")) mask.cloudScatteringCoefficient = true;
+    else if (KeyEquals(key, "RayleighScatteringColorEnabled") ||
+             KeyEquals(key, "RayleighScatteringColorR") ||
+             KeyEquals(key, "RayleighScatteringColorG") ||
+             KeyEquals(key, "RayleighScatteringColorB")) mask.rayleighScatteringColor = true;
     else if (KeyEquals(key, "2CEnabled") || KeyEquals(key, "2C")) mask.exp2C = true;
     else if (KeyEquals(key, "2DEnabled") || KeyEquals(key, "2D")) mask.exp2D = true;
     else if (KeyEquals(key, "CloudVariationEnabled") || KeyEquals(key, "CloudVariation") ||
@@ -1078,9 +1297,11 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "NightSkyTiltEnabled") || KeyEquals(key, "NightSkyTilt")) mask.nightSkyRotation = true;
     else if (KeyEquals(key, "NightSkyPhaseEnabled") || KeyEquals(key, "NightSkyPhase")) mask.nightSkyYaw = true;
     else if (KeyEquals(key, "SunSizeEnabled") || KeyEquals(key, "SunSize")) mask.sunSize = true;
+    else if (KeyEquals(key, "SunLightIntensityEnabled") || KeyEquals(key, "SunLightIntensity")) mask.sunLightIntensity = true;
     else if (KeyEquals(key, "SunYawEnabled") || KeyEquals(key, "SunYaw")) mask.sunYaw = true;
     else if (KeyEquals(key, "SunPitchEnabled") || KeyEquals(key, "SunPitch")) mask.sunPitch = true;
     else if (KeyEquals(key, "MoonSizeEnabled") || KeyEquals(key, "MoonSize")) mask.moonSize = true;
+    else if (KeyEquals(key, "MoonLightIntensityEnabled") || KeyEquals(key, "MoonLightIntensity")) mask.moonLightIntensity = true;
     else if (KeyEquals(key, "MoonYawEnabled") || KeyEquals(key, "MoonYaw")) mask.moonYaw = true;
     else if (KeyEquals(key, "MoonPitchEnabled") || KeyEquals(key, "MoonPitch")) mask.moonPitch = true;
     else if (KeyEquals(key, "MoonRollEnabled") || KeyEquals(key, "MoonRoll")) mask.moonRoll = true;
@@ -1089,6 +1310,16 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "FogEnabled") || KeyEquals(key, "Fog")) mask.fog = true;
     else if (KeyEquals(key, "NativeFogEnabled") || KeyEquals(key, "NativeFog") ||
              KeyEquals(key, "PlainFogEnabled") || KeyEquals(key, "PlainFog")) mask.nativeFog = true;
+    else if (KeyEquals(key, "VolumeFogScatterColorEnabled") ||
+             KeyEquals(key, "VolumeFogScatterColorR") ||
+             KeyEquals(key, "VolumeFogScatterColorG") ||
+             KeyEquals(key, "VolumeFogScatterColorB") ||
+             KeyEquals(key, "VolumeFogScatterColorA")) mask.volumeFogScatterColor = true;
+    else if (KeyEquals(key, "MieScaleHeightEnabled") || KeyEquals(key, "MieScaleHeight")) mask.mieScaleHeight = true;
+    else if (KeyEquals(key, "MieAerosolDensityEnabled") || KeyEquals(key, "MieAerosolDensity")) mask.mieAerosolDensity = true;
+    else if (KeyEquals(key, "MieAerosolAbsorptionEnabled") || KeyEquals(key, "MieAerosolAbsorption")) mask.mieAerosolAbsorption = true;
+    else if (KeyEquals(key, "HeightFogBaselineEnabled") || KeyEquals(key, "HeightFogBaseline")) mask.heightFogBaseline = true;
+    else if (KeyEquals(key, "HeightFogFalloffEnabled") || KeyEquals(key, "HeightFogFalloff")) mask.heightFogFalloff = true;
     else if (KeyEquals(key, "NoFog")) mask.noFog = true;
     else if (KeyEquals(key, "Wind")) mask.wind = true;
     else if (KeyEquals(key, "NoWind")) mask.noWind = true;
@@ -1168,6 +1399,38 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "HighCloudLayer")) {
         if (TryParseFloat(value, floatValue)) data.highClouds = floatValue;
+    } else if (KeyEquals(key, "CloudAlphaEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.cloudAlphaEnabled = boolValue;
+            state.cloudAlphaEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "CloudAlpha")) {
+        if (TryParseFloat(value, floatValue)) data.cloudAlpha = floatValue;
+    } else if (KeyEquals(key, "CloudPhaseFrontEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.cloudPhaseFrontEnabled = boolValue;
+            state.cloudPhaseFrontEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "CloudPhaseFront")) {
+        if (TryParseFloat(value, floatValue)) data.cloudPhaseFront = floatValue;
+    } else if (KeyEquals(key, "CloudScatteringCoefficientEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.cloudScatteringCoefficientEnabled = boolValue;
+            state.cloudScatteringCoefficientEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "CloudScatteringCoefficient")) {
+        if (TryParseFloat(value, floatValue)) data.cloudScatteringCoefficient = floatValue;
+    } else if (KeyEquals(key, "RayleighScatteringColorEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.rayleighScatteringColorEnabled = boolValue;
+            state.rayleighScatteringColorEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "RayleighScatteringColorR")) {
+        if (TryParseFloat(value, floatValue)) data.rayleighScatteringColor.r = floatValue;
+    } else if (KeyEquals(key, "RayleighScatteringColorG")) {
+        if (TryParseFloat(value, floatValue)) data.rayleighScatteringColor.g = floatValue;
+    } else if (KeyEquals(key, "RayleighScatteringColorB")) {
+        if (TryParseFloat(value, floatValue)) data.rayleighScatteringColor.b = floatValue;
     } else if (KeyEquals(key, "2CEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.exp2CEnabled = boolValue;
@@ -1212,6 +1475,13 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "SunSize")) {
         if (TryParseFloat(value, floatValue)) data.sunSize = floatValue;
+    } else if (KeyEquals(key, "SunLightIntensityEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.sunLightIntensityEnabled = boolValue;
+            state.sunLightIntensityEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "SunLightIntensity")) {
+        if (TryParseFloat(value, floatValue)) data.sunLightIntensity = floatValue;
     } else if (KeyEquals(key, "SunYawEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.sunYawEnabled = boolValue;
@@ -1233,6 +1503,13 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "MoonSize")) {
         if (TryParseFloat(value, floatValue)) data.moonSize = floatValue;
+    } else if (KeyEquals(key, "MoonLightIntensityEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.moonLightIntensityEnabled = boolValue;
+            state.moonLightIntensityEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MoonLightIntensity")) {
+        if (TryParseFloat(value, floatValue)) data.moonLightIntensity = floatValue;
     } else if (KeyEquals(key, "MoonYawEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.moonYawEnabled = boolValue;
@@ -1282,6 +1559,54 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "NativeFog") || KeyEquals(key, "PlainFog")) {
         if (TryParseFloat(value, floatValue)) data.nativeFog = floatValue;
+    } else if (KeyEquals(key, "VolumeFogScatterColorEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.volumeFogScatterColorEnabled = boolValue;
+            state.volumeFogScatterColorEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "VolumeFogScatterColorR")) {
+        if (TryParseFloat(value, floatValue)) data.volumeFogScatterColor.r = floatValue;
+    } else if (KeyEquals(key, "VolumeFogScatterColorG")) {
+        if (TryParseFloat(value, floatValue)) data.volumeFogScatterColor.g = floatValue;
+    } else if (KeyEquals(key, "VolumeFogScatterColorB")) {
+        if (TryParseFloat(value, floatValue)) data.volumeFogScatterColor.b = floatValue;
+    } else if (KeyEquals(key, "VolumeFogScatterColorA")) {
+        if (TryParseFloat(value, floatValue)) data.volumeFogScatterColor.a = floatValue;
+    } else if (KeyEquals(key, "MieScaleHeightEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.mieScaleHeightEnabled = boolValue;
+            state.mieScaleHeightEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MieScaleHeight")) {
+        if (TryParseFloat(value, floatValue)) data.mieScaleHeight = floatValue;
+    } else if (KeyEquals(key, "MieAerosolDensityEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.mieAerosolDensityEnabled = boolValue;
+            state.mieAerosolDensityEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MieAerosolDensity")) {
+        if (TryParseFloat(value, floatValue)) data.mieAerosolDensity = floatValue;
+    } else if (KeyEquals(key, "MieAerosolAbsorptionEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.mieAerosolAbsorptionEnabled = boolValue;
+            state.mieAerosolAbsorptionEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "MieAerosolAbsorption")) {
+        if (TryParseFloat(value, floatValue)) data.mieAerosolAbsorption = floatValue;
+    } else if (KeyEquals(key, "HeightFogBaselineEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.heightFogBaselineEnabled = boolValue;
+            state.heightFogBaselineEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "HeightFogBaseline")) {
+        if (TryParseFloat(value, floatValue)) data.heightFogBaseline = floatValue;
+    } else if (KeyEquals(key, "HeightFogFalloffEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.heightFogFalloffEnabled = boolValue;
+            state.heightFogFalloffEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "HeightFogFalloff")) {
+        if (TryParseFloat(value, floatValue)) data.heightFogFalloff = floatValue;
     } else if (KeyEquals(key, "NoFog")) {
         if (TryParseBool(value, boolValue)) data.noFog = boolValue;
     } else if (KeyEquals(key, "Wind")) {
@@ -1306,15 +1631,21 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     if (!state.cloudDensityEnabledSeen) data.cloudDensityEnabled = !FloatNearlyEqual(data.cloudDensity, 1.0f);
     if (!state.midCloudsEnabledSeen) data.midCloudsEnabled = !FloatNearlyEqual(data.midClouds, 1.0f);
     if (!state.highCloudsEnabledSeen) data.highCloudsEnabled = !FloatNearlyEqual(data.highClouds, 1.0f);
+    if (!state.cloudAlphaEnabledSeen) data.cloudAlphaEnabled = false;
+    if (!state.cloudPhaseFrontEnabledSeen) data.cloudPhaseFrontEnabled = false;
+    if (!state.cloudScatteringCoefficientEnabledSeen) data.cloudScatteringCoefficientEnabled = false;
+    if (!state.rayleighScatteringColorEnabledSeen) data.rayleighScatteringColorEnabled = false;
     if (!state.exp2CEnabledSeen) data.exp2CEnabled = false;
     if (!state.exp2DEnabledSeen) data.exp2DEnabled = false;
     if (!state.cloudVariationEnabledSeen) data.cloudVariationEnabled = false;
     if (!state.nightSkyRotationEnabledSeen) data.nightSkyRotationEnabled = false;
     if (!state.nightSkyYawEnabledSeen) data.nightSkyYawEnabled = false;
     if (!state.sunSizeEnabledSeen) data.sunSizeEnabled = false;
+    if (!state.sunLightIntensityEnabledSeen) data.sunLightIntensityEnabled = false;
     if (!state.sunYawEnabledSeen) data.sunYawEnabled = false;
     if (!state.sunPitchEnabledSeen) data.sunPitchEnabled = false;
     if (!state.moonSizeEnabledSeen) data.moonSizeEnabled = false;
+    if (!state.moonLightIntensityEnabledSeen) data.moonLightIntensityEnabled = false;
     if (!state.moonYawEnabledSeen) data.moonYawEnabled = false;
     if (!state.moonPitchEnabledSeen) data.moonPitchEnabled = false;
     if (!state.moonRollEnabledSeen) data.moonRollEnabled = false;
@@ -1335,6 +1666,12 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
         data.milkywayTexture.clear();
     }
     if (!state.fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
+    if (!state.volumeFogScatterColorEnabledSeen) data.volumeFogScatterColorEnabled = false;
+    if (!state.mieScaleHeightEnabledSeen) data.mieScaleHeightEnabled = false;
+    if (!state.mieAerosolDensityEnabledSeen) data.mieAerosolDensityEnabled = false;
+    if (!state.mieAerosolAbsorptionEnabledSeen) data.mieAerosolAbsorptionEnabled = false;
+    if (!state.heightFogBaselineEnabledSeen) data.heightFogBaselineEnabled = false;
+    if (!state.heightFogFalloffEnabledSeen) data.heightFogFalloffEnabled = false;
     if (!state.puddleScaleEnabledSeen) data.puddleScaleEnabled = !FloatNearlyEqual(data.puddleScale, 0.0f);
 
     data.rain = ClampPresetRain(data.rain);
@@ -1346,6 +1683,18 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     data.timeHour = NormalizeHour24(data.timeHour);
     data.nativeFog = ClampPresetNativeFog(data.nativeFog);
     if (!state.nativeFogEnabledSeen) data.nativeFogEnabled = !FloatNearlyEqual(data.nativeFog, 1.0f);
+    data.cloudAlpha = ClampPresetCloudAlpha(data.cloudAlpha);
+    data.cloudPhaseFront = ClampPresetCloudPhaseFront(data.cloudPhaseFront);
+    data.cloudScatteringCoefficient = ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient);
+    data.rayleighScatteringColor = ClampPresetColor(data.rayleighScatteringColor, false);
+    data.sunLightIntensity = ClampPresetLightIntensity(data.sunLightIntensity);
+    data.moonLightIntensity = ClampPresetLightIntensity(data.moonLightIntensity);
+    data.volumeFogScatterColor = ClampPresetColor(data.volumeFogScatterColor, true);
+    data.mieScaleHeight = ClampPresetMieScaleHeight(data.mieScaleHeight);
+    data.mieAerosolDensity = ClampPresetMieDensity(data.mieAerosolDensity);
+    data.mieAerosolAbsorption = ClampPresetMieAbsorption(data.mieAerosolAbsorption);
+    data.heightFogBaseline = ClampPresetHeightFogBaseline(data.heightFogBaseline);
+    data.heightFogFalloff = ClampPresetHeightFogFalloff(data.heightFogFalloff);
     data.exp2C = ClampPresetCloudWide(data.exp2C);
     data.exp2D = ClampPresetCloudWide(data.exp2D);
     data.cloudVariation = ClampPresetCloudWide(data.cloudVariation);
@@ -1380,9 +1729,30 @@ float OverrideValueIf(bool enabled, const SliderOverride& overrideValue, float i
     return enabled ? overrideValue.value.load() : inactiveValue;
 }
 
+WeatherPresetColor ActiveColorOverrideValue(const ColorOverride& overrideValue, WeatherPresetColor inactiveValue) {
+    if (!overrideValue.active.load()) {
+        return inactiveValue;
+    }
+    return {
+        overrideValue.r.load(),
+        overrideValue.g.load(),
+        overrideValue.b.load(),
+        overrideValue.a.load(),
+    };
+}
+
 void ApplyEnabledOverride(SliderOverride& overrideValue, bool enabled, float value, float lo, float hi) {
     if (enabled) {
         overrideValue.set(ClampPresetFloat(value, lo, hi));
+    } else {
+        overrideValue.clear();
+    }
+}
+
+void ApplyEnabledColorOverride(ColorOverride& overrideValue, bool enabled, WeatherPresetColor value, bool includeAlpha) {
+    if (enabled) {
+        value = ClampPresetColor(value, includeAlpha);
+        overrideValue.set(value.r, value.g, value.b, includeAlpha ? value.a : 1.0f);
     } else {
         overrideValue.clear();
     }
@@ -1395,6 +1765,15 @@ void ApplyPositiveOverride(SliderOverride& overrideValue, float value, float lo,
     } else {
         overrideValue.clear();
     }
+}
+
+WeatherPresetColor RayleighColorFromBits(unsigned int bits) {
+    return {
+        static_cast<float>((bits >> 16) & 0xFFu) / 255.0f,
+        static_cast<float>((bits >> 8) & 0xFFu) / 255.0f,
+        static_cast<float>(bits & 0xFFu) / 255.0f,
+        1.0f,
+    };
 }
 
 std::string FormatPresetBool(bool value) {
@@ -1463,6 +1842,17 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "MidClouds", FormatPresetFloat(ClampPresetCloudWide(data.midClouds)));
     AppendPresetKeyValue(out, "HighCloudLayerEnabled", FormatPresetBool(data.highCloudsEnabled));
     AppendPresetKeyValue(out, "HighCloudLayer", FormatPresetFloat(ClampPresetCloudWide(data.highClouds)));
+    AppendPresetKeyValue(out, "CloudAlphaEnabled", FormatPresetBool(data.cloudAlphaEnabled));
+    AppendPresetKeyValue(out, "CloudAlpha", FormatPresetFloat(ClampPresetCloudAlpha(data.cloudAlpha)));
+    AppendPresetKeyValue(out, "CloudPhaseFrontEnabled", FormatPresetBool(data.cloudPhaseFrontEnabled));
+    AppendPresetKeyValue(out, "CloudPhaseFront", FormatPresetFloat(ClampPresetCloudPhaseFront(data.cloudPhaseFront)));
+    AppendPresetKeyValue(out, "CloudScatteringCoefficientEnabled", FormatPresetBool(data.cloudScatteringCoefficientEnabled));
+    AppendPresetKeyValue(out, "CloudScatteringCoefficient", FormatPresetFloat(ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient)));
+    AppendPresetKeyValue(out, "RayleighScatteringColorEnabled", FormatPresetBool(data.rayleighScatteringColorEnabled));
+    const WeatherPresetColor rayleigh = ClampPresetColor(data.rayleighScatteringColor, false);
+    AppendPresetKeyValue(out, "RayleighScatteringColorR", FormatPresetFloat(rayleigh.r));
+    AppendPresetKeyValue(out, "RayleighScatteringColorG", FormatPresetFloat(rayleigh.g));
+    AppendPresetKeyValue(out, "RayleighScatteringColorB", FormatPresetFloat(rayleigh.b));
     out += '\n';
 
     AppendPresetLine(out, "[Experiment]");
@@ -1483,12 +1873,16 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "NightSkyPhase", FormatPresetFloat(ClampPresetYaw(data.nightSkyYaw)));
     AppendPresetKeyValue(out, "SunSizeEnabled", FormatPresetBool(data.sunSizeEnabled));
     AppendPresetKeyValue(out, "SunSize", FormatPresetFloat(ClampPresetSunSize(data.sunSize)));
+    AppendPresetKeyValue(out, "SunLightIntensityEnabled", FormatPresetBool(data.sunLightIntensityEnabled));
+    AppendPresetKeyValue(out, "SunLightIntensity", FormatPresetFloat(ClampPresetLightIntensity(data.sunLightIntensity)));
     AppendPresetKeyValue(out, "SunYawEnabled", FormatPresetBool(data.sunYawEnabled));
     AppendPresetKeyValue(out, "SunYaw", FormatPresetFloat(ClampPresetYaw(data.sunYaw)));
     AppendPresetKeyValue(out, "SunPitchEnabled", FormatPresetBool(data.sunPitchEnabled));
     AppendPresetKeyValue(out, "SunPitch", FormatPresetFloat(ClampPresetPitch(data.sunPitch)));
     AppendPresetKeyValue(out, "MoonSizeEnabled", FormatPresetBool(data.moonSizeEnabled));
     AppendPresetKeyValue(out, "MoonSize", FormatPresetFloat(ClampPresetMoonSize(data.moonSize)));
+    AppendPresetKeyValue(out, "MoonLightIntensityEnabled", FormatPresetBool(data.moonLightIntensityEnabled));
+    AppendPresetKeyValue(out, "MoonLightIntensity", FormatPresetFloat(ClampPresetLightIntensity(data.moonLightIntensity)));
     AppendPresetKeyValue(out, "MoonYawEnabled", FormatPresetBool(data.moonYawEnabled));
     AppendPresetKeyValue(out, "MoonYaw", FormatPresetFloat(ClampPresetYaw(data.moonYaw)));
     AppendPresetKeyValue(out, "MoonPitchEnabled", FormatPresetBool(data.moonPitchEnabled));
@@ -1506,6 +1900,22 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "Fog", FormatPresetFloat(ClampPresetFogPercent(data.fogPercent)));
     AppendPresetKeyValue(out, "NativeFogEnabled", FormatPresetBool(data.nativeFogEnabled));
     AppendPresetKeyValue(out, "NativeFog", FormatPresetFloat(ClampPresetNativeFog(data.nativeFog)));
+    AppendPresetKeyValue(out, "VolumeFogScatterColorEnabled", FormatPresetBool(data.volumeFogScatterColorEnabled));
+    const WeatherPresetColor volumeFog = ClampPresetColor(data.volumeFogScatterColor, true);
+    AppendPresetKeyValue(out, "VolumeFogScatterColorR", FormatPresetFloat(volumeFog.r));
+    AppendPresetKeyValue(out, "VolumeFogScatterColorG", FormatPresetFloat(volumeFog.g));
+    AppendPresetKeyValue(out, "VolumeFogScatterColorB", FormatPresetFloat(volumeFog.b));
+    AppendPresetKeyValue(out, "VolumeFogScatterColorA", FormatPresetFloat(volumeFog.a));
+    AppendPresetKeyValue(out, "MieScaleHeightEnabled", FormatPresetBool(data.mieScaleHeightEnabled));
+    AppendPresetKeyValue(out, "MieScaleHeight", FormatPresetFloat(ClampPresetMieScaleHeight(data.mieScaleHeight)));
+    AppendPresetKeyValue(out, "MieAerosolDensityEnabled", FormatPresetBool(data.mieAerosolDensityEnabled));
+    AppendPresetKeyValue(out, "MieAerosolDensity", FormatPresetFloat(ClampPresetMieDensity(data.mieAerosolDensity)));
+    AppendPresetKeyValue(out, "MieAerosolAbsorptionEnabled", FormatPresetBool(data.mieAerosolAbsorptionEnabled));
+    AppendPresetKeyValue(out, "MieAerosolAbsorption", FormatPresetFloat(ClampPresetMieAbsorption(data.mieAerosolAbsorption)));
+    AppendPresetKeyValue(out, "HeightFogBaselineEnabled", FormatPresetBool(data.heightFogBaselineEnabled));
+    AppendPresetKeyValue(out, "HeightFogBaseline", FormatPresetFloat(ClampPresetHeightFogBaseline(data.heightFogBaseline)));
+    AppendPresetKeyValue(out, "HeightFogFalloffEnabled", FormatPresetBool(data.heightFogFalloffEnabled));
+    AppendPresetKeyValue(out, "HeightFogFalloff", FormatPresetFloat(ClampPresetHeightFogFalloff(data.heightFogFalloff)));
     AppendPresetKeyValue(out, "NoFog", FormatPresetBool(data.noFog));
     AppendPresetKeyValue(out, "Wind", FormatPresetFloat(ClampPresetWind(data.wind)));
     AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
@@ -1544,7 +1954,8 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         out += '\n';
     }
 
-    if (mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds || mask.highClouds) {
+    if (mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds || mask.highClouds ||
+        mask.cloudAlpha || mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.rayleighScatteringColor) {
         AppendRegionSectionHeader(out, regionId, "Cloud");
         if (mask.cloudAmount) {
             AppendPresetKeyValue(out, "CloudAmountEnabled", FormatPresetBool(data.cloudAmountEnabled));
@@ -1565,6 +1976,25 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         if (mask.highClouds) {
             AppendPresetKeyValue(out, "HighCloudLayerEnabled", FormatPresetBool(data.highCloudsEnabled));
             AppendPresetKeyValue(out, "HighCloudLayer", FormatPresetFloat(ClampPresetCloudWide(data.highClouds)));
+        }
+        if (mask.cloudAlpha) {
+            AppendPresetKeyValue(out, "CloudAlphaEnabled", FormatPresetBool(data.cloudAlphaEnabled));
+            AppendPresetKeyValue(out, "CloudAlpha", FormatPresetFloat(ClampPresetCloudAlpha(data.cloudAlpha)));
+        }
+        if (mask.cloudPhaseFront) {
+            AppendPresetKeyValue(out, "CloudPhaseFrontEnabled", FormatPresetBool(data.cloudPhaseFrontEnabled));
+            AppendPresetKeyValue(out, "CloudPhaseFront", FormatPresetFloat(ClampPresetCloudPhaseFront(data.cloudPhaseFront)));
+        }
+        if (mask.cloudScatteringCoefficient) {
+            AppendPresetKeyValue(out, "CloudScatteringCoefficientEnabled", FormatPresetBool(data.cloudScatteringCoefficientEnabled));
+            AppendPresetKeyValue(out, "CloudScatteringCoefficient", FormatPresetFloat(ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient)));
+        }
+        if (mask.rayleighScatteringColor) {
+            const WeatherPresetColor rayleigh = ClampPresetColor(data.rayleighScatteringColor, false);
+            AppendPresetKeyValue(out, "RayleighScatteringColorEnabled", FormatPresetBool(data.rayleighScatteringColorEnabled));
+            AppendPresetKeyValue(out, "RayleighScatteringColorR", FormatPresetFloat(rayleigh.r));
+            AppendPresetKeyValue(out, "RayleighScatteringColorG", FormatPresetFloat(rayleigh.g));
+            AppendPresetKeyValue(out, "RayleighScatteringColorB", FormatPresetFloat(rayleigh.b));
         }
         out += '\n';
     }
@@ -1590,7 +2020,8 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         out += '\n';
     }
 
-    if (mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunYaw || mask.sunPitch || mask.moonSize || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture) {
+    if (mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunLightIntensity || mask.sunYaw || mask.sunPitch ||
+        mask.moonSize || mask.moonLightIntensity || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture) {
         AppendRegionSectionHeader(out, regionId, "Celestial");
         if (mask.nightSkyRotation) {
             AppendPresetKeyValue(out, "NightSkyTiltEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
@@ -1604,6 +2035,10 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
             AppendPresetKeyValue(out, "SunSizeEnabled", FormatPresetBool(data.sunSizeEnabled));
             AppendPresetKeyValue(out, "SunSize", FormatPresetFloat(ClampPresetSunSize(data.sunSize)));
         }
+        if (mask.sunLightIntensity) {
+            AppendPresetKeyValue(out, "SunLightIntensityEnabled", FormatPresetBool(data.sunLightIntensityEnabled));
+            AppendPresetKeyValue(out, "SunLightIntensity", FormatPresetFloat(ClampPresetLightIntensity(data.sunLightIntensity)));
+        }
         if (mask.sunYaw) {
             AppendPresetKeyValue(out, "SunYawEnabled", FormatPresetBool(data.sunYawEnabled));
             AppendPresetKeyValue(out, "SunYaw", FormatPresetFloat(ClampPresetYaw(data.sunYaw)));
@@ -1615,6 +2050,10 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         if (mask.moonSize) {
             AppendPresetKeyValue(out, "MoonSizeEnabled", FormatPresetBool(data.moonSizeEnabled));
             AppendPresetKeyValue(out, "MoonSize", FormatPresetFloat(ClampPresetMoonSize(data.moonSize)));
+        }
+        if (mask.moonLightIntensity) {
+            AppendPresetKeyValue(out, "MoonLightIntensityEnabled", FormatPresetBool(data.moonLightIntensityEnabled));
+            AppendPresetKeyValue(out, "MoonLightIntensity", FormatPresetFloat(ClampPresetLightIntensity(data.moonLightIntensity)));
         }
         if (mask.moonYaw) {
             AppendPresetKeyValue(out, "MoonYawEnabled", FormatPresetBool(data.moonYawEnabled));
@@ -1639,7 +2078,8 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         out += '\n';
     }
 
-    if (mask.fog || mask.nativeFog || mask.noFog || mask.wind || mask.noWind) {
+    if (mask.fog || mask.nativeFog || mask.volumeFogScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
+        mask.mieAerosolAbsorption || mask.heightFogBaseline || mask.heightFogFalloff || mask.noFog || mask.wind || mask.noWind) {
         AppendRegionSectionHeader(out, regionId, "Atmosphere");
         if (mask.fog) {
             AppendPresetKeyValue(out, "FogEnabled", FormatPresetBool(data.fogEnabled));
@@ -1648,6 +2088,34 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         if (mask.nativeFog) {
             AppendPresetKeyValue(out, "NativeFogEnabled", FormatPresetBool(data.nativeFogEnabled));
             AppendPresetKeyValue(out, "NativeFog", FormatPresetFloat(ClampPresetNativeFog(data.nativeFog)));
+        }
+        if (mask.volumeFogScatterColor) {
+            const WeatherPresetColor volumeFog = ClampPresetColor(data.volumeFogScatterColor, true);
+            AppendPresetKeyValue(out, "VolumeFogScatterColorEnabled", FormatPresetBool(data.volumeFogScatterColorEnabled));
+            AppendPresetKeyValue(out, "VolumeFogScatterColorR", FormatPresetFloat(volumeFog.r));
+            AppendPresetKeyValue(out, "VolumeFogScatterColorG", FormatPresetFloat(volumeFog.g));
+            AppendPresetKeyValue(out, "VolumeFogScatterColorB", FormatPresetFloat(volumeFog.b));
+            AppendPresetKeyValue(out, "VolumeFogScatterColorA", FormatPresetFloat(volumeFog.a));
+        }
+        if (mask.mieScaleHeight) {
+            AppendPresetKeyValue(out, "MieScaleHeightEnabled", FormatPresetBool(data.mieScaleHeightEnabled));
+            AppendPresetKeyValue(out, "MieScaleHeight", FormatPresetFloat(ClampPresetMieScaleHeight(data.mieScaleHeight)));
+        }
+        if (mask.mieAerosolDensity) {
+            AppendPresetKeyValue(out, "MieAerosolDensityEnabled", FormatPresetBool(data.mieAerosolDensityEnabled));
+            AppendPresetKeyValue(out, "MieAerosolDensity", FormatPresetFloat(ClampPresetMieDensity(data.mieAerosolDensity)));
+        }
+        if (mask.mieAerosolAbsorption) {
+            AppendPresetKeyValue(out, "MieAerosolAbsorptionEnabled", FormatPresetBool(data.mieAerosolAbsorptionEnabled));
+            AppendPresetKeyValue(out, "MieAerosolAbsorption", FormatPresetFloat(ClampPresetMieAbsorption(data.mieAerosolAbsorption)));
+        }
+        if (mask.heightFogBaseline) {
+            AppendPresetKeyValue(out, "HeightFogBaselineEnabled", FormatPresetBool(data.heightFogBaselineEnabled));
+            AppendPresetKeyValue(out, "HeightFogBaseline", FormatPresetFloat(ClampPresetHeightFogBaseline(data.heightFogBaseline)));
+        }
+        if (mask.heightFogFalloff) {
+            AppendPresetKeyValue(out, "HeightFogFalloffEnabled", FormatPresetBool(data.heightFogFalloffEnabled));
+            AppendPresetKeyValue(out, "HeightFogFalloff", FormatPresetFloat(ClampPresetHeightFogFalloff(data.heightFogFalloff)));
         }
         if (mask.noFog) AppendPresetKeyValue(out, "NoFog", FormatPresetBool(data.noFog));
         if (mask.wind) AppendPresetKeyValue(out, "Wind", FormatPresetFloat(ClampPresetWind(data.wind)));
@@ -1708,6 +2176,14 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.midClouds = OverrideValueIf(data.midCloudsEnabled, g_oHighClouds, 1.0f);
     data.highCloudsEnabled = g_oAtmoAlpha.active.load();
     data.highClouds = OverrideValueIf(data.highCloudsEnabled, g_oAtmoAlpha, 1.0f);
+    data.cloudAlphaEnabled = g_oCloudAlpha.active.load();
+    data.cloudAlpha = OverrideValueIf(data.cloudAlphaEnabled, g_oCloudAlpha, g_windPackBase1E.load());
+    data.cloudPhaseFrontEnabled = g_oCloudPhaseFront.active.load();
+    data.cloudPhaseFront = OverrideValueIf(data.cloudPhaseFrontEnabled, g_oCloudPhaseFront, g_windPackBase21.load());
+    data.cloudScatteringCoefficientEnabled = g_oCloudScatteringCoefficient.active.load();
+    data.cloudScatteringCoefficient = OverrideValueIf(data.cloudScatteringCoefficientEnabled, g_oCloudScatteringCoefficient, g_windPackBase20.load());
+    data.rayleighScatteringColorEnabled = g_oRayleighScatteringColor.active.load();
+    data.rayleighScatteringColor = ActiveColorOverrideValue(g_oRayleighScatteringColor, RayleighColorFromBits(g_windPackBase0FBits.load()));
     data.exp2CEnabled = g_oExpCloud2C.active.load();
     data.exp2C = OverrideValueIf(data.exp2CEnabled, g_oExpCloud2C, 1.0f);
     data.exp2DEnabled = g_oExpCloud2D.active.load();
@@ -1723,12 +2199,16 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.nightSkyYaw = OverrideValueIf(data.nightSkyYawEnabled, g_oNightSkyYaw, g_sceneBaseNightSkyYaw.load());
     data.sunSizeEnabled = g_oSunSize.active.load();
     data.sunSize = OverrideValueIf(data.sunSizeEnabled, g_oSunSize, g_atmoBaseSunSize.load());
+    data.sunLightIntensityEnabled = g_oSunLightIntensity.active.load();
+    data.sunLightIntensity = OverrideValueIf(data.sunLightIntensityEnabled, g_oSunLightIntensity, g_windPackBase00.load());
     data.sunYawEnabled = g_oSunDirX.active.load();
     data.sunYaw = OverrideValueIf(data.sunYawEnabled, g_oSunDirX, g_sceneBaseSunYaw.load());
     data.sunPitchEnabled = g_oSunDirY.active.load();
     data.sunPitch = OverrideValueIf(data.sunPitchEnabled, g_oSunDirY, g_sceneBaseSunPitch.load());
     data.moonSizeEnabled = g_oMoonSize.active.load();
     data.moonSize = OverrideValueIf(data.moonSizeEnabled, g_oMoonSize, g_atmoBaseMoonSize.load());
+    data.moonLightIntensityEnabled = g_oMoonLightIntensity.active.load();
+    data.moonLightIntensity = OverrideValueIf(data.moonLightIntensityEnabled, g_oMoonLightIntensity, g_windPackBase05.load());
     data.moonYawEnabled = g_oMoonDirX.active.load();
     data.moonYaw = OverrideValueIf(data.moonYawEnabled, g_oMoonDirX, g_sceneBaseMoonYaw.load());
     data.moonPitchEnabled = g_oMoonDirY.active.load();
@@ -1750,6 +2230,23 @@ WeatherPresetData CaptureCurrentPresetData() {
     }
     data.nativeFogEnabled = g_oNativeFog.active.load();
     data.nativeFog = data.nativeFogEnabled ? ClampPresetNativeFog(g_oNativeFog.value.load()) : 1.0f;
+    data.volumeFogScatterColorEnabled = g_oVolumeFogScatterColor.active.load();
+    data.volumeFogScatterColor = ActiveColorOverrideValue(g_oVolumeFogScatterColor, {
+        g_windPackBase34.load(),
+        g_windPackBase35.load(),
+        g_windPackBase36.load(),
+        g_windPackBase37.load(),
+    });
+    data.mieScaleHeightEnabled = g_oMieScaleHeight.active.load();
+    data.mieScaleHeight = OverrideValueIf(data.mieScaleHeightEnabled, g_oMieScaleHeight, g_windPackBase10.load());
+    data.mieAerosolDensityEnabled = g_oMieAerosolDensity.active.load();
+    data.mieAerosolDensity = OverrideValueIf(data.mieAerosolDensityEnabled, g_oMieAerosolDensity, g_windPackBase11.load());
+    data.mieAerosolAbsorptionEnabled = g_oMieAerosolAbsorption.active.load();
+    data.mieAerosolAbsorption = OverrideValueIf(data.mieAerosolAbsorptionEnabled, g_oMieAerosolAbsorption, g_windPackBase12.load());
+    data.heightFogBaselineEnabled = g_oHeightFogBaseline.active.load();
+    data.heightFogBaseline = OverrideValueIf(data.heightFogBaselineEnabled, g_oHeightFogBaseline, g_windPackBase18.load());
+    data.heightFogFalloffEnabled = g_oHeightFogFalloff.active.load();
+    data.heightFogFalloff = OverrideValueIf(data.heightFogFalloffEnabled, g_oHeightFogFalloff, g_windPackBase19.load());
     data.noFog = g_noFog.load();
     data.wind = ClampPresetWind(g_windMul.load());
     data.noWind = g_noWind.load();
@@ -1794,15 +2291,21 @@ void ApplyPresetData(const WeatherPresetData& data) {
     ApplyEnabledOverride(g_oCloudSpdY, data.cloudDensityEnabled, ClampPresetCloudDensity(data.cloudDensity), 0.0f, 50.0f);
     ApplyEnabledOverride(g_oHighClouds, data.midCloudsEnabled, ClampPresetCloudWide(data.midClouds), 0.0f, 50.0f);
     ApplyEnabledOverride(g_oAtmoAlpha, data.highCloudsEnabled, ClampPresetCloudWide(data.highClouds), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oCloudAlpha, data.cloudAlphaEnabled, ClampPresetCloudAlpha(data.cloudAlpha), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oCloudPhaseFront, data.cloudPhaseFrontEnabled, ClampPresetCloudPhaseFront(data.cloudPhaseFront), -1.0f, 1.0f);
+    ApplyEnabledOverride(g_oCloudScatteringCoefficient, data.cloudScatteringCoefficientEnabled, ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient), kCloudScatteringCoefficientMin, 100.0f);
+    ApplyEnabledColorOverride(g_oRayleighScatteringColor, data.rayleighScatteringColorEnabled, data.rayleighScatteringColor, false);
     ApplyEnabledOverride(g_oExpCloud2C, data.exp2CEnabled, ClampPresetCloudWide(data.exp2C), 0.0f, 50.0f);
     ApplyEnabledOverride(g_oExpCloud2D, data.exp2DEnabled, ClampPresetCloudWide(data.exp2D), 0.0f, 50.0f);
     ApplyEnabledOverride(g_oCloudVariation, data.cloudVariationEnabled, ClampPresetCloudWide(data.cloudVariation), 0.0f, 50.0f);
     ApplyEnabledOverride(g_oExpNightSkyRot, data.nightSkyRotationEnabled, ClampPresetPitch(data.nightSkyRotation), -180.0f, 180.0f);
     ApplyEnabledOverride(g_oNightSkyYaw, data.nightSkyYawEnabled, ClampPresetYaw(data.nightSkyYaw), -360.0f, 360.0f);
     ApplyEnabledOverride(g_oSunSize, data.sunSizeEnabled, ClampPresetSunSize(data.sunSize), 0.001f, 100.0f);
+    ApplyEnabledOverride(g_oSunLightIntensity, data.sunLightIntensityEnabled, ClampPresetLightIntensity(data.sunLightIntensity), 0.0f, 100.0f);
     ApplyEnabledOverride(g_oSunDirX, data.sunYawEnabled, ClampPresetYaw(data.sunYaw), -360.0f, 360.0f);
     ApplyEnabledOverride(g_oSunDirY, data.sunPitchEnabled, ClampPresetPitch(data.sunPitch), -180.0f, 180.0f);
     ApplyEnabledOverride(g_oMoonSize, data.moonSizeEnabled, ClampPresetMoonSize(data.moonSize), 0.001f, 100.0f);
+    ApplyEnabledOverride(g_oMoonLightIntensity, data.moonLightIntensityEnabled, ClampPresetLightIntensity(data.moonLightIntensity), 0.0f, 100.0f);
     ApplyEnabledOverride(g_oMoonDirX, data.moonYawEnabled, ClampPresetYaw(data.moonYaw), -360.0f, 360.0f);
     ApplyEnabledOverride(g_oMoonDirY, data.moonPitchEnabled, ClampPresetPitch(data.moonPitch), -180.0f, 180.0f);
     ApplyEnabledOverride(g_oMoonRoll, data.moonRollEnabled, ClampPresetYaw(data.moonRoll), -360.0f, 360.0f);
@@ -1819,6 +2322,13 @@ void ApplyPresetData(const WeatherPresetData& data) {
     const float nativeFog = ClampPresetNativeFog(data.nativeFog);
     if (data.nativeFogEnabled && fabsf(nativeFog - 1.0f) > 0.001f) g_oNativeFog.set(nativeFog);
     else g_oNativeFog.clear();
+
+    ApplyEnabledColorOverride(g_oVolumeFogScatterColor, data.volumeFogScatterColorEnabled, data.volumeFogScatterColor, true);
+    ApplyEnabledOverride(g_oMieScaleHeight, data.mieScaleHeightEnabled, ClampPresetMieScaleHeight(data.mieScaleHeight), 1.0f, 200000.0f);
+    ApplyEnabledOverride(g_oMieAerosolDensity, data.mieAerosolDensityEnabled, ClampPresetMieDensity(data.mieAerosolDensity), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oMieAerosolAbsorption, data.mieAerosolAbsorptionEnabled, ClampPresetMieAbsorption(data.mieAerosolAbsorption), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oHeightFogBaseline, data.heightFogBaselineEnabled, ClampPresetHeightFogBaseline(data.heightFogBaseline), -50000.0f, 50000.0f);
+    ApplyEnabledOverride(g_oHeightFogFalloff, data.heightFogFalloffEnabled, ClampPresetHeightFogFalloff(data.heightFogFalloff), 0.0f, 100.0f);
 
     g_noFog.store(data.noFog);
     const float wind = ClampPresetWind(data.wind);
@@ -2380,6 +2890,33 @@ void Preset_ArmAutoApplyRemembered() {
     } else {
         Log("[preset] no remembered preset armed\n");
     }
+}
+
+bool Preset_NeedsWorldTick() {
+    if (g_autoApplyRememberedArmed && !g_autoApplyRememberedTried) {
+        return true;
+    }
+
+    const bool hasSelectedRuntimePackage = HasSelectedPresetIndexInternal() && g_selectedPresetBaselineValid;
+    const bool hasNewRuntimePackage = !HasSelectedPresetIndexInternal() && g_newPresetDraftActive;
+    if (!hasSelectedRuntimePackage && !hasNewRuntimePackage) {
+        return false;
+    }
+
+    if (g_lastAppliedRegion < 0 ||
+        IsPresetRegionId(g_regionBlendFrom) ||
+        IsPresetRegionId(g_regionBlendTo)) {
+        return true;
+    }
+
+    const WeatherPresetPackage& runtimePackage = g_editDraftValid ? g_editDraftPackage : g_selectedPresetBaseline;
+    for (int regionId = kPresetRegionGlobal + 1; regionId < kPresetRegionCount; ++regionId) {
+        if (runtimePackage.regionEnabled[regionId]) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void Preset_OnWorldTick(bool worldReady, float dt) {
