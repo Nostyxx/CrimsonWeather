@@ -1,0 +1,15 @@
+{
+  "name": "crimson-weather-community-presets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "deploy": "npx wrangler deploy",
+    "deploy:dev": "npx wrangler deploy --env dev",
+    "migrate": "npx wrangler d1 migrations apply crimson-weather-community-presets --remote",
+    "migrate:dev": "npx wrangler d1 migrations apply crimson-weather-community-presets-dev --env dev --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^4.93.0"
+  }
+}

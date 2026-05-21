@@ -17,97 +17,39 @@ static __m128 PackScalar(float v) {
 
 static constexpr float kCloudScatteringCoefficientMin = 0.00001f;
 
-#if defined(CW_DEV_BUILD)
-const char* DevAtmosphereLabFieldName(size_t index) {
-    static constexpr const char* kNames[kDevAtmosphereLabFieldCount] = {
-        "sunLightIntensity",
-        "sunLightPreset",
-        "sunSizeAngle",
-        "sunDirX",
-        "sunDirY",
-        "moonLightIntensity",
-        "moonLightPreset",
-        "moonSizeAngle",
-        "moonDirX",
-        "moonDirY",
-        "earthAxisTilt",
-        "latitude",
-        "earthRadius",
-        "atmosphereThickness",
-        "rayleighScaledHeight",
-        "rayleighScatteringColorPacked",
-        "mieScaledHeight",
-        "mieAerosolDensity",
-        "mieAerosolAbsorption",
-        "miePhaseConst",
-        "ozoneRatio",
-        "directionalLightLuminanceScale",
-        "distanceScale",
-        "heightFogDensity",
-        "heightFogBaseline",
-        "heightFogFalloff",
-        "heightFogScale",
-        "cloudBaseDensity",
-        "cloudBaseContrast",
-        "cloudBaseScale",
-        "cloudAlpha",
-        "cloudScrollMultiplier",
-        "cloudScatteringCoefficient",
-        "cloudPhaseConstFront",
-        "cloudPhaseConstBack",
-        "cloudAltitude",
-        "cloudThickness",
-        "cloudVisibleRange",
-        "cloudNear",
-        "cloudFadeRange",
-        "cloudDetailRatio",
-        "cloudDetailScale",
-        "cloudMultiRatio",
-        "cloudBeerPowderRatio",
-        "cloudCirrusAltitude",
-        "cloudCirrusDensity",
-        "cloudCirrusScale",
-        "cloudCirrusWeightR",
-        "cloudCirrusWeightG",
-        "cloudCirrusWeightB",
-        "cloudFlow",
-        "cloudSeed",
-        "volumeFogScatterColorR",
-        "volumeFogScatterColorG",
-        "volumeFogScatterColorB",
-        "volumeFogScatterColorA",
-        "mieScatterColorR",
-        "mieScatterColorG",
-        "mieScatterColorB",
-        "mieScatterColorA",
-    };
-    if (index >= kDevAtmosphereLabFieldCount) {
-        return "unknown";
-    }
-    return kNames[index];
-}
+static bool CaptureMinimapGameTime(long long eventContext) {
+    long long payload = 0;
+    int hour = -1;
+    int minute = -1;
 
-void DevAtmosphereLabCaptureNative(const float* packedOut) {
-    if (!packedOut) {
-        return;
-    }
-    for (size_t i = 0; i < kDevAtmosphereLabFieldCount; ++i) {
-        g_devAtmosphereLabLast[i].store(packedOut[i]);
-    }
-    g_devAtmosphereLabCaptureCount.fetch_add(1, std::memory_order_relaxed);
-}
-
-void DevAtmosphereLabApplyOverrides(float* packedOut) {
-    if (!packedOut) {
-        return;
-    }
-    for (size_t i = 0; i < kDevAtmosphereLabFieldCount; ++i) {
-        if (g_devAtmosphereLabActive[i].load()) {
-            packedOut[i] = g_devAtmosphereLabValue[i].load();
+    __try {
+        if (!eventContext) {
+            return false;
         }
+        payload = *reinterpret_cast<long long*>(eventContext + 0x18);
+        if (!payload) {
+            return false;
+        }
+        hour = *reinterpret_cast<int*>(payload + 0x4);
+        minute = *reinterpret_cast<int*>(payload + 0x8);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
     }
+
+    if (hour < 0 || hour > 47 || minute < 0 || minute >= 60) {
+        return false;
+    }
+
+    const int hour24 = hour % 24;
+    const float gameHour = static_cast<float>(hour24) + static_cast<float>(minute) / 60.0f;
+    g_timeUiClockHour24.store(hour24);
+    g_timeUiClockMinute.store(minute);
+    g_timeUiClockHour.store(gameHour);
+    g_timeUiClockValid.store(true);
+    g_timeUiClockSourceValid.store(true);
+    g_timeUiClockTick.store(GetTickCount64());
+    return true;
 }
-#endif
 
 static float DustSliderToNative(float dust) {
     float d = max(0.0f, dust);
@@ -1277,9 +1219,6 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
     const bool modEnabled = g_modEnabled.load();
     if (g_pOrigWindPack) g_pOrigWindPack(windNodePtr, packedOut);
     if (!packedOut) return;
-#if defined(CW_DEV_BUILD)
-    DevAtmosphereLabCaptureNative(packedOut);
-#endif
     if (!modEnabled) return;
 
     ApplyPackedCelestialOverrides(packedOut);
@@ -1381,6 +1320,10 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         g_windPackBase21.store(packedOut[0x21]);
         g_windPackBase21Valid.store(true);
     }
+    if (!g_oCloudVisibleRange.active.load() && std::isfinite(packedOut[0x25])) {
+        g_windPackBase25.store(packedOut[0x25]);
+        g_windPackBase25Valid.store(true);
+    }
     if (!g_oCloudFadeRange.active.load() && std::isfinite(packedOut[0x27])) {
         g_windPackBase27.store(packedOut[0x27]);
         g_windPackBase27Valid.store(true);
@@ -1414,9 +1357,6 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         packedOut[0x1B] = 0.0f;
         packedOut[0x11] = 0.0f;
         packedOut[0x17] = 0.0f;
-#if defined(CW_DEV_BUILD)
-        DevAtmosphereLabApplyOverrides(packedOut);
-#endif
         return;
     }
     if (noFog) {
@@ -1514,6 +1454,10 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
     if (g_oCloudFlow.active.load()) {
         packedOut[0x1F] = ClampFloat(g_oCloudFlow.value.load(), 0.0f, 50.0f);
     }
+    if (g_oCloudVisibleRange.active.load() && g_windPackBase25Valid.load()) {
+        const float mul = ClampFloat(g_oCloudVisibleRange.value.load(), 0.0f, 10.0f);
+        packedOut[0x25] = g_windPackBase25.load() * mul;
+    }
     if (g_oCloudPhaseFront.active.load()) {
         packedOut[0x21] = ClampFloat(g_oCloudPhaseFront.value.load(), -1.0f, 1.0f);
     }
@@ -1524,9 +1468,6 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
         packedOut[0x28] = ClampFloat(g_oCloudDetailRatio.value.load(), 0.0f, 1.5f);
     }
 
-#if defined(CW_DEV_BUILD)
-    DevAtmosphereLabApplyOverrides(packedOut);
-#endif
 }
 
 void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
@@ -1890,6 +1831,17 @@ long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short a
     return result;
 }
 
+void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventContext) {
+#if defined(CW_DEV_BUILD)
+    DevPerf_CountHook(DevPerfHookId::MinimapGameTimeUpdate);
+#endif
+    CaptureMinimapGameTime(eventContext);
+
+    if (g_pOrigMinimapGameTimeUpdate) {
+        g_pOrigMinimapGameTimeUpdate(self, eventContext);
+    }
+}
+
 struct ThunderAudioCandidate {
     uint32_t eventId;
     const char* eventName;
@@ -2130,12 +2082,78 @@ static bool WeatherTickCloudShapeWorkNeeded() {
     return g_oCloudSpdY.active.load();
 }
 
+struct SnowCoverageGlobal {
+    SliderOverride* overrideValue;
+    uintptr_t rva;
+    float defaultValue;
+};
+
+static SnowCoverageGlobal* SnowCoverageGlobals(size_t& count) {
+    static SnowCoverageGlobal kGlobals[] = {
+        { &g_oSnowAccumBoundaryA, 0x5F23698, -5.0f },
+        { &g_oSnowAccumBoundaryB, 0x5F236E8, -20.0f },
+        { &g_oSnowCoverageThreshold, 0x5F23738, -20.0f },
+    };
+    count = std::size(kGlobals);
+    return kGlobals;
+}
+
+static bool SnowCoverageOverrideActive() {
+    size_t count = 0;
+    SnowCoverageGlobal* globals = SnowCoverageGlobals(count);
+    for (size_t i = 0; i < count; ++i) {
+        if (globals[i].overrideValue && globals[i].overrideValue->active.load()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool WriteGameFloatRva(uintptr_t rva, float value) {
+    if (!rva || !std::isfinite(value)) {
+        return false;
+    }
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!base) {
+        return false;
+    }
+    __try {
+        *reinterpret_cast<float*>(base + rva) = value;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static void ApplySnowCoverageGlobalOverrides(bool modEnabled) {
+    const bool active = modEnabled && SnowCoverageOverrideActive();
+    const bool dirty = g_snowCoverageGlobalsDirty.exchange(false);
+    if (!active && !dirty) {
+        return;
+    }
+
+    size_t count = 0;
+    SnowCoverageGlobal* globals = SnowCoverageGlobals(count);
+    for (size_t i = 0; i < count; ++i) {
+        const auto& desc = globals[i];
+        const bool useOverride = modEnabled && desc.overrideValue && desc.overrideValue->active.load();
+        const float value = useOverride ? desc.overrideValue->value.load() : desc.defaultValue;
+        WriteGameFloatRva(desc.rva, value);
+    }
+}
+
 static bool WeatherTickRuntimeWorkNeeded(bool resetStopNow, bool modSuspendNow, bool modEnabled, bool presetNeedsTick) {
-    if (resetStopNow || modSuspendNow || presetNeedsTick || WeatherTickTimeWorkNeeded()) {
+    if (resetStopNow || modSuspendNow || presetNeedsTick) {
         return true;
     }
     if (!modEnabled) {
-        return false;
+        return g_timeFreezeApplied.load() || g_timeSetHoldTicks.load() > 0 || g_snowCoverageGlobalsDirty.load();
+    }
+    if (WeatherTickTimeWorkNeeded()) {
+        return true;
+    }
+    if (g_snowCoverageGlobalsDirty.load() || SnowCoverageOverrideActive()) {
+        return true;
     }
     if (g_forceClear.load() ||
         AnyCustomWeatherSliderActive() ||
@@ -2187,7 +2205,7 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     const bool forceServiceNow = resetStopNow || modSuspendNow || g_timeApplyRequest.load();
     if (!WeatherTickShouldRunService(dt, forceServiceNow, serviceDt)) {
         g_pOriginalTick(self, dt);
-        if (WeatherTickTimeWorkNeeded()) {
+        if (modEnabled && WeatherTickTimeWorkNeeded()) {
             // Keep Progress Visual Time at its requested cadence; only the heavier weather service is throttled.
             TickTimeControl();
         }
@@ -2203,6 +2221,7 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
 
     if (!modEnabled) {
         g_pOriginalTick(self, dt);
+        ApplySnowCoverageGlobalOverrides(false);
         if (modSuspendNow || resetStopNow) {
             StopAllWeatherEffects(self);
             g_activeWeather = -1;
@@ -2213,7 +2232,8 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
 
     if (g_forceClear.load()) {
         g_pOriginalTick(self, dt);
-        StopWeatherEffectsByMask(self, 0x1DFu); 
+        ApplySnowCoverageGlobalOverrides(modEnabled);
+        StopWeatherEffectsByMask(self, 0x1DFu);
         ApplyClearWeatherParams(self, env);
         ApplyWindFromSlider(self, env);
         if (resetStopNow) {
@@ -2231,6 +2251,7 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     }
 
     g_pOriginalTick(self, dt);
+    ApplySnowCoverageGlobalOverrides(modEnabled);
     if (g_activeWeather == kCustomWeather) {
         TickWeatherState(self, serviceDt);
     }

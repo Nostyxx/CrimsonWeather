@@ -2,23 +2,9 @@
 
 ReShade `.addon64` weather-control mod for `CrimsonDesert.exe`.
 
-Current stable release: `0.6.1`.
+Current stable release: `0.6.4`.
 
 The current main branch is the ReShade addon rewrite. The older DXGI/ImGui build is kept on the `legacy` branch.
-
-## Highlights
-
-Version `0.6.1` expands Crimson Weather from core weather sliders into a broader atmosphere preset tool:
-
-- Per-region preset overrides for supported world regions
-- Time-based preset schedule with AM/PM ranges, gap rows, and preset blend durations
-- Optional INI-only AutoSaved mode for saving selected preset edits after slider/dial interactions stop
-- Thunder control with visual lightning and weather SFX scheduling
-- Milky Way texture override support alongside moon textures
-- Advanced atmosphere controls for Rayleigh height/color, ozone, cloud alpha/fade/detail/flow/phase/scattering, aerosol/fog fields, Mie scatter color, and volume fog scatter color
-- Sun and moon light intensity controls
-- Startup, hook, preset, and status diagnostics in the overlay
-- Full, WindOnly, and DEV build flavors
 
 ## Install
 
@@ -35,7 +21,10 @@ Main build:
 - `CrimsonWeather.ini`
 - `CrimsonWeather.log` when logging is enabled
 - Preset `.ini` files saved next to the addon
+- Downloaded community preset `.ini` files in `CrimsonWeather/community/preset`
+- Community catalog cache in `CrimsonWeather/community/catalog.v1.json`
 - Optional moon textures in `CrimsonWeather/moon/{Pack Name}/{Moon Name}/moon.dds` or `moon.png`
+- Optional animated moon texture packs in `CrimsonWeather/moon/{Pack Name}/{Moon Name}/manifest.json`
 - Optional Milky Way textures in `CrimsonWeather/milkyway/{Pack Name}/{Sky Name}/milkyway.dds` or `milkyway.png`
 
 The `moon` and `milkyway` folders are created automatically if they are missing.
@@ -87,7 +76,23 @@ Old preset files still load. Saving a preset rewrites it into the current format
 
 Moon and Milky Way texture presets save the texture name only, not a full local path. If a saved texture is missing, Crimson Weather resets that preset entry back to Native.
 
+Animated moon texture packs use the same Moon Texture browser as static moon textures. Put animated packs under `CrimsonWeather/moon/{Pack Name}/{Moon Name}` with a `manifest.json` file and sequential frame files.
+
+Animated moon manifest files support JSONC-style comments, frame durations, loop modes, start frame, and random start. Supported loop modes are `forward`, `pingpong`, `once`, and `hold`.
+
 Region overrides are saved only for values that differ from the global preset. The Status tab shows which values are inherited and which are region-specific.
+
+## Community Presets
+
+The main addon build includes a `Community` overlay tab for browsing, searching, downloading, liking, and submitting presets through the configured community backend.
+
+Downloaded community presets are stored separately from user-authored local presets at:
+
+- `bin64/CrimsonWeather/community/preset`
+
+The regular Presets tab loads both local preset `.ini` files next to the addon and community preset `.ini` files from that separate folder. Community entries are shown with a `[Community]` prefix.
+
+Downloaded community presets can show an update action when a newer approved version is available.
 
 ## Time Schedule
 
@@ -128,6 +133,9 @@ LastPreset=
 [TimeSchedule]
 Enabled=0
 EntryCount=0
+
+[Community]
+Enabled=1
 
 [Wind]
 Multiplier=1.0000

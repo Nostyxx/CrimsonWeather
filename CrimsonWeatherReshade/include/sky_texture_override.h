@@ -6,6 +6,7 @@ struct ID3D12Device;
 
 bool InitializeSkyTextureOverride(HMODULE module);
 void SkyTextureOnInitDevice(ID3D12Device* device);
+void SkyTextureOnPresent();
 void ShutdownSkyTextureOverride();
 void MoonTextureReload();
 const char* MoonTextureStatus();
@@ -15,6 +16,7 @@ int MoonTextureOptionCount();
 const char* MoonTextureOptionName(int index);
 const char* MoonTextureOptionLabel(int index);
 const char* MoonTextureOptionPack(int index);
+bool MoonTextureOptionIsAnimated(int index);
 int MoonTextureFindOptionByName(const char* name);
 int MoonTextureSelectedOption();
 void MoonTextureSelectOption(int index);

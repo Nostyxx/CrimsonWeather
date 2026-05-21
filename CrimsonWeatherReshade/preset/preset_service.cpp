@@ -34,6 +34,9 @@ struct WeatherPresetMask {
     bool dust = false;
     bool noSnow = false;
     bool snow = false;
+    bool snowAccumBoundaryA = false;
+    bool snowAccumBoundaryB = false;
+    bool snowCoverageThreshold = false;
     bool time = false;
     bool cloudAmount = false;
     bool cloudHeight = false;
@@ -46,6 +49,7 @@ struct WeatherPresetMask {
     bool cloudPhaseFront = false;
     bool cloudScatteringCoefficient = false;
     bool cloudFlow = false;
+    bool cloudVisibleRange = false;
     bool rayleighHeight = false;
     bool ozoneRatio = false;
     bool rayleighScatteringColor = false;
@@ -142,6 +146,7 @@ float ClampPresetRain(float value) { return ClampExtendedPresetFloat(value, 0.0f
 float ClampPresetThunder(float value) { return ClampExtendedPresetFloat(value, 0.0f, 1.0f, 0.0f, 5.0f); }
 float ClampPresetDust(float value) { return ClampExtendedPresetFloat(value, 0.0f, 2.0f, 0.0f, 10.0f); }
 float ClampPresetSnow(float value) { return ClampExtendedPresetFloat(value, 0.0f, 1.0f, 0.0f, 5.0f); }
+float ClampPresetSnowBoundary(float value) { return ClampPresetFloat(value, -1000.0f, 1500.0f); }
 float ClampPresetCloudAmount(float value) { return ClampExtendedPresetFloat(value, 0.0f, 15.0f, 0.0f, 50.0f); }
 float ClampPresetCloudHeight(float value) { return ClampExtendedPresetFloat(value, -15.0f, 15.0f, -50.0f, 50.0f); }
 float ClampPresetCloudDensity(float value) { return ClampExtendedPresetFloat(value, 0.0f, 10.0f, 0.0f, 50.0f); }
@@ -166,6 +171,7 @@ float ClampPresetCloudDetailRatio(float value) { return ClampPresetFloat(value, 
 float ClampPresetCloudPhaseFront(float value) { return ClampExtendedPresetFloat(value, -1.0f, 1.0f, -1.0f, 1.0f); }
 float ClampPresetCloudScatteringCoefficient(float value) { return ClampExtendedPresetFloat(value, kCloudScatteringCoefficientMin, 1.0f, kCloudScatteringCoefficientMin, 100.0f); }
 float ClampPresetCloudFlow(float value) { return ClampExtendedPresetFloat(value, 0.0f, 10.0f, 0.0f, 50.0f); }
+float ClampPresetCloudVisibleRange(float value) { return ClampPresetFloat(value, 0.0f, 10.0f); }
 float ClampPresetRayleighHeight(float value) { return ClampExtendedPresetFloat(value, 10.0f, 20000.0f, 1.0f, 200000.0f); }
 float ClampPresetOzoneRatio(float value) { return ClampExtendedPresetFloat(value, 0.0f, 10.0f, 0.0f, 100.0f); }
 float ClampPresetColorComponent(float value) { return ClampPresetFloat(value, 0.0f, 10.0f); }
@@ -237,6 +243,9 @@ bool TimePresetNearlyEqual(const WeatherPresetData& a, const WeatherPresetData& 
     if (a.progressVisualTime != b.progressVisualTime) {
         return false;
     }
+    if (a.progressVisualTime && a.progressVisualTimeMatchGameTime != b.progressVisualTimeMatchGameTime) {
+        return false;
+    }
     if (!HourNearlyEqual(a.timeHour, b.timeHour)) {
         return false;
     }
@@ -276,6 +285,9 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         FloatNearlyEqual(a.dust, b.dust) &&
         a.noSnow == b.noSnow &&
         FloatNearlyEqual(a.snow, b.snow) &&
+        EnabledFloatNearlyEqual(a.snowAccumBoundaryAEnabled, a.snowAccumBoundaryA, b.snowAccumBoundaryAEnabled, b.snowAccumBoundaryA) &&
+        EnabledFloatNearlyEqual(a.snowAccumBoundaryBEnabled, a.snowAccumBoundaryB, b.snowAccumBoundaryBEnabled, b.snowAccumBoundaryB) &&
+        EnabledFloatNearlyEqual(a.snowCoverageThresholdEnabled, a.snowCoverageThreshold, b.snowCoverageThresholdEnabled, b.snowCoverageThreshold) &&
         TimePresetNearlyEqual(a, b) &&
         EnabledFloatNearlyEqual(a.cloudAmountEnabled, a.cloudAmount, b.cloudAmountEnabled, b.cloudAmount) &&
         EnabledFloatNearlyEqual(a.cloudHeightEnabled, a.cloudHeight, b.cloudHeightEnabled, b.cloudHeight) &&
@@ -288,6 +300,7 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         EnabledFloatNearlyEqual(a.cloudPhaseFrontEnabled, a.cloudPhaseFront, b.cloudPhaseFrontEnabled, b.cloudPhaseFront) &&
         EnabledFloatNearlyEqual(a.cloudScatteringCoefficientEnabled, a.cloudScatteringCoefficient, b.cloudScatteringCoefficientEnabled, b.cloudScatteringCoefficient) &&
         EnabledFloatNearlyEqual(a.cloudFlowEnabled, a.cloudFlow, b.cloudFlowEnabled, b.cloudFlow) &&
+        EnabledFloatNearlyEqual(a.cloudVisibleRangeEnabled, a.cloudVisibleRange, b.cloudVisibleRangeEnabled, b.cloudVisibleRange) &&
         EnabledFloatNearlyEqual(a.rayleighHeightEnabled, a.rayleighHeight, b.rayleighHeightEnabled, b.rayleighHeight) &&
         EnabledFloatNearlyEqual(a.ozoneRatioEnabled, a.ozoneRatio, b.ozoneRatioEnabled, b.ozoneRatio) &&
         EnabledColorNearlyEqual(a.rayleighScatteringColorEnabled, a.rayleighScatteringColor, b.rayleighScatteringColorEnabled, b.rayleighScatteringColor, false) &&
@@ -323,10 +336,12 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
 }
 
 bool PresetMaskAny(const WeatherPresetMask& mask) {
-    return mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow || mask.time ||
+    return mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow ||
+        mask.snowAccumBoundaryA || mask.snowAccumBoundaryB || mask.snowCoverageThreshold || mask.time ||
         mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds ||
         mask.highClouds || mask.cloudAlpha || mask.cloudFadeRange || mask.cloudDetailRatio ||
-        mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.cloudFlow || mask.rayleighHeight || mask.ozoneRatio || mask.rayleighScatteringColor ||
+        mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.cloudFlow || mask.cloudVisibleRange ||
+        mask.rayleighHeight || mask.ozoneRatio || mask.rayleighScatteringColor ||
         mask.exp2C || mask.exp2D || mask.cloudVariation ||
         mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunLightIntensity || mask.sunYaw || mask.sunPitch ||
         mask.moonSize || mask.moonLightIntensity || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture ||
@@ -345,6 +360,9 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.dust = mask.dust;
     out.noSnow = mask.noSnow;
     out.snow = mask.snow;
+    out.snowAccumBoundaryA = mask.snowAccumBoundaryA;
+    out.snowAccumBoundaryB = mask.snowAccumBoundaryB;
+    out.snowCoverageThreshold = mask.snowCoverageThreshold;
     out.time = mask.time;
     out.cloudAmount = mask.cloudAmount;
     out.cloudHeight = mask.cloudHeight;
@@ -357,6 +375,7 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.cloudPhaseFront = mask.cloudPhaseFront;
     out.cloudScatteringCoefficient = mask.cloudScatteringCoefficient;
     out.cloudFlow = mask.cloudFlow;
+    out.cloudVisibleRange = mask.cloudVisibleRange;
     out.rayleighHeight = mask.rayleighHeight;
     out.ozoneRatio = mask.ozoneRatio;
     out.rayleighScatteringColor = mask.rayleighScatteringColor;
@@ -402,6 +421,9 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.dust = source.dust;
     mask.noSnow = source.noSnow;
     mask.snow = source.snow;
+    mask.snowAccumBoundaryA = source.snowAccumBoundaryA;
+    mask.snowAccumBoundaryB = source.snowAccumBoundaryB;
+    mask.snowCoverageThreshold = source.snowCoverageThreshold;
     mask.time = source.time;
     mask.cloudAmount = source.cloudAmount;
     mask.cloudHeight = source.cloudHeight;
@@ -414,6 +436,7 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.cloudPhaseFront = source.cloudPhaseFront;
     mask.cloudScatteringCoefficient = source.cloudScatteringCoefficient;
     mask.cloudFlow = source.cloudFlow;
+    mask.cloudVisibleRange = source.cloudVisibleRange;
     mask.rayleighHeight = source.rayleighHeight;
     mask.ozoneRatio = source.ozoneRatio;
     mask.rayleighScatteringColor = source.rayleighScatteringColor;
@@ -458,6 +481,9 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.dust == b.dust &&
         a.noSnow == b.noSnow &&
         a.snow == b.snow &&
+        a.snowAccumBoundaryA == b.snowAccumBoundaryA &&
+        a.snowAccumBoundaryB == b.snowAccumBoundaryB &&
+        a.snowCoverageThreshold == b.snowCoverageThreshold &&
         a.time == b.time &&
         a.cloudAmount == b.cloudAmount &&
         a.cloudHeight == b.cloudHeight &&
@@ -470,6 +496,7 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.cloudPhaseFront == b.cloudPhaseFront &&
         a.cloudScatteringCoefficient == b.cloudScatteringCoefficient &&
         a.cloudFlow == b.cloudFlow &&
+        a.cloudVisibleRange == b.cloudVisibleRange &&
         a.rayleighHeight == b.rayleighHeight &&
         a.ozoneRatio == b.ozoneRatio &&
         a.rayleighScatteringColor == b.rayleighScatteringColor &&
@@ -514,6 +541,9 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.dust = true;
     mask.noSnow = true;
     mask.snow = true;
+    mask.snowAccumBoundaryA = true;
+    mask.snowAccumBoundaryB = true;
+    mask.snowCoverageThreshold = true;
     mask.time = true;
     mask.cloudAmount = true;
     mask.cloudHeight = true;
@@ -526,6 +556,7 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.cloudPhaseFront = true;
     mask.cloudScatteringCoefficient = true;
     mask.cloudFlow = true;
+    mask.cloudVisibleRange = true;
     mask.rayleighHeight = true;
     mask.ozoneRatio = true;
     mask.rayleighScatteringColor = true;
@@ -571,6 +602,9 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.dust = !FloatNearlyEqual(base.dust, value.dust);
     mask.noSnow = base.noSnow != value.noSnow;
     mask.snow = !FloatNearlyEqual(base.snow, value.snow);
+    mask.snowAccumBoundaryA = !EnabledFloatNearlyEqual(base.snowAccumBoundaryAEnabled, base.snowAccumBoundaryA, value.snowAccumBoundaryAEnabled, value.snowAccumBoundaryA);
+    mask.snowAccumBoundaryB = !EnabledFloatNearlyEqual(base.snowAccumBoundaryBEnabled, base.snowAccumBoundaryB, value.snowAccumBoundaryBEnabled, value.snowAccumBoundaryB);
+    mask.snowCoverageThreshold = !EnabledFloatNearlyEqual(base.snowCoverageThresholdEnabled, base.snowCoverageThreshold, value.snowCoverageThresholdEnabled, value.snowCoverageThreshold);
     mask.time = !TimePresetNearlyEqual(base, value);
     mask.cloudAmount = !EnabledFloatNearlyEqual(base.cloudAmountEnabled, base.cloudAmount, value.cloudAmountEnabled, value.cloudAmount);
     mask.cloudHeight = !EnabledFloatNearlyEqual(base.cloudHeightEnabled, base.cloudHeight, value.cloudHeightEnabled, value.cloudHeight);
@@ -583,6 +617,7 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.cloudPhaseFront = !EnabledFloatNearlyEqual(base.cloudPhaseFrontEnabled, base.cloudPhaseFront, value.cloudPhaseFrontEnabled, value.cloudPhaseFront);
     mask.cloudScatteringCoefficient = !EnabledFloatNearlyEqual(base.cloudScatteringCoefficientEnabled, base.cloudScatteringCoefficient, value.cloudScatteringCoefficientEnabled, value.cloudScatteringCoefficient);
     mask.cloudFlow = !EnabledFloatNearlyEqual(base.cloudFlowEnabled, base.cloudFlow, value.cloudFlowEnabled, value.cloudFlow);
+    mask.cloudVisibleRange = !EnabledFloatNearlyEqual(base.cloudVisibleRangeEnabled, base.cloudVisibleRange, value.cloudVisibleRangeEnabled, value.cloudVisibleRange);
     mask.rayleighHeight = !EnabledFloatNearlyEqual(base.rayleighHeightEnabled, base.rayleighHeight, value.rayleighHeightEnabled, value.rayleighHeight);
     mask.ozoneRatio = !EnabledFloatNearlyEqual(base.ozoneRatioEnabled, base.ozoneRatio, value.ozoneRatioEnabled, value.ozoneRatio);
     mask.rayleighScatteringColor = !EnabledColorNearlyEqual(base.rayleighScatteringColorEnabled, base.rayleighScatteringColor, value.rayleighScatteringColorEnabled, value.rayleighScatteringColor, false);
@@ -627,9 +662,13 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
     if (mask.dust) target.dust = source.dust;
     if (mask.noSnow) target.noSnow = source.noSnow;
     if (mask.snow) target.snow = source.snow;
+    if (mask.snowAccumBoundaryA) { target.snowAccumBoundaryAEnabled = source.snowAccumBoundaryAEnabled; target.snowAccumBoundaryA = source.snowAccumBoundaryA; }
+    if (mask.snowAccumBoundaryB) { target.snowAccumBoundaryBEnabled = source.snowAccumBoundaryBEnabled; target.snowAccumBoundaryB = source.snowAccumBoundaryB; }
+    if (mask.snowCoverageThreshold) { target.snowCoverageThresholdEnabled = source.snowCoverageThresholdEnabled; target.snowCoverageThreshold = source.snowCoverageThreshold; }
     if (mask.time) {
         target.visualTimeOverride = source.visualTimeOverride;
         target.progressVisualTime = source.visualTimeOverride && source.progressVisualTime;
+        target.progressVisualTimeMatchGameTime = target.progressVisualTime && source.progressVisualTimeMatchGameTime;
         target.progressVisualTimeIntervalMs = source.progressVisualTimeIntervalMs;
         target.timeHour = source.timeHour;
     }
@@ -676,6 +715,10 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
     if (mask.cloudFlow) {
         target.cloudFlowEnabled = source.cloudFlowEnabled;
         target.cloudFlow = source.cloudFlow;
+    }
+    if (mask.cloudVisibleRange) {
+        target.cloudVisibleRangeEnabled = source.cloudVisibleRangeEnabled;
+        target.cloudVisibleRange = source.cloudVisibleRange;
     }
     if (mask.rayleighHeight) {
         target.rayleighHeightEnabled = source.rayleighHeightEnabled;
@@ -849,8 +892,15 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.dust = LerpPresetFloat(a.dust, b.dust, t);
     out.noSnow = ChoosePresetBool(a.noSnow, b.noSnow, t);
     out.snow = LerpPresetFloat(a.snow, b.snow, t);
+    out.snowAccumBoundaryAEnabled = a.snowAccumBoundaryAEnabled || b.snowAccumBoundaryAEnabled;
+    out.snowAccumBoundaryA = LerpPresetFloat(a.snowAccumBoundaryA, b.snowAccumBoundaryA, t);
+    out.snowAccumBoundaryBEnabled = a.snowAccumBoundaryBEnabled || b.snowAccumBoundaryBEnabled;
+    out.snowAccumBoundaryB = LerpPresetFloat(a.snowAccumBoundaryB, b.snowAccumBoundaryB, t);
+    out.snowCoverageThresholdEnabled = a.snowCoverageThresholdEnabled || b.snowCoverageThresholdEnabled;
+    out.snowCoverageThreshold = LerpPresetFloat(a.snowCoverageThreshold, b.snowCoverageThreshold, t);
     out.visualTimeOverride = ChoosePresetBool(a.visualTimeOverride, b.visualTimeOverride, t);
     out.progressVisualTime = out.visualTimeOverride && ChoosePresetBool(a.progressVisualTime, b.progressVisualTime, t);
+    out.progressVisualTimeMatchGameTime = out.progressVisualTime && ChoosePresetBool(a.progressVisualTimeMatchGameTime, b.progressVisualTimeMatchGameTime, t);
     out.progressVisualTimeIntervalMs = (t < 0.5f) ? a.progressVisualTimeIntervalMs : b.progressVisualTimeIntervalMs;
     out.timeHour = (a.visualTimeOverride && b.visualTimeOverride)
         ? LerpPresetHour(a.timeHour, b.timeHour, t)
@@ -877,6 +927,8 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.cloudScatteringCoefficient = LerpPresetFloat(a.cloudScatteringCoefficient, b.cloudScatteringCoefficient, t);
     out.cloudFlowEnabled = a.cloudFlowEnabled || b.cloudFlowEnabled;
     out.cloudFlow = LerpPresetFloat(a.cloudFlow, b.cloudFlow, t);
+    out.cloudVisibleRangeEnabled = a.cloudVisibleRangeEnabled || b.cloudVisibleRangeEnabled;
+    out.cloudVisibleRange = LerpPresetFloat(a.cloudVisibleRange, b.cloudVisibleRange, t);
     out.rayleighHeightEnabled = a.rayleighHeightEnabled || b.rayleighHeightEnabled;
     out.rayleighHeight = LerpPresetFloat(a.rayleighHeight, b.rayleighHeight, t);
     out.ozoneRatioEnabled = a.ozoneRatioEnabled || b.ozoneRatioEnabled;
@@ -1287,6 +1339,10 @@ std::string JoinPath(const std::string& dir, const std::string& fileName) {
     return dir + "\\" + fileName;
 }
 
+std::string GetCommunityPresetDirectory() {
+    return JoinPath(JoinPath(JoinPath(GetPresetDirectory(), "CrimsonWeather"), "community"), "preset");
+}
+
 bool ReadPresetHeaderLine(const char* path, std::string& outLine) {
     outLine.clear();
     if (!path || !path[0]) return false;
@@ -1314,6 +1370,7 @@ bool RememberedPresetMatches(const PresetListItem& item, const std::string& reme
     if (trimmed.empty()) return false;
     if (EqualsNoCase(item.fileName, trimmed)) return true;
     if (EqualsNoCase(item.displayName, trimmed)) return true;
+    if (EqualsNoCase(GetPresetDisplayNameFromFileName(item.fileName), trimmed)) return true;
     return EqualsNoCase(item.fileName, EnsureIniExtension(trimmed));
 }
 
@@ -1359,6 +1416,10 @@ struct PresetParseState {
     bool cloudPhaseFrontEnabledSeen = false;
     bool cloudScatteringCoefficientEnabledSeen = false;
     bool cloudFlowEnabledSeen = false;
+    bool cloudVisibleRangeEnabledSeen = false;
+    bool snowAccumBoundaryAEnabledSeen = false;
+    bool snowAccumBoundaryBEnabledSeen = false;
+    bool snowCoverageThresholdEnabledSeen = false;
     bool rayleighHeightEnabledSeen = false;
     bool ozoneRatioEnabledSeen = false;
     bool rayleighScatteringColorEnabledSeen = false;
@@ -1404,7 +1465,10 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "Dust")) mask.dust = true;
     else if (KeyEquals(key, "NoSnow")) mask.noSnow = true;
     else if (KeyEquals(key, "Snow")) mask.snow = true;
-    else if (KeyEquals(key, "VisualTimeOverride") || KeyEquals(key, "ProgressVisualTime") || KeyEquals(key, "ProgressVisualTimeIntervalMs") || KeyEquals(key, "TimeHour")) mask.time = true;
+    else if (KeyEquals(key, "SnowAccumBoundaryAEnabled") || KeyEquals(key, "SnowAccumBoundaryA")) mask.snowAccumBoundaryA = true;
+    else if (KeyEquals(key, "SnowAccumBoundaryBEnabled") || KeyEquals(key, "SnowAccumBoundaryB")) mask.snowAccumBoundaryB = true;
+    else if (KeyEquals(key, "SnowCoverageThresholdEnabled") || KeyEquals(key, "SnowCoverageThreshold")) mask.snowCoverageThreshold = true;
+    else if (KeyEquals(key, "VisualTimeOverride") || KeyEquals(key, "ProgressVisualTime") || KeyEquals(key, "ProgressVisualTimeMatchGameTime") || KeyEquals(key, "ProgressVisualTimeIntervalMs") || KeyEquals(key, "TimeHour")) mask.time = true;
     else if (KeyEquals(key, "CloudAmountEnabled") || KeyEquals(key, "CloudAmount")) mask.cloudAmount = true;
     else if (KeyEquals(key, "CloudHeightEnabled") || KeyEquals(key, "CloudHeight")) mask.cloudHeight = true;
     else if (KeyEquals(key, "CloudDensityEnabled") || KeyEquals(key, "CloudDensity")) mask.cloudDensity = true;
@@ -1418,6 +1482,7 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "CloudPhaseFrontEnabled") || KeyEquals(key, "CloudPhaseFront")) mask.cloudPhaseFront = true;
     else if (KeyEquals(key, "CloudScatteringCoefficientEnabled") || KeyEquals(key, "CloudScatteringCoefficient")) mask.cloudScatteringCoefficient = true;
     else if (KeyEquals(key, "CloudFlowEnabled") || KeyEquals(key, "CloudFlow")) mask.cloudFlow = true;
+    else if (KeyEquals(key, "CloudVisibleRangeEnabled") || KeyEquals(key, "CloudVisibleRange")) mask.cloudVisibleRange = true;
     else if (KeyEquals(key, "RayleighHeightEnabled") || KeyEquals(key, "RayleighHeight")) mask.rayleighHeight = true;
     else if (KeyEquals(key, "OzoneRatioEnabled") || KeyEquals(key, "OzoneRatio")) mask.ozoneRatio = true;
     else if (KeyEquals(key, "RayleighScatteringColorEnabled") ||
@@ -1465,6 +1530,47 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "PuddleScaleEnabled") || KeyEquals(key, "PuddleScale")) mask.puddleScale = true;
 }
 
+bool ParseSnowPresetKeyValue(const std::string& key, const std::string& value, PresetParseState& state) {
+    bool boolValue = false;
+    float floatValue = 0.0f;
+    WeatherPresetData& data = state.data;
+
+    if (KeyEquals(key, "SnowAccumBoundaryAEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.snowAccumBoundaryAEnabled = boolValue;
+            state.snowAccumBoundaryAEnabledSeen = true;
+        }
+        return true;
+    }
+    if (KeyEquals(key, "SnowAccumBoundaryA")) {
+        if (TryParseFloat(value, floatValue)) data.snowAccumBoundaryA = floatValue;
+        return true;
+    }
+    if (KeyEquals(key, "SnowAccumBoundaryBEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.snowAccumBoundaryBEnabled = boolValue;
+            state.snowAccumBoundaryBEnabledSeen = true;
+        }
+        return true;
+    }
+    if (KeyEquals(key, "SnowAccumBoundaryB")) {
+        if (TryParseFloat(value, floatValue)) data.snowAccumBoundaryB = floatValue;
+        return true;
+    }
+    if (KeyEquals(key, "SnowCoverageThresholdEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.snowCoverageThresholdEnabled = boolValue;
+            state.snowCoverageThresholdEnabledSeen = true;
+        }
+        return true;
+    }
+    if (KeyEquals(key, "SnowCoverageThreshold")) {
+        if (TryParseFloat(value, floatValue)) data.snowCoverageThreshold = floatValue;
+        return true;
+    }
+    return false;
+}
+
 void ParsePresetKeyValue(const std::string& key, const std::string& value, PresetParseState& state) {
     bool boolValue = false;
     float floatValue = 0.0f;
@@ -1487,10 +1593,13 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         if (TryParseBool(value, boolValue)) data.noSnow = boolValue;
     } else if (KeyEquals(key, "Snow")) {
         if (TryParseFloat(value, floatValue)) data.snow = floatValue;
+    } else if (ParseSnowPresetKeyValue(key, value, state)) {
     } else if (KeyEquals(key, "VisualTimeOverride")) {
         if (TryParseBool(value, boolValue)) data.visualTimeOverride = boolValue;
     } else if (KeyEquals(key, "ProgressVisualTime")) {
         if (TryParseBool(value, boolValue)) data.progressVisualTime = boolValue;
+    } else if (KeyEquals(key, "ProgressVisualTimeMatchGameTime")) {
+        if (TryParseBool(value, boolValue)) data.progressVisualTimeMatchGameTime = boolValue;
     } else if (KeyEquals(key, "ProgressVisualTimeIntervalMs")) {
         if (TryParseFloat(value, floatValue)) data.progressVisualTimeIntervalMs = floatValue;
     } else if (KeyEquals(key, "TimeHour")) {
@@ -1580,6 +1689,13 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "CloudFlow")) {
         if (TryParseFloat(value, floatValue)) data.cloudFlow = floatValue;
+    } else if (KeyEquals(key, "CloudVisibleRangeEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.cloudVisibleRangeEnabled = boolValue;
+            state.cloudVisibleRangeEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "CloudVisibleRange")) {
+        if (TryParseFloat(value, floatValue)) data.cloudVisibleRange = floatValue;
     } else if (KeyEquals(key, "RayleighHeightEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.rayleighHeightEnabled = boolValue;
@@ -1824,6 +1940,7 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     if (!state.cloudPhaseFrontEnabledSeen) data.cloudPhaseFrontEnabled = false;
     if (!state.cloudScatteringCoefficientEnabledSeen) data.cloudScatteringCoefficientEnabled = false;
     if (!state.cloudFlowEnabledSeen) data.cloudFlowEnabled = false;
+    if (!state.cloudVisibleRangeEnabledSeen) data.cloudVisibleRangeEnabled = false;
     if (!state.rayleighHeightEnabledSeen) data.rayleighHeightEnabled = false;
     if (!state.ozoneRatioEnabledSeen) data.ozoneRatioEnabled = false;
     if (!state.rayleighScatteringColorEnabledSeen) data.rayleighScatteringColorEnabled = false;
@@ -1871,7 +1988,14 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     data.thunder = ClampPresetThunder(data.thunder);
     data.dust = ClampPresetDust(data.dust);
     data.snow = ClampPresetSnow(data.snow);
+    if (!state.snowAccumBoundaryAEnabledSeen) data.snowAccumBoundaryAEnabled = false;
+    if (!state.snowAccumBoundaryBEnabledSeen) data.snowAccumBoundaryBEnabled = false;
+    if (!state.snowCoverageThresholdEnabledSeen) data.snowCoverageThresholdEnabled = false;
+    data.snowAccumBoundaryA = ClampPresetSnowBoundary(data.snowAccumBoundaryA);
+    data.snowAccumBoundaryB = ClampPresetSnowBoundary(data.snowAccumBoundaryB);
+    data.snowCoverageThreshold = ClampPresetSnowBoundary(data.snowCoverageThreshold);
     data.progressVisualTime = data.visualTimeOverride && data.progressVisualTime;
+    data.progressVisualTimeMatchGameTime = data.progressVisualTime && data.progressVisualTimeMatchGameTime;
     data.progressVisualTimeIntervalMs = ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f);
     data.timeHour = NormalizeHour24(data.timeHour);
     data.nativeFog = ClampPresetNativeFog(data.nativeFog);
@@ -1882,6 +2006,7 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
     data.cloudPhaseFront = ClampPresetCloudPhaseFront(data.cloudPhaseFront);
     data.cloudScatteringCoefficient = ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient);
     data.cloudFlow = ClampPresetCloudFlow(data.cloudFlow);
+    data.cloudVisibleRange = ClampPresetCloudVisibleRange(data.cloudVisibleRange);
     data.rayleighHeight = ClampPresetRayleighHeight(data.rayleighHeight);
     data.ozoneRatio = ClampPresetOzoneRatio(data.ozoneRatio);
     data.rayleighScatteringColor = ClampPresetColor(data.rayleighScatteringColor, false);
@@ -1991,6 +2116,17 @@ std::string FormatPresetString(std::string value) {
     return value;
 }
 
+std::string FormatCommunityMetadataString(const char* value, size_t maxLen = 160) {
+    std::string out = FormatPresetString(value ? value : "");
+    out.erase(std::remove_if(out.begin(), out.end(), [](unsigned char c) {
+        return c < 0x20 || c == 0x7F;
+    }), out.end());
+    if (out.size() > maxLen) {
+        out.resize(maxLen);
+    }
+    return out;
+}
+
 void AppendPresetLine(std::string& out, const char* text) {
     out += text;
     out += '\n';
@@ -2021,11 +2157,18 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "Dust", FormatPresetFloat(ClampPresetDust(data.dust)));
     AppendPresetKeyValue(out, "NoSnow", FormatPresetBool(data.noSnow));
     AppendPresetKeyValue(out, "Snow", FormatPresetFloat(ClampPresetSnow(data.snow)));
+    AppendPresetKeyValue(out, "SnowAccumBoundaryAEnabled", FormatPresetBool(data.snowAccumBoundaryAEnabled));
+    AppendPresetKeyValue(out, "SnowAccumBoundaryA", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryA)));
+    AppendPresetKeyValue(out, "SnowAccumBoundaryBEnabled", FormatPresetBool(data.snowAccumBoundaryBEnabled));
+    AppendPresetKeyValue(out, "SnowAccumBoundaryB", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryB)));
+    AppendPresetKeyValue(out, "SnowCoverageThresholdEnabled", FormatPresetBool(data.snowCoverageThresholdEnabled));
+    AppendPresetKeyValue(out, "SnowCoverageThreshold", FormatPresetFloat(ClampPresetSnowBoundary(data.snowCoverageThreshold)));
     out += '\n';
 
     AppendPresetLine(out, "[Time]");
     AppendPresetKeyValue(out, "VisualTimeOverride", FormatPresetBool(data.visualTimeOverride));
     AppendPresetKeyValue(out, "ProgressVisualTime", FormatPresetBool(data.visualTimeOverride && data.progressVisualTime));
+    AppendPresetKeyValue(out, "ProgressVisualTimeMatchGameTime", FormatPresetBool(data.visualTimeOverride && data.progressVisualTime && data.progressVisualTimeMatchGameTime));
     AppendPresetKeyValue(out, "ProgressVisualTimeIntervalMs", FormatPresetFloat(ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f)));
     AppendPresetKeyValue(out, "TimeHour", FormatPresetFloat(NormalizeHour24(data.timeHour)));
     out += '\n';
@@ -2053,6 +2196,8 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
     AppendPresetKeyValue(out, "CloudScatteringCoefficient", FormatPresetFloat(ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient)));
     AppendPresetKeyValue(out, "CloudFlowEnabled", FormatPresetBool(data.cloudFlowEnabled));
     AppendPresetKeyValue(out, "CloudFlow", FormatPresetFloat(ClampPresetCloudFlow(data.cloudFlow)));
+    AppendPresetKeyValue(out, "CloudVisibleRangeEnabled", FormatPresetBool(data.cloudVisibleRangeEnabled));
+    AppendPresetKeyValue(out, "CloudVisibleRange", FormatPresetFloat(ClampPresetCloudVisibleRange(data.cloudVisibleRange)));
     AppendPresetKeyValue(out, "RayleighHeightEnabled", FormatPresetBool(data.rayleighHeightEnabled));
     AppendPresetKeyValue(out, "RayleighHeight", FormatPresetFloat(ClampPresetRayleighHeight(data.rayleighHeight)));
     AppendPresetKeyValue(out, "OzoneRatioEnabled", FormatPresetBool(data.ozoneRatioEnabled));
@@ -2147,7 +2292,8 @@ void AppendRegionSectionHeader(std::string& out, int regionId, const char* secti
 }
 
 void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherPresetData& data, const WeatherPresetMask& mask) {
-    if (mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow) {
+    if (mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow ||
+        mask.snowAccumBoundaryA || mask.snowAccumBoundaryB || mask.snowCoverageThreshold) {
         AppendRegionSectionHeader(out, regionId, "Weather");
         if (mask.forceClearSky) AppendPresetKeyValue(out, "ForceClearSky", FormatPresetBool(data.forceClearSky));
         if (mask.noRain) AppendPresetKeyValue(out, "NoRain", FormatPresetBool(data.noRain));
@@ -2157,6 +2303,18 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         if (mask.dust) AppendPresetKeyValue(out, "Dust", FormatPresetFloat(ClampPresetDust(data.dust)));
         if (mask.noSnow) AppendPresetKeyValue(out, "NoSnow", FormatPresetBool(data.noSnow));
         if (mask.snow) AppendPresetKeyValue(out, "Snow", FormatPresetFloat(ClampPresetSnow(data.snow)));
+        if (mask.snowAccumBoundaryA) {
+            AppendPresetKeyValue(out, "SnowAccumBoundaryAEnabled", FormatPresetBool(data.snowAccumBoundaryAEnabled));
+            AppendPresetKeyValue(out, "SnowAccumBoundaryA", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryA)));
+        }
+        if (mask.snowAccumBoundaryB) {
+            AppendPresetKeyValue(out, "SnowAccumBoundaryBEnabled", FormatPresetBool(data.snowAccumBoundaryBEnabled));
+            AppendPresetKeyValue(out, "SnowAccumBoundaryB", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryB)));
+        }
+        if (mask.snowCoverageThreshold) {
+            AppendPresetKeyValue(out, "SnowCoverageThresholdEnabled", FormatPresetBool(data.snowCoverageThresholdEnabled));
+            AppendPresetKeyValue(out, "SnowCoverageThreshold", FormatPresetFloat(ClampPresetSnowBoundary(data.snowCoverageThreshold)));
+        }
         out += '\n';
     }
 
@@ -2164,6 +2322,7 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         AppendRegionSectionHeader(out, regionId, "Time");
         AppendPresetKeyValue(out, "VisualTimeOverride", FormatPresetBool(data.visualTimeOverride));
         AppendPresetKeyValue(out, "ProgressVisualTime", FormatPresetBool(data.visualTimeOverride && data.progressVisualTime));
+        AppendPresetKeyValue(out, "ProgressVisualTimeMatchGameTime", FormatPresetBool(data.visualTimeOverride && data.progressVisualTime && data.progressVisualTimeMatchGameTime));
         AppendPresetKeyValue(out, "ProgressVisualTimeIntervalMs", FormatPresetFloat(ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f)));
         AppendPresetKeyValue(out, "TimeHour", FormatPresetFloat(NormalizeHour24(data.timeHour)));
         out += '\n';
@@ -2171,7 +2330,8 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
 
     if (mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds || mask.highClouds ||
         mask.cloudAlpha || mask.cloudFadeRange || mask.cloudDetailRatio ||
-        mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.cloudFlow || mask.rayleighHeight || mask.ozoneRatio || mask.rayleighScatteringColor) {
+        mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.cloudFlow || mask.cloudVisibleRange ||
+        mask.rayleighHeight || mask.ozoneRatio || mask.rayleighScatteringColor) {
         AppendRegionSectionHeader(out, regionId, "Cloud");
         if (mask.cloudAmount) {
             AppendPresetKeyValue(out, "CloudAmountEnabled", FormatPresetBool(data.cloudAmountEnabled));
@@ -2216,6 +2376,10 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         if (mask.cloudFlow) {
             AppendPresetKeyValue(out, "CloudFlowEnabled", FormatPresetBool(data.cloudFlowEnabled));
             AppendPresetKeyValue(out, "CloudFlow", FormatPresetFloat(ClampPresetCloudFlow(data.cloudFlow)));
+        }
+        if (mask.cloudVisibleRange) {
+            AppendPresetKeyValue(out, "CloudVisibleRangeEnabled", FormatPresetBool(data.cloudVisibleRangeEnabled));
+            AppendPresetKeyValue(out, "CloudVisibleRange", FormatPresetFloat(ClampPresetCloudVisibleRange(data.cloudVisibleRange)));
         }
         if (mask.rayleighHeight) {
             AppendPresetKeyValue(out, "RayleighHeightEnabled", FormatPresetBool(data.rayleighHeightEnabled));
@@ -2406,8 +2570,15 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.dust = ActiveOverrideValue(g_oDust, 0.0f);
     data.noSnow = g_noSnow.load();
     data.snow = ActiveOverrideValue(g_oSnow, 0.0f);
+    data.snowAccumBoundaryAEnabled = g_oSnowAccumBoundaryA.active.load();
+    data.snowAccumBoundaryA = OverrideValueIf(data.snowAccumBoundaryAEnabled, g_oSnowAccumBoundaryA, -5.0f);
+    data.snowAccumBoundaryBEnabled = g_oSnowAccumBoundaryB.active.load();
+    data.snowAccumBoundaryB = OverrideValueIf(data.snowAccumBoundaryBEnabled, g_oSnowAccumBoundaryB, -20.0f);
+    data.snowCoverageThresholdEnabled = g_oSnowCoverageThreshold.active.load();
+    data.snowCoverageThreshold = OverrideValueIf(data.snowCoverageThresholdEnabled, g_oSnowCoverageThreshold, -20.0f);
     data.visualTimeOverride = g_timeCtrlActive.load() && g_timeFreeze.load();
     data.progressVisualTime = data.visualTimeOverride && g_timeProgressVisualTime.load();
+    data.progressVisualTimeMatchGameTime = data.progressVisualTime && g_timeProgressMatchGameTime.load();
     data.progressVisualTimeIntervalMs = ClampPresetFloat(g_timeProgressCadenceMs.load(), 0.0f, 5000.0f);
     data.timeHour = NormalizeHour24(g_timeTargetHour.load());
     data.cloudAmountEnabled = g_oCloudAmount.active.load();
@@ -2432,6 +2603,8 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.cloudScatteringCoefficient = OverrideValueIf(data.cloudScatteringCoefficientEnabled, g_oCloudScatteringCoefficient, g_windPackBase20.load());
     data.cloudFlowEnabled = g_oCloudFlow.active.load();
     data.cloudFlow = OverrideValueIf(data.cloudFlowEnabled, g_oCloudFlow, g_windPackBase1F.load());
+    data.cloudVisibleRangeEnabled = g_oCloudVisibleRange.active.load();
+    data.cloudVisibleRange = OverrideValueIf(data.cloudVisibleRangeEnabled, g_oCloudVisibleRange, 1.0f);
     data.rayleighHeightEnabled = g_oRayleighHeight.active.load();
     data.rayleighHeight = OverrideValueIf(data.rayleighHeightEnabled, g_oRayleighHeight, g_windPackBase0E.load());
     data.ozoneRatioEnabled = g_oOzoneRatio.active.load();
@@ -2526,17 +2699,33 @@ void ApplyPresetData(const WeatherPresetData& data) {
     ApplyPositiveOverride(g_oThunder, ClampPresetThunder(data.thunder), 0.0f, 5.0f);
     ApplyPositiveOverride(g_oDust, ClampPresetDust(data.dust), 0.0f, 10.0f);
     ApplyPositiveOverride(g_oSnow, ClampPresetSnow(data.snow), 0.0f, 5.0f);
+    ApplyEnabledOverride(g_oSnowAccumBoundaryA, data.snowAccumBoundaryAEnabled, ClampPresetSnowBoundary(data.snowAccumBoundaryA), -1000.0f, 1500.0f);
+    ApplyEnabledOverride(g_oSnowAccumBoundaryB, data.snowAccumBoundaryBEnabled, ClampPresetSnowBoundary(data.snowAccumBoundaryB), -1000.0f, 1500.0f);
+    ApplyEnabledOverride(g_oSnowCoverageThreshold, data.snowCoverageThresholdEnabled, ClampPresetSnowBoundary(data.snowCoverageThreshold), -1000.0f, 1500.0f);
+    g_snowCoverageGlobalsDirty.store(true);
 
     const float nextTimeCadence = ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f);
-    const float nextTimeHour = NormalizeHour24(data.timeHour);
+    float nextTimeHour = NormalizeHour24(data.timeHour);
     const bool nextTimeCtrlActive = data.visualTimeOverride && g_timeLayoutReady.load();
     const bool nextTimeFreeze = nextTimeCtrlActive;
     const bool nextProgressVisualTime = nextTimeCtrlActive && data.progressVisualTime;
+    const bool nextProgressMatchGameTime = nextProgressVisualTime && data.progressVisualTimeMatchGameTime;
+    int nextMatchedHudMinute = -1;
+    if (nextProgressMatchGameTime && g_timeUiClockSourceValid.load() && g_timeUiClockValid.load()) {
+        const int hudHour = g_timeUiClockHour24.load();
+        const int hudMinute = g_timeUiClockMinute.load();
+        if (hudHour >= 0 && hudHour < 24 && hudMinute >= 0 && hudMinute < 60) {
+            nextMatchedHudMinute = hudHour * 60 + hudMinute;
+            nextTimeHour = NormalizeHour24(static_cast<float>(nextMatchedHudMinute) / 60.0f);
+        }
+    }
     const bool prevProgressVisualTime = g_timeProgressVisualTime.load();
+    const bool prevProgressMatchGameTime = g_timeProgressMatchGameTime.load();
     const bool timeStateChanged =
         g_timeCtrlActive.load() != nextTimeCtrlActive ||
         g_timeFreeze.load() != nextTimeFreeze ||
         prevProgressVisualTime != nextProgressVisualTime ||
+        prevProgressMatchGameTime != nextProgressMatchGameTime ||
         !HourNearlyEqual(g_timeTargetHour.load(), nextTimeHour) ||
         !FloatNearlyEqual(g_timeProgressCadenceMs.load(), nextTimeCadence);
 
@@ -2544,12 +2733,21 @@ void ApplyPresetData(const WeatherPresetData& data) {
         g_timeProgressCadenceMs.store(nextTimeCadence);
         g_timeTargetHour.store(nextTimeHour);
         g_timeProgressVisualTime.store(nextProgressVisualTime);
+        g_timeProgressMatchGameTime.store(nextProgressMatchGameTime);
         g_timeFreeze.store(nextTimeFreeze);
         g_timeCtrlActive.store(nextTimeCtrlActive);
-        if (nextProgressVisualTime && !prevProgressVisualTime) {
+        if (nextProgressMatchGameTime) {
             g_timeProgressLastTick.store(GetTickCount64());
+            g_timeProgressMatchLastMinute.store(nextMatchedHudMinute);
+            g_timeProgressMatchPendingMs.store(0);
+        } else if (nextProgressVisualTime && (!prevProgressVisualTime || nextProgressMatchGameTime != prevProgressMatchGameTime)) {
+            g_timeProgressLastTick.store(GetTickCount64());
+            g_timeProgressMatchLastMinute.store(-1);
+            g_timeProgressMatchPendingMs.store(0);
         } else if (!nextProgressVisualTime) {
             g_timeProgressLastTick.store(0);
+            g_timeProgressMatchLastMinute.store(-1);
+            g_timeProgressMatchPendingMs.store(0);
         }
         g_timeApplyRequest.store(true);
     }
@@ -2568,6 +2766,7 @@ void ApplyPresetData(const WeatherPresetData& data) {
     ApplyEnabledOverride(g_oCloudPhaseFront, data.cloudPhaseFrontEnabled, ClampPresetCloudPhaseFront(data.cloudPhaseFront), -1.0f, 1.0f);
     ApplyEnabledOverride(g_oCloudScatteringCoefficient, data.cloudScatteringCoefficientEnabled, ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient), kCloudScatteringCoefficientMin, 100.0f);
     ApplyEnabledOverride(g_oCloudFlow, data.cloudFlowEnabled, ClampPresetCloudFlow(data.cloudFlow), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oCloudVisibleRange, data.cloudVisibleRangeEnabled, ClampPresetCloudVisibleRange(data.cloudVisibleRange), 0.0f, 10.0f);
     ApplyEnabledOverride(g_oRayleighHeight, data.rayleighHeightEnabled, ClampPresetRayleighHeight(data.rayleighHeight), 1.0f, 200000.0f);
     ApplyEnabledOverride(g_oOzoneRatio, data.ozoneRatioEnabled, ClampPresetOzoneRatio(data.ozoneRatio), 0.0f, 100.0f);
     ApplyEnabledColorOverride(g_oRayleighScatteringColor, data.rayleighScatteringColorEnabled, data.rayleighScatteringColor, false);
@@ -2734,6 +2933,57 @@ bool WritePresetPackageInternal(const char* path, const WeatherPresetPackage& pa
     return ok;
 }
 
+bool WritePresetPackageWithCommunityMetadata(
+    const char* path,
+    const WeatherPresetPackage& package,
+    const char* catalogId,
+    const char* sha256,
+    const char* updatedAt) {
+    std::string serialized = SerializePresetPackage(package);
+    serialized += "\n";
+    serialized += "; CrimsonWeatherCommunityId=" + FormatCommunityMetadataString(catalogId) + "\n";
+    serialized += "; CrimsonWeatherCommunitySha256=" + FormatCommunityMetadataString(sha256, 80) + "\n";
+    serialized += "; CrimsonWeatherCommunityUpdatedAt=" + FormatCommunityMetadataString(updatedAt, 80) + "\n";
+
+    FILE* fp = nullptr;
+    if (fopen_s(&fp, path, "wb") != 0 || !fp) return false;
+    const size_t bytesWritten = fwrite(serialized.data(), 1, serialized.size(), fp);
+    const bool ok = bytesWritten == serialized.size() && ferror(fp) == 0;
+    fclose(fp);
+    return ok;
+}
+
+bool ReadCommunityMetadataFromPresetFile(const char* path, CommunityPresetInstallInfo& outInfo) {
+    outInfo = CommunityPresetInstallInfo{};
+    if (!path || !path[0]) return false;
+
+    FILE* fp = nullptr;
+    if (fopen_s(&fp, path, "rb") != 0 || !fp) return false;
+
+    char line[256] = {};
+    while (fgets(line, static_cast<int>(sizeof(line)), fp)) {
+        std::string text = TrimCopy(line);
+        if (text.empty()) continue;
+        if (text[0] != ';' && text[0] != '#') continue;
+        text = TrimCopy(text.substr(1));
+        const size_t eq = text.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = TrimCopy(text.substr(0, eq));
+        const std::string value = TrimCopy(text.substr(eq + 1));
+        if (KeyEquals(key, "CrimsonWeatherCommunityId")) {
+            outInfo.catalogId = value;
+        } else if (KeyEquals(key, "CrimsonWeatherCommunitySha256")) {
+            outInfo.sha256 = value;
+        } else if (KeyEquals(key, "CrimsonWeatherCommunityUpdatedAt")) {
+            outInfo.updatedAt = value;
+        }
+    }
+
+    fclose(fp);
+    outInfo.valid = !outInfo.catalogId.empty();
+    return outInfo.valid;
+}
+
 bool SanitizeMissingMoonTexture(WeatherPresetData& data, const char* scopeLabel) {
     if (!data.moonTextureEnabled || data.moonTexture.empty()) {
         return false;
@@ -2805,7 +3055,7 @@ void RefreshPresetListInternal() {
         : std::string();
 
     std::vector<PresetListItem> foundItems;
-    const std::string dir = GetPresetDirectory();
+    const auto addFromDirectory = [&foundItems](const std::string& dir, const char* fileNamePrefix, const char* displayPrefix) {
     WIN32_FIND_DATAA fd{};
     HANDLE find = FindFirstFileA(JoinPath(dir, "*.ini").c_str(), &fd);
     if (find != INVALID_HANDLE_VALUE) {
@@ -2815,13 +3065,20 @@ void RefreshPresetListInternal() {
             if (!EndsWithIni(fileName)) continue;
             const std::string fullPath = JoinPath(dir, fileName);
             if (!IsValidPresetFile(fullPath.c_str())) continue;
-            foundItems.push_back({ fileName, GetPresetDisplayNameFromFileName(fileName), fullPath });
+            foundItems.push_back({
+                std::string(fileNamePrefix ? fileNamePrefix : "") + fileName,
+                std::string(displayPrefix ? displayPrefix : "") + GetPresetDisplayNameFromFileName(fileName),
+                fullPath });
         } while (FindNextFileA(find, &fd));
         FindClose(find);
     }
+    };
+
+    addFromDirectory(GetPresetDirectory(), "", "");
+    addFromDirectory(GetCommunityPresetDirectory(), "CrimsonWeather\\community\\preset\\", "");
 
     std::sort(foundItems.begin(), foundItems.end(), [](const PresetListItem& a, const PresetListItem& b) {
-        return _stricmp(a.fileName.c_str(), b.fileName.c_str()) < 0;
+        return _stricmp(a.displayName.c_str(), b.displayName.c_str()) < 0;
     });
 
     g_presetItems.swap(foundItems);
@@ -3491,6 +3748,25 @@ const char* Preset_GetFileName(int index) {
     return g_presetItems[index].fileName.c_str();
 }
 
+bool Preset_IsCommunityPreset(int index) {
+    if (index < 0 || index >= static_cast<int>(g_presetItems.size())) return false;
+    constexpr const char* kCommunityPresetPrefix = "CrimsonWeather\\community\\preset\\";
+    return _strnicmp(
+        g_presetItems[index].fileName.c_str(),
+        kCommunityPresetPrefix,
+        strlen(kCommunityPresetPrefix)) == 0;
+}
+
+bool Preset_GetCommunityInstallInfo(int index, CommunityPresetInstallInfo& outInfo) {
+    outInfo = CommunityPresetInstallInfo{};
+    if (!Preset_IsCommunityPreset(index)) return false;
+    outInfo.displayName = g_presetItems[index].displayName;
+    outInfo.fullPath = g_presetItems[index].fullPath;
+    ReadCommunityMetadataFromPresetFile(g_presetItems[index].fullPath.c_str(), outInfo);
+    outInfo.valid = true;
+    return true;
+}
+
 int Preset_GetSelectedIndex() {
     return g_selectedPresetIndex;
 }
@@ -3763,6 +4039,269 @@ bool Preset_SaveAs(const char* fileName) {
     GUI_SetStatus(("Preset saved: " + GetPresetDisplayNameFromFileName(normalizedName)).c_str());
     Log("[preset] saved %s\n", normalizedName.c_str());
     LogPresetPackageSummary("saved-as-package", package);
+    return true;
+}
+
+bool Preset_ExportCurrentCanonical(std::string& outIni, std::string& outError) {
+    outIni.clear();
+    outError.clear();
+    EnsureEditDraft();
+    WeatherPresetPackage package = BuildEditDraftPreview();
+    outIni = SerializePresetPackage(package);
+    if (outIni.empty()) {
+        outError = "Current preset could not be serialized";
+        return false;
+    }
+    return true;
+}
+
+bool Preset_ExportPresetCanonicalByIndex(int index, std::string& outIni, std::string& outError) {
+    outIni.clear();
+    outError.clear();
+    Preset_EnsureInitialized();
+    if (index < 0 || index >= static_cast<int>(g_presetItems.size())) {
+        outError = "Selected preset is not available";
+        return false;
+    }
+    WeatherPresetPackage package{};
+    if (!LoadPresetPackageInternal(g_presetItems[index].fullPath.c_str(), package)) {
+        outError = "Selected preset failed validation";
+        return false;
+    }
+    outIni = SerializePresetPackage(package);
+    if (outIni.empty()) {
+        outError = "Selected preset could not be serialized";
+        return false;
+    }
+    return true;
+}
+
+std::string SanitizeCommunityPresetFileName(const char* title, const char* author) {
+    std::string rawTitle = TrimCopy(title ? title : "");
+    if (rawTitle.empty()) {
+        rawTitle = "Community Preset";
+    }
+    std::string rawAuthor = TrimCopy(author ? author : "");
+    if (rawAuthor.empty()) {
+        rawAuthor = "Anonymous";
+    }
+    std::string raw = rawTitle + " by " + rawAuthor;
+    static constexpr const char* kInvalidChars = "\\/:*?\"<>|";
+    for (char& c : raw) {
+        if (static_cast<unsigned char>(c) < 32 || strchr(kInvalidChars, c)) {
+            c = ' ';
+        }
+    }
+    raw = TrimCopy(raw);
+    while (raw.find("  ") != std::string::npos) {
+        raw.erase(raw.find("  "), 1);
+    }
+    if (raw.size() > 80) {
+        raw.resize(80);
+        raw = TrimCopy(raw);
+    }
+    if (raw.empty()) {
+        raw = "Community Preset";
+    }
+    return raw + ".ini";
+}
+
+std::string EnsureUniquePresetFileNameInDirectory(const std::string& dir, const std::string& normalizedName) {
+    std::string candidate = normalizedName;
+    const std::string base = EndsWithIni(normalizedName)
+        ? normalizedName.substr(0, normalizedName.size() - 4)
+        : normalizedName;
+    for (int suffix = 2; suffix < 1000; ++suffix) {
+        const std::string fullPath = JoinPath(dir, candidate);
+        if (GetFileAttributesA(fullPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            return candidate;
+        }
+        char numbered[64] = {};
+        sprintf_s(numbered, " (%d).ini", suffix);
+        candidate = base + numbered;
+    }
+    return normalizedName;
+}
+
+void EnsureDirectoryChain(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    std::string partial;
+    for (size_t i = 0; i < path.size(); ++i) {
+        partial.push_back(path[i]);
+        if (path[i] == '\\' || path[i] == '/') {
+            if (partial.size() > 1) {
+                CreateDirectoryA(partial.c_str(), nullptr);
+            }
+        }
+    }
+    CreateDirectoryA(path.c_str(), nullptr);
+}
+
+bool WriteCommunityTempPreset(const char* iniText, std::string& outPath, std::string& outError) {
+    outPath.clear();
+    const std::string root = JoinPath(GetPresetDirectory(), "CrimsonWeather");
+    EnsureDirectoryChain(root);
+    const std::string communityDir = JoinPath(root, "community");
+    EnsureDirectoryChain(communityDir);
+    const std::string tmpDir = JoinPath(communityDir, "tmp");
+    EnsureDirectoryChain(tmpDir);
+
+    char tempName[128] = {};
+    sprintf_s(tempName, "download-%llu.ini", static_cast<unsigned long long>(GetTickCount64()));
+    outPath = JoinPath(tmpDir, tempName);
+    FILE* fp = nullptr;
+    if (fopen_s(&fp, outPath.c_str(), "wb") != 0 || !fp) {
+        outError = "Could not create temporary preset file";
+        return false;
+    }
+    const size_t len = iniText ? strlen(iniText) : 0;
+    const bool ok = fwrite(iniText ? iniText : "", 1, len, fp) == len && ferror(fp) == 0;
+    fclose(fp);
+    if (!ok) {
+        outError = "Could not write temporary preset file";
+        DeleteFileA(outPath.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool Preset_ValidatePresetText(const char* iniText, std::string& outError) {
+    outError.clear();
+    if (!iniText || !iniText[0]) {
+        outError = "Preset text is empty";
+        return false;
+    }
+    if (strlen(iniText) > 65536) {
+        outError = "Preset is larger than 64 KiB";
+        return false;
+    }
+    std::string tempPath;
+    if (!WriteCommunityTempPreset(iniText, tempPath, outError)) {
+        return false;
+    }
+    WeatherPresetPackage package{};
+    const bool ok = LoadPresetPackageInternal(tempPath.c_str(), package);
+    DeleteFileA(tempPath.c_str());
+    if (!ok) {
+        outError = "Preset parser rejected the file";
+        return false;
+    }
+    return true;
+}
+
+bool Preset_ImportCommunityPresetText(
+    const char* title,
+    const char* author,
+    const char* catalogId,
+    const char* sha256,
+    const char* updatedAt,
+    const char* iniText,
+    std::string& outFileName,
+    std::string& outError) {
+    outFileName.clear();
+    outError.clear();
+    if (!iniText || !iniText[0]) {
+        outError = "Preset text is empty";
+        return false;
+    }
+    if (strlen(iniText) > 65536) {
+        outError = "Preset is larger than 64 KiB";
+        return false;
+    }
+
+    std::string tempPath;
+    if (!WriteCommunityTempPreset(iniText, tempPath, outError)) {
+        return false;
+    }
+
+    WeatherPresetPackage package{};
+    if (!LoadPresetPackageInternal(tempPath.c_str(), package)) {
+        DeleteFileA(tempPath.c_str());
+        outError = "Preset parser rejected the file";
+        return false;
+    }
+    DeleteFileA(tempPath.c_str());
+
+    std::string normalizedName;
+    if (!IsValidUserPresetName(SanitizeCommunityPresetFileName(title, author), normalizedName)) {
+        outError = "Community preset title could not be converted into a file name";
+        return false;
+    }
+    const std::string communityPresetDir = GetCommunityPresetDirectory();
+    EnsureDirectoryChain(communityPresetDir);
+    normalizedName = EnsureUniquePresetFileNameInDirectory(communityPresetDir, normalizedName);
+    const std::string fullPath = JoinPath(communityPresetDir, normalizedName);
+    if (!WritePresetPackageWithCommunityMetadata(fullPath.c_str(), package, catalogId, sha256, updatedAt)) {
+        outError = "Could not save imported preset";
+        return false;
+    }
+
+    RefreshPresetListInternal();
+    outFileName = normalizedName;
+    GUI_SetStatus(("Community preset downloaded: " + GetPresetDisplayNameFromFileName(normalizedName)).c_str());
+    Log("[community] imported preset %s\n", normalizedName.c_str());
+    return true;
+}
+
+bool Preset_UpdateCommunityPresetText(
+    int presetIndex,
+    const char* title,
+    const char* author,
+    const char* catalogId,
+    const char* sha256,
+    const char* updatedAt,
+    const char* iniText,
+    std::string& outError) {
+    outError.clear();
+    Preset_EnsureInitialized();
+    if (!Preset_IsCommunityPreset(presetIndex)) {
+        outError = "Selected preset is not a community preset";
+        return false;
+    }
+    if (!iniText || !iniText[0]) {
+        outError = "Preset text is empty";
+        return false;
+    }
+    if (strlen(iniText) > 65536) {
+        outError = "Preset is larger than 64 KiB";
+        return false;
+    }
+
+    std::string tempPath;
+    if (!WriteCommunityTempPreset(iniText, tempPath, outError)) {
+        return false;
+    }
+
+    WeatherPresetPackage package{};
+    if (!LoadPresetPackageInternal(tempPath.c_str(), package)) {
+        DeleteFileA(tempPath.c_str());
+        outError = "Preset parser rejected the file";
+        return false;
+    }
+    DeleteFileA(tempPath.c_str());
+
+    const std::string fullPath = g_presetItems[presetIndex].fullPath;
+    if (!WritePresetPackageWithCommunityMetadata(fullPath.c_str(), package, catalogId, sha256, updatedAt)) {
+        outError = "Could not update installed preset";
+        return false;
+    }
+
+    const bool wasSelected = presetIndex == g_selectedPresetIndex;
+    RefreshPresetListInternal();
+    if (wasSelected) {
+        for (int i = 0; i < static_cast<int>(g_presetItems.size()); ++i) {
+            CommunityPresetInstallInfo info{};
+            if (Preset_GetCommunityInstallInfo(i, info) && EqualsNoCase(info.catalogId, catalogId ? catalogId : "")) {
+                g_selectedPresetIndex = i;
+                break;
+            }
+        }
+        RefreshSelectedPresetBaselineFromDisk();
+    }
+    GUI_SetStatus(("Community preset updated: " + std::string(title && title[0] ? title : "preset")).c_str());
+    Log("[community] updated installed preset %s by %s\n", title ? title : "", author ? author : "");
     return true;
 }
 

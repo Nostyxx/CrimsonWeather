@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_BASE_VERSION "0.6.1"
+#define MOD_BASE_VERSION "0.6.4"
 #if defined(CW_DEV_BUILD)
 #define MOD_VERSION MOD_BASE_VERSION " DEV"
 #else
@@ -39,6 +39,7 @@ struct Config {
     bool logEnabled = true;
     bool autoStart = true;
     bool autoSaved = false;
+    bool communityEnabled = true;
     int effectToggleVK = VK_F10;
     WORD controllerEffectToggleMask = 0;
     bool reshadeDiagnostics = false;
@@ -84,6 +85,7 @@ enum class DevPerfHookId : uint8_t {
     WindPack,
     SceneFrameUpdate,
     MinimapRegionLabels,
+    MinimapGameTimeUpdate,
     D3D12CreateDevice,
     D3D12CreateShaderResourceView,
     D3D12CopyDescriptors,
@@ -116,6 +118,7 @@ WORD ParseControllerCombo(const char* text, WORD fallback);
 bool IsControllerComboPressed(WORD buttons, WORD comboMask);
 void LoadConfig(const char* dir);
 void SaveGeneralConfig();
+void SaveCommunityConfig();
 void SaveWindOnlyConfig();
 void OpenLogFile(const char* dir);
 void GUI_SetStatus(const char* msg);
@@ -243,6 +246,7 @@ typedef uint32_t(__fastcall* AkPostEventById_fn)(
     uint32_t playingId);
 typedef long long(__fastcall* SpawnGameGlobalEffect_fn)(long long manager, unsigned short* effectId);
 typedef long long(__fastcall* MinimapRegionLabels_fn)(long long self, unsigned short areaId, unsigned short subAreaId);
+typedef void(__fastcall* MinimapGameTimeUpdate_fn)(long long self, long long eventContext);
 typedef long long*(__fastcall* FogReceiverGetter_fn)(long long provider);
 typedef void(__fastcall* FogReceiverSet_fn)(long long* receiver, float value);
 typedef double(__fastcall* EnvGetTimeOfDay_fn)(void* envMgr);
@@ -269,6 +273,7 @@ inline AkLoadBankById_fn g_pAkLoadBankById = nullptr;
 inline AkPostEventById_fn g_pAkPostEventById = nullptr;
 inline SpawnGameGlobalEffect_fn g_pSpawnGameGlobalEffect = nullptr;
 inline MinimapRegionLabels_fn g_pOrigMinimapRegionLabels = nullptr;
+inline MinimapGameTimeUpdate_fn g_pOrigMinimapGameTimeUpdate = nullptr;
 inline uintptr_t* g_pEnvManager = nullptr;
 inline uintptr_t* g_pSoundManager = nullptr;
 inline uint8_t* g_pWeatherEffectGateByte = nullptr;
@@ -345,6 +350,7 @@ enum class AobTargetId : uint8_t {
     TimeDebugHandler,
     NativeToast,
     MinimapRegionLabels,
+    MinimapGameTimeUpdate,
     Count
 };
 
@@ -391,6 +397,7 @@ enum class RuntimeHookId : uint8_t {
     FogSet3,
     FogSet4,
     MinimapRegionLabels,
+    MinimapGameTimeUpdate,
     Count
 };
 
@@ -494,6 +501,10 @@ inline SliderOverride g_oRain;
 inline SliderOverride g_oThunder;
 inline SliderOverride g_oSnow;
 inline SliderOverride g_oDust;
+inline SliderOverride g_oSnowAccumBoundaryA;
+inline SliderOverride g_oSnowAccumBoundaryB;
+inline SliderOverride g_oSnowCoverageThreshold;
+inline std::atomic<bool> g_snowCoverageGlobalsDirty{ true };
 inline SliderOverride g_oFog;
 inline SliderOverride g_oCloudAmount;
 inline SliderOverride g_oCloudSpdX;
@@ -529,6 +540,7 @@ inline SliderOverride g_oCloudDetailRatio;
 inline SliderOverride g_oCloudPhaseFront;
 inline SliderOverride g_oCloudScatteringCoefficient;
 inline SliderOverride g_oCloudFlow;
+inline SliderOverride g_oCloudVisibleRange;
 inline SliderOverride g_oRayleighHeight;
 inline SliderOverride g_oOzoneRatio;
 inline ColorOverride g_oRayleighScatteringColor;
@@ -581,28 +593,28 @@ inline char g_startupLogLines[kStartupLogLineCount][kStartupLogLineLength] = {};
 inline std::atomic<bool> g_timeCtrlActive{ false };
 inline std::atomic<bool> g_timeFreeze{ false };
 inline std::atomic<bool> g_timeProgressVisualTime{ false };
+inline std::atomic<bool> g_timeProgressMatchGameTime{ false };
 inline std::atomic<unsigned long long> g_timeProgressLastTick{ 0 };
+inline std::atomic<int> g_timeProgressMatchLastMinute{ -1 };
+inline std::atomic<int> g_timeProgressMatchPendingMs{ 0 };
 inline std::atomic<float> g_timeProgressCadenceMs{ 0.0f };
 inline std::atomic<bool> g_timeApplyRequest{ false };
 inline std::atomic<float> g_timeTargetHour{ 12.0f };
 inline std::atomic<float> g_timeCurrentHour{ 12.0f };
 inline std::atomic<bool> g_timeCurrentHourValid{ false };
-#if defined(CW_DEV_BUILD)
 inline std::atomic<bool> g_timeUiClockSourceValid{ false };
 inline std::atomic<float> g_timeUiClockHour{ 12.0f };
 inline std::atomic<bool> g_timeUiClockValid{ false };
 inline std::atomic<unsigned long long> g_timeUiClockTick{ 0 };
+inline std::atomic<int> g_timeUiClockHour24{ -1 };
+inline std::atomic<int> g_timeUiClockMinute{ -1 };
+#if defined(CW_DEV_BUILD)
 inline std::atomic<unsigned long long> g_timeFieldClockRaw{ 0 };
 inline std::atomic<float> g_timeFieldClockSecondsHour{ NAN };
 inline std::atomic<float> g_timeFieldClockMillisHour{ NAN };
 inline std::atomic<float> g_timeFieldClockMinutesHour{ NAN };
 inline std::atomic<bool> g_timeFieldClockValid{ false };
 inline std::atomic<unsigned long long> g_timeFieldClockTick{ 0 };
-inline constexpr size_t kDevAtmosphereLabFieldCount = 0x3C;
-inline std::array<std::atomic<bool>, kDevAtmosphereLabFieldCount> g_devAtmosphereLabActive{};
-inline std::array<std::atomic<float>, kDevAtmosphereLabFieldCount> g_devAtmosphereLabValue{};
-inline std::array<std::atomic<float>, kDevAtmosphereLabFieldCount> g_devAtmosphereLabLast{};
-inline std::atomic<unsigned long long> g_devAtmosphereLabCaptureCount{ 0 };
 #endif
 inline std::atomic<float> g_timeOriginalHour{ 12.0f };
 inline std::atomic<bool> g_timeOriginalHourValid{ false };
@@ -667,6 +679,8 @@ inline std::atomic<bool> g_windPackBase20Valid{ false };
 inline std::atomic<float> g_windPackBase20{ 0.0f };
 inline std::atomic<bool> g_windPackBase21Valid{ false };
 inline std::atomic<float> g_windPackBase21{ 0.0f };
+inline std::atomic<bool> g_windPackBase25Valid{ false };
+inline std::atomic<float> g_windPackBase25{ 0.0f };
 inline std::atomic<bool> g_windPackBase27Valid{ false };
 inline std::atomic<float> g_windPackBase27{ 0.0f };
 inline std::atomic<bool> g_windPackBase28Valid{ false };
@@ -739,12 +753,6 @@ void ShowNativeToast(const char* msg);
 bool StartHotkeyService();
 void StopHotkeyService();
 
-#if defined(CW_DEV_BUILD)
-const char* DevAtmosphereLabFieldName(size_t index);
-void DevAtmosphereLabCaptureNative(const float* packedOut);
-void DevAtmosphereLabApplyOverrides(float* packedOut);
-#endif
-
 bool RunAOBScan();
 void RestoreRuntimePatches();
 __m128 __fastcall Hooked_GetRainIntensity(long long ws);
@@ -756,4 +764,5 @@ void __fastcall Hooked_ProcessWindState(long long self);
 void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut);
 void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context);
 long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short areaId, unsigned short subAreaId);
+void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventContext);
 void __fastcall Hooked_WeatherTick(long long self, float dt);

@@ -8,7 +8,17 @@
 #include <vector>
 
 struct SkyImageData {
+    struct MipLevel {
+        UINT width = 0;
+        UINT height = 0;
+        UINT sourceRows = 0;
+        UINT64 sourceRowPitch = 0;
+        size_t byteOffset = 0;
+        size_t byteSize = 0;
+    };
+
     std::vector<uint8_t> pixels;
+    std::vector<MipLevel> mipLevels;
     UINT width = 0;
     UINT height = 0;
     UINT mips = 1;

@@ -1,0 +1,34 @@
+name = "crimson-weather-community-presets"
+main = "src/index.js"
+compatibility_date = "2026-05-20"
+
+[vars]
+CATALOG_CACHE_SECONDS = "300"
+MAX_PRESET_BYTES = "65536"
+MIN_ADDON_VERSION = "0.6.3"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "crimson-weather-community-presets"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[r2_buckets]]
+binding = "PRESETS"
+bucket_name = "crimson-weather-community-presets"
+
+[env.dev]
+name = "crimson-weather-community-presets-dev"
+
+[env.dev.vars]
+CATALOG_CACHE_SECONDS = "30"
+MAX_PRESET_BYTES = "65536"
+MIN_ADDON_VERSION = "0.6.3"
+
+[[env.dev.d1_databases]]
+binding = "DB"
+database_name = "crimson-weather-community-presets-dev"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[env.dev.r2_buckets]]
+binding = "PRESETS"
+bucket_name = "crimson-weather-community-presets-dev"

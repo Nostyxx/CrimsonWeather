@@ -19,8 +19,15 @@ struct WeatherPresetData {
     float dust = 0.0f;
     bool noSnow = false;
     float snow = 0.0f;
+    bool snowAccumBoundaryAEnabled = false;
+    float snowAccumBoundaryA = -5.0f;
+    bool snowAccumBoundaryBEnabled = false;
+    float snowAccumBoundaryB = -20.0f;
+    bool snowCoverageThresholdEnabled = false;
+    float snowCoverageThreshold = -20.0f;
     bool visualTimeOverride = false;
     bool progressVisualTime = false;
+    bool progressVisualTimeMatchGameTime = false;
     float progressVisualTimeIntervalMs = 0.0f;
     float timeHour = 12.0f;
     bool cloudAmountEnabled = false;
@@ -45,6 +52,8 @@ struct WeatherPresetData {
     float cloudScatteringCoefficient = 0.0f;
     bool cloudFlowEnabled = false;
     float cloudFlow = 1.0f;
+    bool cloudVisibleRangeEnabled = false;
+    float cloudVisibleRange = 1.0f;
     bool rayleighHeightEnabled = false;
     float rayleighHeight = 1200.0f;
     bool ozoneRatioEnabled = false;
@@ -126,6 +135,9 @@ struct WeatherPresetSourceMask {
     bool dust = false;
     bool noSnow = false;
     bool snow = false;
+    bool snowAccumBoundaryA = false;
+    bool snowAccumBoundaryB = false;
+    bool snowCoverageThreshold = false;
     bool time = false;
     bool cloudAmount = false;
     bool cloudHeight = false;
@@ -138,6 +150,7 @@ struct WeatherPresetSourceMask {
     bool cloudPhaseFront = false;
     bool cloudScatteringCoefficient = false;
     bool cloudFlow = false;
+    bool cloudVisibleRange = false;
     bool rayleighHeight = false;
     bool ozoneRatio = false;
     bool rayleighScatteringColor = false;
@@ -213,11 +226,22 @@ struct PresetScheduleStatus {
     int blendRemainingSeconds = 0;
 };
 
+struct CommunityPresetInstallInfo {
+    bool valid = false;
+    std::string catalogId;
+    std::string sha256;
+    std::string updatedAt;
+    std::string displayName;
+    std::string fullPath;
+};
+
 void Preset_EnsureInitialized();
 void Preset_Refresh();
 int Preset_GetCount();
 const char* Preset_GetDisplayName(int index);
 const char* Preset_GetFileName(int index);
+bool Preset_IsCommunityPreset(int index);
+bool Preset_GetCommunityInstallInfo(int index, CommunityPresetInstallInfo& outInfo);
 int Preset_GetSelectedIndex();
 bool Preset_HasSelection();
 const char* Preset_GetSelectedDisplayName();
@@ -243,6 +267,27 @@ void Preset_OnWorldTick(bool worldReady, float dt);
 void Preset_TryAutoApplyRemembered();
 bool Preset_SaveSelected();
 bool Preset_SaveAs(const char* fileName);
+bool Preset_ExportCurrentCanonical(std::string& outIni, std::string& outError);
+bool Preset_ExportPresetCanonicalByIndex(int index, std::string& outIni, std::string& outError);
+bool Preset_ValidatePresetText(const char* iniText, std::string& outError);
+bool Preset_ImportCommunityPresetText(
+    const char* title,
+    const char* author,
+    const char* catalogId,
+    const char* sha256,
+    const char* updatedAt,
+    const char* iniText,
+    std::string& outFileName,
+    std::string& outError);
+bool Preset_UpdateCommunityPresetText(
+    int presetIndex,
+    const char* title,
+    const char* author,
+    const char* catalogId,
+    const char* sha256,
+    const char* updatedAt,
+    const char* iniText,
+    std::string& outError);
 
 bool PresetSchedule_IsEnabled();
 void PresetSchedule_SetEnabled(bool enabled);

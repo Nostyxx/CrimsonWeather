@@ -98,6 +98,7 @@ const char* RuntimeHookLabel(RuntimeHookId id) {
     case RuntimeHookId::FogSet3: return "FogSet3";
     case RuntimeHookId::FogSet4: return "FogSet4";
     case RuntimeHookId::MinimapRegionLabels: return "MinimapRegionLabels";
+    case RuntimeHookId::MinimapGameTimeUpdate: return "MinimapGameTimeUpdate";
     default: return "Unknown";
     }
 }
@@ -124,6 +125,8 @@ static const char* RuntimeHookKind(RuntimeHookId id) {
         return "Fog";
     case RuntimeHookId::MinimapRegionLabels:
         return "Region";
+    case RuntimeHookId::MinimapGameTimeUpdate:
+        return "HUD time";
     default:
         return "";
     }
@@ -772,7 +775,8 @@ static void RecomputeRuntimeHealthSummary() {
     SetRuntimeGroupHealth(RuntimeHealthGroup::Infra,
         AggregateTargetHealth({
             AobTargetId::NativeToast,
-            AobTargetId::MinimapRegionLabels
+            AobTargetId::MinimapRegionLabels,
+            AobTargetId::MinimapGameTimeUpdate
         }, note), note);
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::ForceClear,
@@ -1951,10 +1955,20 @@ bool RunAOBScan(){
         "48 8D AC 24 80 FD FF FF 48 81 EC 80 03 00 00 "
         "41 0F B7 F8 0F B7 DA 4C 8B F1 BE FF FF 00 00"
     );
+    uintptr_t addrMinimapGameTimeUpdate = ScanModule(
+        "48 89 5C 24 ?? 48 89 4C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 "
+        "48 8D AC 24 70 FD FF FF 48 81 EC 90 03 00 00 4C 8B F9 "
+        "48 83 B9 90 03 00 00 00 0F 84"
+    );
     if (addrMinimapRegionLabels) {
         Log("[AOB] MinimapRegionLabels = %p\n", (void*)addrMinimapRegionLabels);
     } else {
         Log("[W] MinimapRegionLabels not found (game HUD region ID resolver disabled)\n");
+    }
+    if (addrMinimapGameTimeUpdate) {
+        Log("[AOB] MinimapGameTimeUpdate = %p\n", (void*)addrMinimapGameTimeUpdate);
+    } else {
+        Log("[W] MinimapGameTimeUpdate not found (game HUD time source disabled)\n");
     }
 
     g_pActivateEffect = reinterpret_cast<ActivateEffect_fn>(addrActivate);
@@ -2010,6 +2024,9 @@ bool RunAOBScan(){
         if(addrMinimapRegionLabels)
             InstallHook((void*)addrMinimapRegionLabels,(void*)&Hooked_MinimapRegionLabels,
                         (void**)&g_pOrigMinimapRegionLabels,"MinimapRegionLabels",false);
+        if(addrMinimapGameTimeUpdate)
+            InstallHook((void*)addrMinimapGameTimeUpdate,(void*)&Hooked_MinimapGameTimeUpdate,
+                        (void**)&g_pOrigMinimapGameTimeUpdate,"MinimapGameTimeUpdate",false);
     }
     if (!DevLaunchOptionIsFullProfile()) {
 #if defined(CW_DEV_BUILD)
@@ -2147,6 +2164,12 @@ bool RunAOBScan(){
         minimapRegionInstalled ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
         addrMinimapRegionLabels,
         minimapRegionInstalled ? "game HUD region ID hook installed" : "game HUD region ID hook unavailable");
+
+    const bool minimapGameTimeInstalled = addrMinimapGameTimeUpdate && g_pOrigMinimapGameTimeUpdate;
+    SetAobTargetHealth(AobTargetId::MinimapGameTimeUpdate,
+        minimapGameTimeInstalled ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
+        addrMinimapGameTimeUpdate,
+        minimapGameTimeInstalled ? "game HUD time hook installed" : "game HUD time hook unavailable");
 
     RecomputeRuntimeHealthSummary();
     LogRuntimeHealthSummary();

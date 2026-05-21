@@ -105,6 +105,7 @@ void WriteDefaultConfig(const char* path) {
     WritePrivateProfileStringA("Preset", "LastPreset", "", path);
     WritePrivateProfileStringA("TimeSchedule", "Enabled", "0", path);
     WritePrivateProfileStringA("TimeSchedule", "EntryCount", "0", path);
+    WritePrivateProfileStringA("Community", "Enabled", "1", path);
 #else
     WritePrivateProfileStringA("Wind", "Multiplier", "1.0000", path);
 #endif
@@ -169,6 +170,9 @@ void PatchMissingConfigKeys(const char* path) {
     }
     if (GetPrivateProfileStringA("TimeSchedule", "EntryCount", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("TimeSchedule", "EntryCount", "0", path);
+    }
+    if (GetPrivateProfileStringA("Community", "Enabled", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("Community", "Enabled", "1", path);
     }
 #endif
 #if defined(CW_DEV_BUILD)
@@ -389,6 +393,8 @@ const char* DevPerfHookLabel(DevPerfHookId id) {
         return "SceneFrameUpdate";
     case DevPerfHookId::MinimapRegionLabels:
         return "MinimapRegionLabels";
+    case DevPerfHookId::MinimapGameTimeUpdate:
+        return "MinimapGameTimeUpdate";
     case DevPerfHookId::D3D12CreateDevice:
         return "D3D12CreateDevice";
     case DevPerfHookId::D3D12CreateShaderResourceView:
@@ -450,6 +456,8 @@ const char* AobTargetLabel(AobTargetId id) {
         return "NativeToast";
     case AobTargetId::MinimapRegionLabels:
         return "MinimapRegionLabels";
+    case AobTargetId::MinimapGameTimeUpdate:
+        return "MinimapGameTimeUpdate";
     default:
         return "UnknownTarget";
     }
@@ -709,6 +717,10 @@ void LoadConfig(const char* dir) {
     GetPrivateProfileStringA("Hotkeys", "ControllerToggleEffect", "dpad_down+a", buf, sizeof(buf), path);
     g_cfg.controllerEffectToggleMask = ParseControllerCombo(buf, static_cast<WORD>(0x0002 | 0x4000));
     g_cfg.reshadeDiagnostics = false;
+#if !defined(CW_WIND_ONLY)
+    GetPrivateProfileStringA("Community", "Enabled", "1", buf, sizeof(buf), path);
+    g_cfg.communityEnabled = atoi(buf) != 0;
+#endif
 #if defined(CW_DEV_BUILD)
     char devBuf[96] = {};
     GetPrivateProfileStringA("Dev", "LaunchOption", "full", devBuf, sizeof(devBuf), path);
@@ -737,6 +749,14 @@ void SaveGeneralConfig() {
     BuildIniPath(path, sizeof(path));
     WritePrivateProfileStringA("General", "AutoSaved", g_cfg.autoSaved ? "1" : "0", path);
     WritePrivateProfileStringA("General", "ExtendedSliderRange", g_extendedSliderRange.load() ? "1" : "0", path);
+}
+
+void SaveCommunityConfig() {
+#if !defined(CW_WIND_ONLY)
+    char path[MAX_PATH] = {};
+    BuildIniPath(path, sizeof(path));
+    WritePrivateProfileStringA("Community", "Enabled", g_cfg.communityEnabled ? "1" : "0", path);
+#endif
 }
 
 void SaveWindOnlyConfig() {
@@ -792,6 +812,10 @@ void ResetAllSliders() {
     g_oThunder.clear();
     g_oSnow.clear();
     g_oDust.clear();
+    g_oSnowAccumBoundaryA.clear();
+    g_oSnowAccumBoundaryB.clear();
+    g_oSnowCoverageThreshold.clear();
+    g_snowCoverageGlobalsDirty.store(true);
     g_oFog.clear();
     g_oCloudAmount.clear();
     g_oCloudSpdX.clear();
@@ -827,6 +851,7 @@ void ResetAllSliders() {
     g_oCloudPhaseFront.clear();
     g_oCloudScatteringCoefficient.clear();
     g_oCloudFlow.clear();
+    g_oCloudVisibleRange.clear();
     g_oRayleighHeight.clear();
     g_oOzoneRatio.clear();
     g_oRayleighScatteringColor.clear();
@@ -842,7 +867,10 @@ void ResetAllSliders() {
     g_timeCtrlActive.store(false);
     g_timeFreeze.store(false);
     g_timeProgressVisualTime.store(false);
+    g_timeProgressMatchGameTime.store(false);
     g_timeProgressLastTick.store(0);
+    g_timeProgressMatchLastMinute.store(-1);
+    g_timeProgressMatchPendingMs.store(0);
     g_timeApplyRequest.store(false);
     g_timeTargetHour.store(g_timeCurrentHour.load());
     g_timeOriginalHour.store(g_timeCurrentHour.load());
@@ -893,6 +921,8 @@ void ResetAllSliders() {
     g_windPackBase20.store(0.0f);
     g_windPackBase21Valid.store(false);
     g_windPackBase21.store(0.0f);
+    g_windPackBase25Valid.store(false);
+    g_windPackBase25.store(0.0f);
     g_windPackBase27Valid.store(false);
     g_windPackBase27.store(0.0f);
     g_windPackBase28Valid.store(false);
@@ -919,17 +949,14 @@ void ResetAllSliders() {
     g_sceneBaseMoonYaw.store(0.0f);
     g_sceneBaseMoonPitch.store(0.0f);
     g_sceneBaseNightSkyYaw.store(0.0f);
-#if defined(CW_DEV_BUILD)
-    for (size_t i = 0; i < kDevAtmosphereLabFieldCount; ++i) {
-        g_devAtmosphereLabActive[i].store(false);
-    }
-#endif
     g_resetStopRequested.store(true);
 }
 
 bool AnySliderActive() {
     return g_forceClear.load() ||
            g_oRain.active.load() || g_oThunder.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
+           g_oSnowAccumBoundaryA.active.load() || g_oSnowAccumBoundaryB.active.load() ||
+           g_oSnowCoverageThreshold.active.load() ||
            g_oCloudAmount.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oExpCloud2C.active.load() || g_oExpCloud2D.active.load() ||
@@ -940,6 +967,7 @@ bool AnySliderActive() {
            g_oHeightFogBaseline.active.load() || g_oHeightFogFalloff.active.load() ||
            g_oCloudAlpha.active.load() || g_oCloudFadeRange.active.load() || g_oCloudDetailRatio.active.load() ||
            g_oCloudPhaseFront.active.load() || g_oCloudScatteringCoefficient.active.load() || g_oCloudFlow.active.load() ||
+           g_oCloudVisibleRange.active.load() ||
            g_oRayleighHeight.active.load() || g_oOzoneRatio.active.load() ||
            g_oRayleighScatteringColor.active.load() || g_oVolumeFogScatterColor.active.load() || g_oMieScatterColor.active.load() ||
            g_noRain.load() || g_noDust.load() || g_noSnow.load() ||
@@ -954,6 +982,8 @@ bool AnySliderActive() {
 bool AnyCustomWeatherSliderActive() {
     return g_forceClear.load() ||
            g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
+           g_oSnowAccumBoundaryA.active.load() || g_oSnowAccumBoundaryB.active.load() ||
+           g_oSnowCoverageThreshold.active.load() ||
            g_oCloudAmount.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
@@ -963,6 +993,7 @@ bool AnyCustomWeatherSliderActive() {
            g_oHeightFogBaseline.active.load() || g_oHeightFogFalloff.active.load() ||
            g_oCloudAlpha.active.load() || g_oCloudFadeRange.active.load() || g_oCloudDetailRatio.active.load() ||
            g_oCloudPhaseFront.active.load() || g_oCloudScatteringCoefficient.active.load() || g_oCloudFlow.active.load() ||
+           g_oCloudVisibleRange.active.load() ||
            g_oRayleighHeight.active.load() || g_oOzoneRatio.active.load() ||
            g_oRayleighScatteringColor.active.load() || g_oVolumeFogScatterColor.active.load() || g_oMieScatterColor.active.load() ||
            g_noRain.load() || g_noDust.load() || g_noSnow.load() ||
@@ -1316,7 +1347,10 @@ void TickTimeControl() {
     }
     if (!active && !freeze) {
         g_timeProgressVisualTime.store(false);
+        g_timeProgressMatchGameTime.store(false);
         g_timeProgressLastTick.store(0);
+        g_timeProgressMatchLastMinute.store(-1);
+        g_timeProgressMatchPendingMs.store(0);
         if (g_timeFreezeApplied.exchange(false)) {
             RestoreTimeLimitBaseline(entity);
         }
@@ -1328,34 +1362,125 @@ void TickTimeControl() {
     float targetHour = NormalizeHour24(g_timeTargetHour.load());
     if (freeze && progressVisualTime) {
         constexpr unsigned long long kProgressMinuteMs = 5000;
-        const unsigned long long now = GetTickCount64();
-        unsigned long long lastTick = g_timeProgressLastTick.load();
-        if (!lastTick || now < lastTick) {
-            g_timeProgressLastTick.store(now);
+        if (g_timeProgressMatchGameTime.load()) {
+            constexpr int kDayMinutes = 24 * 60;
+            constexpr int kMaxMatchedForwardMinutes = 12 * 60;
+            const unsigned long long now = GetTickCount64();
+            int hudMinute = -1;
+            if (g_timeUiClockSourceValid.load() && g_timeUiClockValid.load()) {
+                const int hudHour = g_timeUiClockHour24.load();
+                const int hudClockMinute = g_timeUiClockMinute.load();
+                if (hudHour >= 0 && hudHour < 24 && hudClockMinute >= 0 && hudClockMinute < 60) {
+                    hudMinute = hudHour * 60 + hudClockMinute;
+                }
+            }
+
+            if (hudMinute < 0) {
+                g_timeProgressMatchLastMinute.store(-1);
+                g_timeProgressMatchPendingMs.store(0);
+            } else {
+                const int lastHudMinute = g_timeProgressMatchLastMinute.load();
+                if (lastHudMinute < 0 || lastHudMinute >= kDayMinutes) {
+                    targetHour = NormalizeHour24(static_cast<float>(hudMinute) / 60.0f);
+                    g_timeTargetHour.store(targetHour);
+                    g_timeProgressMatchLastMinute.store(hudMinute);
+                    g_timeProgressMatchPendingMs.store(0);
+                    g_timeProgressLastTick.store(now);
+                    g_timeApplyRequest.store(true);
+                } else if (hudMinute != lastHudMinute) {
+                    int deltaMinutes = hudMinute - lastHudMinute;
+                    if (deltaMinutes < 0) {
+                        deltaMinutes += kDayMinutes;
+                    }
+                    g_timeProgressMatchLastMinute.store(hudMinute);
+
+                    if (deltaMinutes == 1) {
+                        const int previousPendingMs = g_timeProgressMatchPendingMs.fetch_add(static_cast<int>(kProgressMinuteMs));
+                        const int maxPendingMs = static_cast<int>(kProgressMinuteMs * kMaxMatchedForwardMinutes);
+                        const int totalPendingMs = previousPendingMs + static_cast<int>(kProgressMinuteMs);
+                        if (previousPendingMs <= 0) {
+                            g_timeProgressMatchPendingMs.store(static_cast<int>(kProgressMinuteMs));
+                            g_timeProgressLastTick.store(now);
+                        } else if (totalPendingMs > maxPendingMs) {
+                            g_timeProgressMatchPendingMs.store(maxPendingMs);
+                        }
+                    } else if (deltaMinutes > 1 && deltaMinutes <= kMaxMatchedForwardMinutes) {
+                        const int pendingMs = g_timeProgressMatchPendingMs.exchange(0);
+                        const float pendingMinutes = max(0, pendingMs) / static_cast<float>(kProgressMinuteMs);
+                        targetHour = NormalizeHour24(targetHour + (static_cast<float>(deltaMinutes) + pendingMinutes) / 60.0f);
+                        g_timeTargetHour.store(targetHour);
+                        g_timeProgressLastTick.store(now);
+                        g_timeApplyRequest.store(true);
+                    } else {
+                        g_timeProgressMatchPendingMs.store(0);
+                    }
+                }
+            }
+
+            int pendingMs = g_timeProgressMatchPendingMs.load();
+            if (pendingMs > 0) {
+                const float cadenceSetting = g_timeProgressCadenceMs.load();
+                const unsigned long long cadenceMs = std::isfinite(cadenceSetting) && cadenceSetting > 0.0f
+                    ? static_cast<unsigned long long>(cadenceSetting)
+                    : 0ull;
+                unsigned long long lastTick = g_timeProgressLastTick.load();
+                if (!lastTick || now < lastTick) {
+                    g_timeProgressLastTick.store(now);
+                } else {
+                    unsigned long long elapsedMs = now - lastTick;
+                    const unsigned long long maxProgressGapMs = max(10000ull, cadenceMs * 4ull);
+                    if (elapsedMs > maxProgressGapMs) {
+                        elapsedMs = 0;
+                        g_timeProgressLastTick.store(now);
+                    }
+                    if (cadenceMs > 0 && elapsedMs < cadenceMs) {
+                        elapsedMs = 0;
+                    }
+                    if (elapsedMs > 0) {
+                        const int consumeMs = min(static_cast<int>(elapsedMs), pendingMs);
+                        const int remainingMs = max(0, pendingMs - consumeMs);
+                        g_timeProgressMatchPendingMs.store(remainingMs);
+                        targetHour = NormalizeHour24(targetHour + static_cast<float>(consumeMs) / static_cast<float>(kProgressMinuteMs * 60ull));
+                        g_timeTargetHour.store(targetHour);
+                        g_timeProgressLastTick.store(now);
+                        g_timeApplyRequest.store(true);
+                    }
+                }
+            }
         } else {
-            unsigned long long elapsedMs = now - lastTick;
-            const float cadenceSetting = g_timeProgressCadenceMs.load();
-            const unsigned long long cadenceMs = std::isfinite(cadenceSetting) && cadenceSetting > 0.0f
-                ? static_cast<unsigned long long>(cadenceSetting)
-                : 0ull;
-            const unsigned long long maxProgressGapMs = max(10000ull, cadenceMs * 4ull);
-            if (elapsedMs > maxProgressGapMs) {
-                elapsedMs = 0;
+            g_timeProgressMatchLastMinute.store(-1);
+            g_timeProgressMatchPendingMs.store(0);
+            const unsigned long long now = GetTickCount64();
+            unsigned long long lastTick = g_timeProgressLastTick.load();
+            if (!lastTick || now < lastTick) {
                 g_timeProgressLastTick.store(now);
-            }
-            if (cadenceMs > 0 && elapsedMs < cadenceMs) {
-                elapsedMs = 0;
-            }
-            if (elapsedMs > 0) {
-                const float addHours = static_cast<float>(elapsedMs) / static_cast<float>(kProgressMinuteMs * 60ull);
-                targetHour = NormalizeHour24(targetHour + addHours);
-                g_timeTargetHour.store(targetHour);
-                g_timeProgressLastTick.store(now);
-                g_timeApplyRequest.store(true);
+            } else {
+                unsigned long long elapsedMs = now - lastTick;
+                const float cadenceSetting = g_timeProgressCadenceMs.load();
+                const unsigned long long cadenceMs = std::isfinite(cadenceSetting) && cadenceSetting > 0.0f
+                    ? static_cast<unsigned long long>(cadenceSetting)
+                    : 0ull;
+                const unsigned long long maxProgressGapMs = max(10000ull, cadenceMs * 4ull);
+                if (elapsedMs > maxProgressGapMs) {
+                    elapsedMs = 0;
+                    g_timeProgressLastTick.store(now);
+                }
+                if (cadenceMs > 0 && elapsedMs < cadenceMs) {
+                    elapsedMs = 0;
+                }
+                if (elapsedMs > 0) {
+                    const float addHours = static_cast<float>(elapsedMs) / static_cast<float>(kProgressMinuteMs * 60ull);
+                    targetHour = NormalizeHour24(targetHour + addHours);
+                    g_timeTargetHour.store(targetHour);
+                    g_timeProgressLastTick.store(now);
+                    g_timeApplyRequest.store(true);
+                }
             }
         }
     } else {
         g_timeProgressLastTick.store(0);
+        g_timeProgressMatchLastMinute.store(-1);
+        g_timeProgressMatchPendingMs.store(0);
     }
     const float targetRaw = UIHourToEngineRaw(targetHour);
     const bool applyNow = g_timeApplyRequest.exchange(false);
@@ -1405,11 +1530,17 @@ void SuspendTimeControl() {
     }
 
     CaptureTimeLimitBaseline(entity);
-    if (g_timeFreezeApplied.exchange(false)) {
-        RestoreTimeLimitBaseline(entity);
+    const bool hadFrozenTime = g_timeFreezeApplied.exchange(false);
+    RestoreTimeLimitBaseline(entity);
+    if (hadFrozenTime) {
         Log("[visual-time] suspended, baseline restored\n");
     }
+    g_timeApplyRequest.store(false);
+    g_timeProgressLastTick.store(0);
+    g_timeProgressMatchLastMinute.store(-1);
+    g_timeProgressMatchPendingMs.store(0);
     g_timeSetHoldTicks.store(0);
+    g_timeFrozenRaw.store(-9999.0f);
 }
 
 void SetModEnabled(bool enabled) {

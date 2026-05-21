@@ -15,6 +15,15 @@ TEMP/
 *.iobj
 *.ipdb
 *.json
+!services/community-presets/package.json
+!services/community-presets/package-lock.json
+*.local.md
+.dev.vars
+.wrangler/
+CrimsonWeatherReshade/include/community_endpoint.local.h
+services/community-presets/.dev.vars
+services/community-presets/.wrangler/
+services/community-presets/node_modules/
 __pycache__/
 *.pyc
 
