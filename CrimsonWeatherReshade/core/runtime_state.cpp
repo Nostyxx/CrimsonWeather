@@ -106,6 +106,8 @@ void WriteDefaultConfig(const char* path) {
     WritePrivateProfileStringA("TimeSchedule", "Enabled", "0", path);
     WritePrivateProfileStringA("TimeSchedule", "EntryCount", "0", path);
     WritePrivateProfileStringA("Community", "Enabled", "1", path);
+    WritePrivateProfileStringA("Updater", "Enabled", "1", path);
+    WritePrivateProfileStringA("TextureSwitcher", "Enabled", "1", path);
 #else
     WritePrivateProfileStringA("Wind", "Multiplier", "1.0000", path);
 #endif
@@ -173,6 +175,12 @@ void PatchMissingConfigKeys(const char* path) {
     }
     if (GetPrivateProfileStringA("Community", "Enabled", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("Community", "Enabled", "1", path);
+    }
+    if (GetPrivateProfileStringA("Updater", "Enabled", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("Updater", "Enabled", "1", path);
+    }
+    if (GetPrivateProfileStringA("TextureSwitcher", "Enabled", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("TextureSwitcher", "Enabled", "1", path);
     }
 #endif
 #if defined(CW_DEV_BUILD)
@@ -720,6 +728,10 @@ void LoadConfig(const char* dir) {
 #if !defined(CW_WIND_ONLY)
     GetPrivateProfileStringA("Community", "Enabled", "1", buf, sizeof(buf), path);
     g_cfg.communityEnabled = atoi(buf) != 0;
+    GetPrivateProfileStringA("Updater", "Enabled", "1", buf, sizeof(buf), path);
+    g_cfg.updaterEnabled = atoi(buf) != 0;
+    GetPrivateProfileStringA("TextureSwitcher", "Enabled", "1", buf, sizeof(buf), path);
+    g_cfg.textureSwitcherEnabled = atoi(buf) != 0;
 #endif
 #if defined(CW_DEV_BUILD)
     char devBuf[96] = {};
@@ -756,6 +768,8 @@ void SaveCommunityConfig() {
     char path[MAX_PATH] = {};
     BuildIniPath(path, sizeof(path));
     WritePrivateProfileStringA("Community", "Enabled", g_cfg.communityEnabled ? "1" : "0", path);
+    WritePrivateProfileStringA("Updater", "Enabled", g_cfg.updaterEnabled ? "1" : "0", path);
+    WritePrivateProfileStringA("TextureSwitcher", "Enabled", g_cfg.textureSwitcherEnabled ? "1" : "0", path);
 #endif
 }
 

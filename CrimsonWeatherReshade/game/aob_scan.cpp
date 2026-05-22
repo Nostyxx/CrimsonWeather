@@ -1957,8 +1957,8 @@ bool RunAOBScan(){
     );
     uintptr_t addrMinimapGameTimeUpdate = ScanModule(
         "48 89 5C 24 ?? 48 89 4C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 "
-        "48 8D AC 24 70 FD FF FF 48 81 EC 90 03 00 00 4C 8B F9 "
-        "48 83 B9 90 03 00 00 00 0F 84"
+        "48 8D AC 24 ?? ?? FF FF 48 81 EC ?? 03 00 00 4C 8B F9 "
+        "48 83 B9 ?? 03 00 00 00 0F 84"
     );
     if (addrMinimapRegionLabels) {
         Log("[AOB] MinimapRegionLabels = %p\n", (void*)addrMinimapRegionLabels);

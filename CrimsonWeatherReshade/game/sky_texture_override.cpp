@@ -155,6 +155,7 @@ struct TextureSlot {
     ID3D12Resource* primaryNativeResource = nullptr;
     std::atomic<bool> nativeLocked{ false };
     std::vector<SrvBinding> bindings;
+    std::vector<SrvBinding> pendingBindings;
 
     std::string selectedPath;
     bool selectedAnimated = false;
@@ -192,6 +193,7 @@ struct TextureSlot {
     std::atomic<uint32_t> descriptorCopyLogCount{ 0 };
     std::atomic<uint32_t> nativeLogCount{ 0 };
     std::atomic<uint32_t> descriptorLogCount{ 0 };
+    std::atomic<uint32_t> pendingDescriptorLogCount{ 0 };
     std::atomic<bool> fingerprintSummaryLogged{ false };
 
     TextureSlot(
@@ -381,6 +383,10 @@ TextureSlot g_milkywaySlot(
     "Milky Way texture: integrated hook waiting");
 
 TextureSlot* g_textureSlots[] = { &g_moonSlot, &g_milkywaySlot };
+
+bool TextureSwitcherEnabled() {
+    return g_cfg.textureSwitcherEnabled;
+}
 
 void SetTextureStatus(TextureSlot& slot, const char* fmt, ...) {
     char status[sizeof(slot.status)] = {};
@@ -1121,6 +1127,13 @@ const char* FormatName(DXGI_FORMAT format) {
     case DXGI_FORMAT_BC3_UNORM_SRGB: return "BC3_UNORM_SRGB";
     case DXGI_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
     case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM_SRGB";
+    case DXGI_FORMAT_R16G16B16A16_FLOAT: return "R16G16B16A16_FLOAT";
+    case DXGI_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return "B8G8R8A8_UNORM_SRGB";
+    case DXGI_FORMAT_BC7_UNORM: return "BC7_UNORM";
+    case DXGI_FORMAT_BC7_UNORM_SRGB: return "BC7_UNORM_SRGB";
+    case DXGI_FORMAT_BC6H_UF16: return "BC6H_UF16";
+    case DXGI_FORMAT_BC6H_SF16: return "BC6H_SF16";
     default: return "other";
     }
 }
@@ -2281,14 +2294,19 @@ bool IsNativeResourceLocked(TextureSlot& slot, ID3D12Resource* resource) {
 }
 
 void TrackNativeResourceLocked(TextureSlot& slot, ID3D12Resource* resource, const char* tag);
+void ReleaseBinding(SrvBinding& binding);
+void AdoptPendingBindingsLocked(TextureSlot& slot, ID3D12Resource* provenResource);
 
 void ClearTrackedNativeStateLocked(TextureSlot& slot) {
     for (SrvBinding& binding : slot.bindings) {
-        if (binding.nativeResource) {
-            binding.nativeResource->Release();
-        }
+        ReleaseBinding(binding);
     }
     slot.bindings.clear();
+
+    for (SrvBinding& binding : slot.pendingBindings) {
+        ReleaseBinding(binding);
+    }
+    slot.pendingBindings.clear();
 
     for (ID3D12Resource* resource : slot.nativeResources) {
         if (resource) {
@@ -2337,6 +2355,7 @@ void PromoteContentProvenTextureLocked(TextureSlot& slot, ID3D12Resource* resour
     }
 
     TrackNativeResourceLocked(slot, resource, tag ? tag : "content-proof");
+    AdoptPendingBindingsLocked(slot, resource);
     if (slot.useProof) {
         UpdateMoonProofStateLocked("content-proof");
     }
@@ -2412,6 +2431,79 @@ SrvBinding* FindBindingLocked(TextureSlot& slot, D3D12_CPU_DESCRIPTOR_HANDLE han
         }
     }
     return nullptr;
+}
+
+SrvBinding* FindPendingBindingLocked(TextureSlot& slot, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+    if (!handle.ptr) {
+        return nullptr;
+    }
+    for (SrvBinding& binding : slot.pendingBindings) {
+        if (binding.dest.ptr == handle.ptr) {
+            return &binding;
+        }
+    }
+    return nullptr;
+}
+
+void ReleaseBinding(SrvBinding& binding) {
+    if (binding.nativeResource) {
+        binding.nativeResource->Release();
+        binding.nativeResource = nullptr;
+    }
+}
+
+bool IsNativeProofSrvDesc(const TextureSlot& slot, const D3D12_SHADER_RESOURCE_VIEW_DESC* desc) {
+    return desc &&
+           desc->ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D &&
+           desc->Texture2D.MostDetailedMip == 0 &&
+           desc->Texture2D.MipLevels == slot.nativeMips &&
+           (desc->Format == DXGI_FORMAT_BC1_UNORM || desc->Format == DXGI_FORMAT_BC1_UNORM_SRGB);
+}
+
+void TrackPendingSourceSrvLocked(TextureSlot& slot,
+                                 ID3D12Resource* nativeResource,
+                                 const D3D12_SHADER_RESOURCE_VIEW_DESC* desc,
+                                 D3D12_CPU_DESCRIPTOR_HANDLE dest,
+                                 const char* tag) {
+    if (!slot.useProof || slot.contentProofHit || !nativeResource || !dest.ptr || !IsNativeProofSrvDesc(slot, desc)) {
+        return;
+    }
+
+    SrvBinding* binding = FindPendingBindingLocked(slot, dest);
+    if (!binding && slot.pendingBindings.size() >= 64) {
+        ReleaseBinding(slot.pendingBindings.front());
+        slot.pendingBindings.erase(slot.pendingBindings.begin());
+    }
+
+    if (!binding) {
+        slot.pendingBindings.push_back({});
+        binding = &slot.pendingBindings.back();
+        nativeResource->AddRef();
+        binding->nativeResource = nativeResource;
+    } else if (binding->nativeResource != nativeResource) {
+        ReleaseBinding(*binding);
+        nativeResource->AddRef();
+        binding->nativeResource = nativeResource;
+    }
+
+    binding->dest = dest;
+    binding->hasDesc = true;
+    binding->nativeDesc = *desc;
+    binding->copied = false;
+
+    const uint32_t index = slot.pendingDescriptorLogCount.fetch_add(1);
+    if (index < 8) {
+        Log("[%s] pending source SRV %s res=%p desc=0x%llX fmt=%s(%u) pending=%zu\n",
+            slot.logTag,
+            tag,
+            nativeResource,
+            static_cast<unsigned long long>(dest.ptr),
+            FormatName(desc->Format),
+            static_cast<unsigned>(desc->Format),
+            slot.pendingBindings.size());
+    } else if (index == 8) {
+        Log("[%s] pending source SRV log cap reached\n", slot.logTag);
+    }
 }
 
 void TrackBindingLocked(TextureSlot& slot,
@@ -2490,6 +2582,30 @@ void TrackBindingLocked(TextureSlot& slot,
             slot.bindings.size());
     } else if (index == 12) {
         Log("[%s] descriptor log cap reached\n", slot.logTag);
+    }
+}
+
+void AdoptPendingBindingsLocked(TextureSlot& slot, ID3D12Resource* provenResource) {
+    if (!slot.useProof || !provenResource || slot.pendingBindings.empty()) {
+        return;
+    }
+
+    size_t adopted = 0;
+    for (SrvBinding& pending : slot.pendingBindings) {
+        if (pending.nativeResource != provenResource || !pending.hasDesc) {
+            continue;
+        }
+        TrackBindingLocked(slot, provenResource, &pending.nativeDesc, pending.dest, false, "pending-source-srv");
+        ++adopted;
+    }
+
+    for (SrvBinding& pending : slot.pendingBindings) {
+        ReleaseBinding(pending);
+    }
+    slot.pendingBindings.clear();
+
+    if (adopted > 0) {
+        Log("[%s] adopted %zu pending source SRV(s) after content proof\n", slot.logTag, adopted);
     }
 }
 
@@ -2969,6 +3085,15 @@ void STDMETHODCALLTYPE HookCreateShaderResourceView(ID3D12Device* self,
             hitSlot = slot;
             break;
         }
+        if (!hitSlot) {
+            for (TextureSlot* slot : g_textureSlots) {
+                if (!slot->useProof || !IsNativeDesc(*slot, &resourceDesc)) {
+                    continue;
+                }
+                TrackPendingSourceSrvLocked(*slot, resource, desc, destDescriptor, "CreateShaderResourceView");
+                break;
+            }
+        }
         LeaveCriticalSection(&g_hookLock);
     }
 
@@ -3409,6 +3534,10 @@ void SkyTextureOnPresent() {
 }
 
 bool InitializeSkyTextureOverride(HMODULE module) {
+    if (!TextureSwitcherEnabled()) {
+        Log("[moon-main] InitializeSkyTextureOverride skipped: TextureSwitcher.Enabled=0\n");
+        return false;
+    }
     Log("[moon-main] InitializeSkyTextureOverride enter module=%p\n", module);
     StateLockGuard lock;
     Log("[moon-main] InitializeSkyTextureOverride lock acquired\n");
@@ -3425,6 +3554,9 @@ bool InitializeSkyTextureOverride(HMODULE module) {
 }
 
 void ShutdownSkyTextureOverride() {
+    if (!TextureSwitcherEnabled() && !g_hookLockReady.load()) {
+        return;
+    }
     StateLockGuard lock;
     if (g_d3d12CreateDeviceTarget) {
         MH_DisableHook(g_d3d12CreateDeviceTarget);
@@ -3441,6 +3573,9 @@ void ShutdownSkyTextureOverride() {
 }
 
 void MoonTextureReload() {
+    if (!TextureSwitcherEnabled()) {
+        return;
+    }
     std::string selectedName;
     std::string selectedPath;
     bool selectedAnimated = false;
@@ -3477,6 +3612,9 @@ void MoonTextureReload() {
 }
 
 void MilkywayTextureReload() {
+    if (!TextureSwitcherEnabled()) {
+        return;
+    }
     std::string selectedName;
     std::string selectedPath;
     {
@@ -3503,6 +3641,9 @@ void MilkywayTextureReload() {
 }
 
 const char* MoonTextureStatus() {
+    if (!TextureSwitcherEnabled()) {
+        return "Moon texture: disabled by config";
+    }
     StateLockGuard lock;
     thread_local char statusCopy[sizeof(g_moonSlot.status)]{};
     CopyTextureStatus(g_moonSlot, statusCopy, sizeof(statusCopy));
@@ -3510,6 +3651,9 @@ const char* MoonTextureStatus() {
 }
 
 const char* MilkywayTextureStatus() {
+    if (!TextureSwitcherEnabled()) {
+        return "Milky Way texture: disabled by config";
+    }
     StateLockGuard lock;
     thread_local char statusCopy[sizeof(g_milkywaySlot.status)]{};
     CopyTextureStatus(g_milkywaySlot, statusCopy, sizeof(statusCopy));
@@ -3517,6 +3661,9 @@ const char* MilkywayTextureStatus() {
 }
 
 bool MoonTextureReady() {
+    if (!TextureSwitcherEnabled()) {
+        return false;
+    }
     if (!g_hookLockReady.load()) {
         return false;
     }
@@ -3527,6 +3674,9 @@ bool MoonTextureReady() {
 }
 
 bool MilkywayTextureReady() {
+    if (!TextureSwitcherEnabled()) {
+        return false;
+    }
     if (!g_hookLockReady.load()) {
         return false;
     }
@@ -3537,6 +3687,9 @@ bool MilkywayTextureReady() {
 }
 
 void MoonTextureRefreshList() {
+    if (!TextureSwitcherEnabled()) {
+        return;
+    }
     StateLockGuard lock;
     RefreshMoonTextureListLocked();
     if (g_moonSlot.selectedOption == 0) {
@@ -3545,6 +3698,9 @@ void MoonTextureRefreshList() {
 }
 
 void MilkywayTextureRefreshList() {
+    if (!TextureSwitcherEnabled()) {
+        return;
+    }
     StateLockGuard lock;
     RefreshMilkywayTextureListLocked();
     if (g_milkywaySlot.selectedOption == 0) {
@@ -3553,6 +3709,9 @@ void MilkywayTextureRefreshList() {
 }
 
 int MoonTextureOptionCount() {
+    if (!TextureSwitcherEnabled()) {
+        return 1;
+    }
     StateLockGuard lock;
     if (!g_moonSlot.optionsScanned) {
         RefreshMoonTextureListLocked();
@@ -3561,6 +3720,9 @@ int MoonTextureOptionCount() {
 }
 
 int MilkywayTextureOptionCount() {
+    if (!TextureSwitcherEnabled()) {
+        return 1;
+    }
     StateLockGuard lock;
     if (!g_milkywaySlot.optionsScanned) {
         RefreshMilkywayTextureListLocked();
@@ -3569,6 +3731,9 @@ int MilkywayTextureOptionCount() {
 }
 
 const char* MoonTextureOptionName(int index) {
+    if (!TextureSwitcherEnabled()) {
+        return index == 0 ? "Native" : "";
+    }
     StateLockGuard lock;
     if (!g_moonSlot.optionsScanned) {
         RefreshMoonTextureListLocked();
@@ -3583,6 +3748,9 @@ const char* MoonTextureOptionName(int index) {
 }
 
 const char* MilkywayTextureOptionName(int index) {
+    if (!TextureSwitcherEnabled()) {
+        return index == 0 ? "Native" : "";
+    }
     StateLockGuard lock;
     if (!g_milkywaySlot.optionsScanned) {
         RefreshMilkywayTextureListLocked();
@@ -3597,6 +3765,9 @@ const char* MilkywayTextureOptionName(int index) {
 }
 
 const char* MoonTextureOptionLabel(int index) {
+    if (!TextureSwitcherEnabled()) {
+        return index == 0 ? "Native" : "";
+    }
     StateLockGuard lock;
     if (!g_moonSlot.optionsScanned) {
         RefreshMoonTextureListLocked();
@@ -3611,6 +3782,9 @@ const char* MoonTextureOptionLabel(int index) {
 }
 
 const char* MilkywayTextureOptionLabel(int index) {
+    if (!TextureSwitcherEnabled()) {
+        return index == 0 ? "Native" : "";
+    }
     StateLockGuard lock;
     if (!g_milkywaySlot.optionsScanned) {
         RefreshMilkywayTextureListLocked();
@@ -3625,6 +3799,9 @@ const char* MilkywayTextureOptionLabel(int index) {
 }
 
 const char* MoonTextureOptionPack(int index) {
+    if (!TextureSwitcherEnabled()) {
+        return "";
+    }
     StateLockGuard lock;
     if (!g_moonSlot.optionsScanned) {
         RefreshMoonTextureListLocked();
@@ -3636,6 +3813,9 @@ const char* MoonTextureOptionPack(int index) {
 }
 
 bool MoonTextureOptionIsAnimated(int index) {
+    if (!TextureSwitcherEnabled()) {
+        return false;
+    }
     StateLockGuard lock;
     if (!g_moonSlot.optionsScanned) {
         RefreshMoonTextureListLocked();
@@ -3647,6 +3827,9 @@ bool MoonTextureOptionIsAnimated(int index) {
 }
 
 const char* MilkywayTextureOptionPack(int index) {
+    if (!TextureSwitcherEnabled()) {
+        return "";
+    }
     StateLockGuard lock;
     if (!g_milkywaySlot.optionsScanned) {
         RefreshMilkywayTextureListLocked();
@@ -3658,6 +3841,9 @@ const char* MilkywayTextureOptionPack(int index) {
 }
 
 int MoonTextureFindOptionByName(const char* name) {
+    if (!TextureSwitcherEnabled()) {
+        return 0;
+    }
     if (!name || !name[0] || _stricmp(name, "Native") == 0) {
         return 0;
     }
@@ -3689,6 +3875,9 @@ int MoonTextureFindOptionByName(const char* name) {
 }
 
 int MilkywayTextureFindOptionByName(const char* name) {
+    if (!TextureSwitcherEnabled()) {
+        return 0;
+    }
     if (!name || !name[0] || _stricmp(name, "Native") == 0) {
         return 0;
     }
@@ -3720,6 +3909,9 @@ int MilkywayTextureFindOptionByName(const char* name) {
 }
 
 int MoonTextureSelectedOption() {
+    if (!TextureSwitcherEnabled()) {
+        return 0;
+    }
     StateLockGuard lock;
     if (!g_moonSlot.optionsScanned) {
         RefreshMoonTextureListLocked();
@@ -3731,6 +3923,9 @@ int MoonTextureSelectedOption() {
 }
 
 int MilkywayTextureSelectedOption() {
+    if (!TextureSwitcherEnabled()) {
+        return 0;
+    }
     StateLockGuard lock;
     if (!g_milkywaySlot.optionsScanned) {
         RefreshMilkywayTextureListLocked();
@@ -3742,6 +3937,9 @@ int MilkywayTextureSelectedOption() {
 }
 
 void MoonTextureSelectOption(int index) {
+    if (!TextureSwitcherEnabled()) {
+        return;
+    }
     std::string selectedName;
     std::string selectedPath;
     bool selectedAnimated = false;
@@ -3780,6 +3978,9 @@ void MoonTextureSelectOption(int index) {
 }
 
 void MilkywayTextureSelectOption(int index) {
+    if (!TextureSwitcherEnabled()) {
+        return;
+    }
     std::string selectedName;
     std::string selectedPath;
     {
@@ -3812,6 +4013,9 @@ void MilkywayTextureSelectOption(int index) {
 }
 
 bool MoonTextureSelectByName(const char* name) {
+    if (!TextureSwitcherEnabled()) {
+        return false;
+    }
     const int index = MoonTextureFindOptionByName(name);
     if (index >= 0) {
         MoonTextureSelectOption(index);
@@ -3831,6 +4035,9 @@ bool MoonTextureSelectByName(const char* name) {
 }
 
 bool MilkywayTextureSelectByName(const char* name) {
+    if (!TextureSwitcherEnabled()) {
+        return false;
+    }
     const int index = MilkywayTextureFindOptionByName(name);
     if (index >= 0) {
         MilkywayTextureSelectOption(index);

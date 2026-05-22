@@ -2,6 +2,9 @@ name = "crimson-weather-community-presets"
 main = "src/index.js"
 compatibility_date = "2026-05-20"
 
+[triggers]
+crons = ["17 3 * * *"]
+
 [vars]
 CATALOG_CACHE_SECONDS = "300"
 MAX_PRESET_BYTES = "65536"
@@ -18,6 +21,9 @@ bucket_name = "crimson-weather-community-presets"
 
 [env.dev]
 name = "crimson-weather-community-presets-dev"
+
+[env.dev.triggers]
+crons = ["23 3 * * *"]
 
 [env.dev.vars]
 CATALOG_CACHE_SECONDS = "30"

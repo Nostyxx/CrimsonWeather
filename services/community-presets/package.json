@@ -4,10 +4,10 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "deploy": "npx wrangler deploy",
-    "deploy:dev": "npx wrangler deploy --env dev",
-    "migrate": "npx wrangler d1 migrations apply crimson-weather-community-presets --remote",
-    "migrate:dev": "npx wrangler d1 migrations apply crimson-weather-community-presets-dev --env dev --remote"
+    "deploy": "npx wrangler deploy --config wrangler.local.toml",
+    "deploy:dev": "npx wrangler deploy --config wrangler.local.toml --env dev",
+    "migrate": "npx wrangler d1 migrations apply crimson-weather-community-presets --config wrangler.local.toml --remote",
+    "migrate:dev": "npx wrangler d1 migrations apply crimson-weather-community-presets-dev --config wrangler.local.toml --env dev --remote"
   },
   "devDependencies": {
     "wrangler": "^4.93.0"

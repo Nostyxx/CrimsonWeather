@@ -24,6 +24,7 @@ CrimsonWeatherReshade/include/community_endpoint.local.h
 services/community-presets/.dev.vars
 services/community-presets/.wrangler/
 services/community-presets/node_modules/
+services/community-presets/wrangler.local.toml
 __pycache__/
 *.pyc
 

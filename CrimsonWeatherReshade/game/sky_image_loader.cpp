@@ -11,6 +11,9 @@
 
 namespace {
 
+    constexpr UINT kMaxPngDimension = 16384;
+    constexpr UINT64 kMaxPngPixels = 8192ull * 8192ull;
+
     uint32_t ReadU32(const uint8_t* p) {
         return static_cast<uint32_t>(p[0]) |
             (static_cast<uint32_t>(p[1]) << 8) |
@@ -75,6 +78,7 @@ namespace {
         case DXGI_FORMAT_BC7_UNORM_SRGB: return "BC7_UNORM_SRGB";
         case DXGI_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
         case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM_SRGB";
+        case DXGI_FORMAT_R16G16B16A16_FLOAT: return "R16G16B16A16_FLOAT";
         case DXGI_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
         case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return "B8G8R8A8_UNORM_SRGB";
         default: return "other";
@@ -147,6 +151,8 @@ namespace {
         case DXGI_FORMAT_B8G8R8A8_UNORM:
         case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
             return 4u;
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            return 8u;
         default:
             return 0u;
         }
@@ -463,13 +469,21 @@ namespace {
         UINT width = 0;
         UINT height = 0;
         frame->GetSize(&width, &height);
-        if (width == 0 || height == 0 || width > 4096 || height > 4096) {
+        const UINT64 pixels = static_cast<UINT64>(width) * static_cast<UINT64>(height);
+        if (width == 0 || height == 0 ||
+            width > kMaxPngDimension || height > kMaxPngDimension ||
+            pixels > kMaxPngPixels) {
             frame->Release();
             decoder->Release();
             factory->Release();
             if (coInitialized) CoUninitialize();
             SetLoadStatus(status, statusSize, "PNG size unsupported");
-            Log("[sky-image] PNG size unsupported %ux%u path=%s\n", width, height, path.c_str());
+            Log("[sky-image] PNG size unsupported %ux%u maxDimension=%u maxPixels=%llu path=%s\n",
+                width,
+                height,
+                kMaxPngDimension,
+                static_cast<unsigned long long>(kMaxPngPixels),
+                path.c_str());
             return false;
         }
 

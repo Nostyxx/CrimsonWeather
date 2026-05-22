@@ -6,6 +6,7 @@
 #include "sky_texture_override.h"
 #include "preset_service.h"
 #include "runtime_shared.h"
+#include "update_service.h"
 
 #include <imgui.h>
 #include <reshade.hpp>
@@ -742,16 +743,15 @@ bool DrawStartupGate() {
     return true;
 }
 
+void DrawFooterLinksRight(float rightEdge);
+
 void DrawWindOnlyOverlay() {
     ImGui::Text("%s %s", MOD_DISPLAY_NAME, MOD_VERSION);
-    const char* nexusLabel = "nexusmods";
-    const float nexusWidth = ImGui::CalcTextSize(nexusLabel).x;
     const float cursorY = ImGui::GetCursorPosY() - ImGui::GetTextLineHeightWithSpacing();
     const float rightEdge = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
     ImGui::SameLine();
-    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), rightEdge - nexusWidth));
     ImGui::SetCursorPosY(cursorY);
-    ImGui::TextLinkOpenURL(nexusLabel, "https://www.nexusmods.com/crimsondesert/mods/632");
+    DrawFooterLinksRight(rightEdge);
     ImGui::Separator();
     if (DrawStartupGate()) {
         return;
@@ -4551,6 +4551,94 @@ std::string BuildFooterScheduleLabel() {
     return "ON";
 }
 
+void DrawFooterLinksRight(float rightEdge) {
+    const char* kofiLabel = "kofi";
+    const char* nexusLabel = "nexusmods";
+    const char* separator = "|";
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float linksWidth = ImGui::CalcTextSize(kofiLabel).x
+        + spacing + ImGui::CalcTextSize(separator).x
+        + spacing + ImGui::CalcTextSize(nexusLabel).x;
+
+    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), rightEdge - linksWidth));
+    ImGui::TextLinkOpenURL(kofiLabel, "https://ko-fi.com/nostyx");
+    ImGui::SameLine();
+    ImGui::TextUnformatted(separator);
+    ImGui::SameLine();
+    ImGui::TextLinkOpenURL(nexusLabel, "https://www.nexusmods.com/crimsondesert/mods/632");
+}
+
+void DrawUpdateChangelogPopup(const UpdateCheckInfo& updateInfo) {
+    if (!ImGui::BeginPopupModal("Crimson Weather Changelog", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    const std::string title = updateInfo.title.empty()
+        ? ("Update " + updateInfo.latestVersion)
+        : updateInfo.title;
+    ImGui::TextUnformatted(title.c_str());
+    ImGui::Separator();
+
+    const ImVec2 childSize(620.0f, min(420.0f, ImGui::GetTextLineHeightWithSpacing() * 24.0f));
+    if (ImGui::BeginChild("UpdateChangelogText", childSize, true)) {
+        if (!updateInfo.changelog.empty()) {
+            ImGui::TextUnformatted(updateInfo.changelog.c_str());
+        } else {
+            ImGui::TextDisabled("No changelog was provided for this update.");
+        }
+    }
+    ImGui::EndChild();
+
+    if (ImGui::Button("Download", ImVec2(140.0f, 0.0f))) {
+        UpdateService_OpenDownloadPage();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Close", ImVec2(120.0f, 0.0f))) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void DrawUpdateHeader() {
+    UpdateService_Tick();
+    const UpdateCheckInfo updateInfo = UpdateService_GetInfo();
+
+    ImGui::Text("%s %s", MOD_NAME, MOD_VERSION);
+    ImGui::SameLine();
+
+    switch (updateInfo.state) {
+    case UpdateCheckState::Latest:
+        ImGui::TextDisabled("| (Latest)");
+        break;
+    case UpdateCheckState::UpdateAvailable:
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.28f, 1.0f), "| (UPDATE AVAILABLE)");
+        ImGui::SameLine();
+        if (ImGui::Button("Changelog")) {
+            ImGui::OpenPopup("Crimson Weather Changelog");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Download")) {
+            UpdateService_OpenDownloadPage();
+        }
+        break;
+    case UpdateCheckState::Checking:
+        ImGui::TextDisabled("| (Checking...)");
+        break;
+    case UpdateCheckState::Error:
+        ImGui::TextDisabled("| (Update check failed)");
+        break;
+    case UpdateCheckState::Disabled:
+        ImGui::TextDisabled("| (Update check disabled)");
+        break;
+    case UpdateCheckState::Idle:
+    default:
+        ImGui::TextDisabled("| (Checking soon)");
+        break;
+    }
+
+    DrawUpdateChangelogPopup(updateInfo);
+}
+
 void DrawOverlay(reshade::api::effect_runtime*) {
 #if !defined(CW_WIND_ONLY)
     Preset_OnWorldTick(g_pEnvManager && *g_pEnvManager != 0, 0.016f);
@@ -4565,7 +4653,7 @@ void DrawOverlay(reshade::api::effect_runtime*) {
         return;
     }
 
-    ImGui::Text("%s %s", MOD_NAME, MOD_VERSION);
+    DrawUpdateHeader();
     if (g_addonStartupState.load() != AddonStartupState::Ready) {
         ImGui::Spacing();
         DrawStartupGate();
@@ -4620,12 +4708,9 @@ void DrawOverlay(reshade::api::effect_runtime*) {
         scheduleLabel.c_str(),
         Preset_GetSelectedDisplayName());
     Preset_AutoSaveTick(ImGui::IsAnyItemActive());
-    const char* nexusLabel = "nexusmods";
-    const float nexusWidth = ImGui::CalcTextSize(nexusLabel).x;
     const float rightEdge = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
     ImGui::SameLine();
-    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), rightEdge - nexusWidth));
-    ImGui::TextLinkOpenURL(nexusLabel, "https://www.nexusmods.com/crimsondesert/mods/632");
+    DrawFooterLinksRight(rightEdge);
     ImGui::End();
 #endif
 }

@@ -255,6 +255,37 @@ static RegionClassification ClassifyRegionFromGameHudIds(int areaId, int subArea
     return {};
 }
 
+static void LogRegionHudSample(int areaId, int subAreaId, uintptr_t callerOffset, int callerKind) {
+#if defined(CW_DEV_BUILD)
+    static std::atomic<int> s_lastArea{ -1 };
+    static std::atomic<int> s_lastSubArea{ -1 };
+    static std::atomic<uintptr_t> s_lastCaller{ 0 };
+
+    const bool changed = s_lastArea.exchange(areaId) != areaId ||
+                         s_lastSubArea.exchange(subAreaId) != subAreaId ||
+                         s_lastCaller.exchange(callerOffset) != callerOffset;
+    if (!changed) {
+        return;
+    }
+
+    const RegionClassification classified = ClassifyRegionFromGameHudIds(areaId, subAreaId);
+    Log("[region-hud] area=0x%04X sub=0x%04X caller=0x%llX kind=%d -> major=%d local=0x%04X\n",
+        static_cast<unsigned>(areaId & 0xFFFF),
+        static_cast<unsigned>(subAreaId & 0xFFFF),
+        static_cast<unsigned long long>(callerOffset),
+        callerKind,
+        classified.majorId,
+        static_cast<unsigned>(classified.localId & 0xFFFF));
+#else
+    (void)areaId;
+    (void)subAreaId;
+    (void)callerOffset;
+    (void)callerKind;
+#endif
+}
+
+static RegionClassification LastStableGameHudRegion();
+
 static RegionClassification LastStableGameHudRegion() {
     if (!g_gameRegionHudStableValid.load()) {
         return {};
@@ -282,6 +313,7 @@ static RegionClassification UpdateStableGameHudRegion() {
     const int areaId = g_gameRegionHudAreaId.load();
     const int subAreaId = g_gameRegionHudSubAreaId.load();
     const RegionClassification classified = ClassifyRegionFromGameHudIds(areaId, subAreaId);
+    g_gameRegionHudPromotedUpdateCount.store(g_gameRegionHudUpdateCount.load());
     if (classified.majorId == 0) {
         return LastStableGameHudRegion();
     }
@@ -301,6 +333,20 @@ static RegionClassification UpdateStableGameHudRegion() {
     g_gameRegionHudStableUpdateCount.fetch_add(1);
 
     return classified;
+}
+
+static bool WeatherTickRegionWorkNeeded() {
+    if (!g_gameRegionHudValid.load()) {
+        return false;
+    }
+    if (!g_regionStateValid.load() || !g_gameRegionHudStableValid.load()) {
+        return true;
+    }
+    const unsigned int updates = g_gameRegionHudUpdateCount.load();
+    if (updates != g_gameRegionHudPromotedUpdateCount.load()) {
+        return true;
+    }
+    return false;
 }
 
 static void UpdateRegionState(const ResolvedEnv& env, float dt) {
@@ -1656,6 +1702,52 @@ static void StopWeatherEffectsByMask(long long self, uint32_t effectMask) {
     }
 }
 
+static std::atomic<int> g_rainEffectCleanupTicks{ 0 };
+static std::atomic<bool> g_rainEffectWasWanted{ false };
+
+static bool RainEffectWantedNow() {
+    return !g_forceClear.load() &&
+           !g_noRain.load() &&
+           g_oRain.active.load() &&
+           g_oRain.value.load() > 0.01f;
+}
+
+static void RequestRainEffectCleanup(const char* reason) {
+    constexpr int kRainCleanupTicks = 30;
+    g_rainEffectCleanupTicks.store(kRainCleanupTicks);
+    Log("[rain] cleanup requested: %s ticks=%d\n", reason ? reason : "rain disabled", kRainCleanupTicks);
+}
+
+static void UpdateRainEffectTransitionCleanup() {
+    const bool wanted = RainEffectWantedNow();
+    const bool wasWanted = g_rainEffectWasWanted.exchange(wanted);
+    if (wasWanted && !wanted) {
+        RequestRainEffectCleanup("rain transitioned off");
+    }
+}
+
+static bool RainEffectCleanupActive() {
+    return g_rainEffectCleanupTicks.load() > 0;
+}
+
+static void TickRainEffectCleanup(long long self, const ResolvedEnv& env) {
+    int ticks = g_rainEffectCleanupTicks.load();
+    if (ticks <= 0) {
+        return;
+    }
+
+    StopWeatherEffectsByMask(self, 0x013u);
+    if (env.cloudNode) {
+        At<float>(env.cloudNode, CN::STORM_THRESH) = 0.0f;
+    }
+
+    ticks = g_rainEffectCleanupTicks.fetch_sub(1) - 1;
+    if (ticks <= 0) {
+        g_rainEffectCleanupTicks.store(0);
+        Log("[rain] cleanup finished\n");
+    }
+}
+
 static uint32_t ComputeSuppressedWeatherEffectMask() {
     uint32_t mask = 0;
     if (g_noRain.load()) mask |= 0x013u;
@@ -1827,6 +1919,7 @@ long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short a
     g_gameRegionHudCallerKind.store(static_cast<int>(callerKind));
     g_gameRegionHudLastChangeTick.store(GetTickCount64());
     g_gameRegionHudUpdateCount.fetch_add(1);
+    LogRegionHudSample(static_cast<int>(areaId), static_cast<int>(subAreaId), callerOffset, static_cast<int>(callerKind));
 
     return result;
 }
@@ -1929,6 +2022,12 @@ static uint64_t ResolveWeatherAudioGameObjectId() {
 
 static void TryPlayThunderAudio() {
     if (!g_pAkPostEventById) {
+        static DWORD64 s_lastUnavailableLog = 0;
+        const DWORD64 now = GetTickCount64();
+        if (now - s_lastUnavailableLog >= 10000) {
+            s_lastUnavailableLog = now;
+            Log("[thunder-audio] unavailable: AK::PostEventById missing\n");
+        }
         return;
     }
 
@@ -1939,13 +2038,21 @@ static void TryPlayThunderAudio() {
     if (now - s_lastThunderSound < 500) {
         return;
     }
-    s_lastThunderSound = now;
 
     constexpr ThunderAudioCandidate kThunderAudioCandidates[] = {
         { 3685435772u, "env_oneshot_thunder" },
     };
 
     const uint64_t gameObjectId = ResolveWeatherAudioGameObjectId();
+    if (!gameObjectId) {
+        static DWORD64 s_lastMissingObjectLog = 0;
+        if (now - s_lastMissingObjectLog >= 5000) {
+            s_lastMissingObjectLog = now;
+            Log("[thunder-audio] skipped, weather audio object unavailable\n");
+        }
+        return;
+    }
+
     for (const ThunderAudioCandidate& candidate : kThunderAudioCandidates) {
         uint32_t playingId = 0;
         __try {
@@ -1955,11 +2062,26 @@ static void TryPlayThunderAudio() {
                 candidate.eventName, candidate.eventId, static_cast<unsigned long long>(gameObjectId));
             continue;
         }
-        Log("[thunder-audio] post event=%s id=%u object=%llu playing=%u\n",
-            candidate.eventName, candidate.eventId,
-            static_cast<unsigned long long>(gameObjectId), playingId);
         if (playingId) {
+            static unsigned int s_successfulPosts = 0;
+            static DWORD64 s_lastSuccessLog = 0;
+            ++s_successfulPosts;
+            if (s_successfulPosts <= 3 || now - s_lastSuccessLog >= 60000) {
+                s_lastSuccessLog = now;
+                Log("[thunder-audio] post ok event=%s id=%u object=%llu playing=%u count=%u\n",
+                    candidate.eventName, candidate.eventId,
+                    static_cast<unsigned long long>(gameObjectId), playingId, s_successfulPosts);
+            }
+            s_lastThunderSound = now;
             break;
+        }
+
+        static DWORD64 s_lastZeroPlayingLog = 0;
+        if (now - s_lastZeroPlayingLog >= 10000) {
+            s_lastZeroPlayingLog = now;
+            Log("[thunder-audio] post returned zero event=%s id=%u object=%llu\n",
+                candidate.eventName, candidate.eventId,
+                static_cast<unsigned long long>(gameObjectId));
         }
     }
 }
@@ -2017,6 +2139,13 @@ static void TickNativeLightningBridge(long long self, float dt) {
         return;
     }
     if (!effect || !variation) {
+        static DWORD64 s_lastMissingEffectLog = 0;
+        const DWORD64 now = GetTickCount64();
+        if (now - s_lastMissingEffectLog >= 5000) {
+            s_lastMissingEffectLog = now;
+            Log("[thunder] scheduler skipped, effect=%p variation=%p self=%p\n",
+                reinterpret_cast<void*>(effect), reinterpret_cast<void*>(variation), reinterpret_cast<void*>(self));
+        }
         return;
     }
 
@@ -2052,13 +2181,12 @@ static void TickNativeLightningBridge(long long self, float dt) {
 
     const bool spawnedStrike = elapsedBefore > 0.5f && elapsedAfter < 0.1f && nextAfter < 0.0f;
     if (spawnedStrike) {
-        TriggerThunderGlobalEffect(rainHint, thunder);
         TryPlayThunderAudio();
     }
 
     static DWORD64 s_lastLog = 0;
     const DWORD64 now = GetTickCount64();
-    if (now - s_lastLog >= 2000) {
+    if (now - s_lastLog >= 10000) {
         s_lastLog = now;
         Log("[thunder] amount=%.3f rain=%.3f gate=%u e4=%.3f->%.3f e8=%.3f->%.3f effect=%p var=%p\n",
             thunder, rainHint, gate, elapsedBefore, elapsedAfter, nextBefore, nextAfter,
@@ -2152,12 +2280,16 @@ static bool WeatherTickRuntimeWorkNeeded(bool resetStopNow, bool modSuspendNow, 
     if (WeatherTickTimeWorkNeeded()) {
         return true;
     }
+    if (WeatherTickRegionWorkNeeded()) {
+        return true;
+    }
     if (g_snowCoverageGlobalsDirty.load() || SnowCoverageOverrideActive()) {
         return true;
     }
     if (g_forceClear.load() ||
         AnyCustomWeatherSliderActive() ||
         g_activeWeather == kCustomWeather ||
+        RainEffectCleanupActive() ||
         g_noRain.load() ||
         g_noSnow.load() ||
         g_noDust.load() ||
@@ -2214,10 +2346,14 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
 
     const ResolvedEnv env = ResolveEnv();
     const bool worldReady = env.entity && env.weatherState;
-    if (presetNeedsTick) {
+    const bool regionNeedsTick = WeatherTickRegionWorkNeeded();
+    if (presetNeedsTick || regionNeedsTick) {
         UpdateRegionState(env, serviceDt);
+    }
+    if (presetNeedsTick) {
         Preset_OnWorldTick(worldReady, serviceDt);
     }
+    UpdateRainEffectTransitionCleanup();
 
     if (!modEnabled) {
         g_pOriginalTick(self, dt);
@@ -2234,6 +2370,7 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
         g_pOriginalTick(self, dt);
         ApplySnowCoverageGlobalOverrides(modEnabled);
         StopWeatherEffectsByMask(self, 0x1DFu);
+        TickRainEffectCleanup(self, env);
         ApplyClearWeatherParams(self, env);
         ApplyWindFromSlider(self, env);
         if (resetStopNow) {
@@ -2255,6 +2392,7 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     if (g_activeWeather == kCustomWeather) {
         TickWeatherState(self, serviceDt);
     }
+    TickRainEffectCleanup(self, env);
     const uint32_t suppressedWeatherMask = ComputeSuppressedWeatherEffectMask();
     if (suppressedWeatherMask) {
         StopWeatherEffectsByMask(self, suppressedWeatherMask);

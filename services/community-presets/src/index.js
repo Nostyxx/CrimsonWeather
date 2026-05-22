@@ -1,6 +1,158 @@
 const PRESET_HEADER = "[CrimsonWeatherPreset]";
 const CURRENT_FORMAT_VERSION = 6;
 const CATALOG_KEY = "catalog/catalog.v1.json";
+const UPDATE_DOWNLOAD_PAGE_URL = "https://www.nexusmods.com/crimsondesert/mods/632?tab=files";
+const UPDATE_CHANNEL = "stable";
+const UPDATE_LATEST_VERSION = "0.6.5";
+const UPDATE_CHANGELOG = `Update 0.6.5
+- Updated for the latest game patch
+- Added a TextureSwitcher config flag
+- Fixed region detection after the latest game patch
+- Fixed rain effects sometimes staying on screen after rain was disabled
+Update 0.6.4
+- Added V1 Animated Moon support (download the Miscellaneous file for setup info and examples)
+- Added DX10 support for DDS Moon/Milky Way textures
+- Added mipmap support for DDS Moon/Milky Way textures
+- Added update detection for downloaded community presets
+- Increased the height of the community preset browser UI
+- Improved validation for unsupported DDS mip chains
+- Fixed a bug where presets using the "Match In-Game Clock" setting did not apply properly when selected
+- Preset upload and My Uploads sections now collapse by default
+Update 0.6.3
+- Added a "Match In-Game Clock" box (for use with Progress Visual Time)
+- Added Cloud Visible Range slider
+- Added Snow Accumulation Boundary A slider
+- Added Snow Accumulation Boundary B slider
+- Added Snow Coverage Threshold slider
+- Moved Rain/Dust/Snow settings to their own new "Weather" tab
+Update 0.6.2
+- Added Community Preset browser (see below for more info)
+- Fixed Visual Time Override flickering when disabling Crimson Weather
+Update 0.6.1
+- Added a Time Schedule system
+- Added Mie Scatter Color option
+- Added Cloud Flow slider
+- Added Rayleigh Height slider
+- Added Ozone Ratio slider
+- Added Cloud Fade Range slider
+- Added Cloud Detail Ratio slider
+- Added config auto-saving
+- Fixed a data race in slot.status
+- Fixed a bug from the 0.6.0 optimization where the Advance Interval was delayed by 0.20 seconds
+- Fixed a bug where the No Rain/Dust/Snow box could still produce dust
+Update 0.6.0
+- Fixed performance issues (hopefully)
+- Added Sunlight Intensity slider
+- Added Moonlight Intensity slider
+- Added Cloud Alpha slider
+- Added Cloud Phase Front slider
+- Added Cloud Scattering Coefficient slider
+- Added Rayleigh Scattering Color option
+- Added Volume Fog Scatter Color option
+- Added Aerosol Height slider
+- Added Aerosol Density slider
+- Added Aerosol Absorption slider
+- Added the ability to collapse both the Milky Way and Moon texture-switcher UIs
+Update 0.5.9
+- Added hook control (If you experience FPS drops, try disabling the hooks you don't need in the Status tab. This is a temporary workaround until I return to fix it properly.)
+- Fixed an issue where texture-switching was unavailable on some machines
+Update 0.5.8
+- Added Progress Visual Time box with an Advance Interval slider
+- Added Extended Slider Range box
+- Improved the texture-switching gate
+Update 0.5.7
+- Added Milky Way texture switching (now we just need someone to make textures for it :D)
+- Added ability to right click sliders to directly type values
+- Improved Moon/Milky Way texture switching stability
+- Moon/Milky Way texture folders are now created automatically if missing
+- Improved Thunder slider stability
+- Code cleanup
+Update 0.5.6
+- Moon texture switching now also supports .png
+Update 0.5.5
+- Added runtime moon texture switching (see below for more info)
+- Fixed region override sometimes acting as a global preset
+Update 0.5.3
+- Added Thunder slider
+- Added No Rain box
+- Added No Dust box
+- Added No Snow box
+- Sliders now show "NATIVE" when they are not overriding game values
+- Fixed crash issues when using the Snow slider
+- Improved Weather tab UI
+Update 0.5.2
+- Added Celestial tab
+- Added Sun Size slider
+- Added Sun Yaw slider
+- Added Sun Pitch slider
+- Added Moon Size slider
+- Added Moon Yaw slider
+- Added Moon Pitch slider
+- Added Moon Rotation slider
+- Added Night Sky Tilt slider
+- Added Night Sky Phase slider
+- Added No fog box
+- Code cleanup
+Update 0.5.1
+- Updated for 1.06.00
+- Added region override system (you can now set a global preset and also set different preset for each region)
+- Added Auto Start config
+- Added Status tab
+- Improved startup flow
+Update 0.5.0
+- Crimson Weather is now a .addon64, an Ultimate ASI loader is no longer required. But you must now open the ReShade overlay and press "Start Crimson Weather" manually every time you start the game
+- Added Cloud Amount slider (you should now be able to add clouds to scenes with no clouds)
+- Added Experimental Cloud Variation slider
+- Improved Cloud Height slider
+- Improved UI
+- Fixed presets not automatically applying
+Update 0.4.2
+- Updated for 1.05.00
+Update 0.4.1
+- Updated for 1.04.01
+- Reworked the fog slider
+- Improved time slider accuracy
+Update 0.3.0
+- Rewritten to use ReShade as the GUI overlay
+Update 0.2.3
+- Added Mid clouds slider
+- Added High clouds slider
+- Added Experiment tab
+- Expanded Fog and Wind slider range
+- Fixed Cloud Density no longer affecting cloud movement
+- Rain now release back to native weather when set to 0
+- Improved preset loading and compatibility
+- Hardened AOB scanning
+Update 0.2.2
+- Fixed Crashing when using FSR-FG
+- Fixed DualSense support
+Update 0.2.1
+- Fixed Crashing when using FSR-FG
+- Added DualSense support
+- Added Toggle Weather hotkey
+Update 0.2.0
+- Added presets loading and saving
+- Added Show GUI on startup box
+- Added Auto Apply on startup
+- Added individual reset buttons
+- More robust DXGI hook
+- Fixed OptiScaler compatibility
+Update 0.1.8
+- Fixed Reset All button
+- Added Cloud Density slider
+- Added Cloud Height slider
+- Added Controller support
+- Added UI scale slider
+Update 0.1.7
+- Added Visual Time Override (Override game time visually)
+Update 0.1.5
+- Added ImGui GUI
+- Added separate sliders for Rain, Snow, and Dust
+- Removed Cloud sliders (until i got it working properly)
+- Fixed Wind slider
+- Added No wind box
+- Fixed Fog slider
+- Added Force Clear sky box`;
 const ALLOWED_SECTIONS = new Set([
   "Meta", "Weather", "Time", "Cloud", "Experiment", "Celestial", "Atmosphere"
 ]);
@@ -52,8 +204,96 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function addDaysIso(days) {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
 function bad(message, status = 400, details = undefined) {
   return json({ ok: false, error: message, details }, status);
+}
+
+function normalizeVersion(value) {
+  return String(value || "").trim().replace(/^v/i, "").replace(/\s+.*$/, "");
+}
+
+function compareVersions(a, b) {
+  const aa = normalizeVersion(a).split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const bb = normalizeVersion(b).split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const count = Math.max(aa.length, bb.length, 3);
+  for (let i = 0; i < count; i++) {
+    const av = aa[i] || 0;
+    const bv = bb[i] || 0;
+    if (av !== bv) return av > bv ? 1 : -1;
+  }
+  return 0;
+}
+
+function defaultUpdateSettings(env) {
+  return {
+    channel: UPDATE_CHANNEL,
+    latestVersion: normalizeVersion(env.UPDATE_LATEST_VERSION || UPDATE_LATEST_VERSION),
+    downloadPageUrl: sanitizeText(env.UPDATE_DOWNLOAD_PAGE_URL || UPDATE_DOWNLOAD_PAGE_URL, 300),
+    changelog: String(env.UPDATE_CHANGELOG || UPDATE_CHANGELOG),
+    publishedAt: String(env.UPDATE_PUBLISHED_AT || ""),
+    critical: String(env.UPDATE_CRITICAL || "0") === "1",
+    source: "default"
+  };
+}
+
+async function getAppSetting(env, key) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM app_settings WHERE key=?").bind(key).first();
+    return row ? String(row.value || "") : "";
+  } catch {
+    return "";
+  }
+}
+
+async function setAppSetting(env, request, key, value) {
+  await env.DB.prepare(
+    "INSERT INTO app_settings (key,value,updated_at,updated_by) VALUES (?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at, updated_by=excluded.updated_by"
+  ).bind(key, String(value ?? ""), nowIso(), adminIdentity(request, env)).run();
+}
+
+async function getUpdateSettings(env) {
+  const settings = defaultUpdateSettings(env);
+  const rows = await Promise.all([
+    getAppSetting(env, "update.latestVersion"),
+    getAppSetting(env, "update.downloadPageUrl"),
+    getAppSetting(env, "update.changelog"),
+    getAppSetting(env, "update.publishedAt"),
+    getAppSetting(env, "update.critical")
+  ]);
+  if (rows.some((value) => value !== "")) settings.source = "database";
+  if (rows[0]) settings.latestVersion = normalizeVersion(rows[0]);
+  if (rows[1]) settings.downloadPageUrl = sanitizeText(rows[1], 300);
+  if (rows[2]) settings.changelog = String(rows[2]);
+  if (rows[3]) settings.publishedAt = String(rows[3]).slice(0, 80);
+  if (rows[4]) settings.critical = rows[4] === "1" || rows[4] === "true";
+  return settings;
+}
+
+async function updateInfo(request, env) {
+  const url = new URL(request.url);
+  const channel = sanitizeText(url.searchParams.get("channel") || request.headers.get("x-cw-channel") || UPDATE_CHANNEL, 20) || UPDATE_CHANNEL;
+  const currentVersion = normalizeVersion(url.searchParams.get("version") || request.headers.get("x-cw-client-version") || "");
+  const settings = await getUpdateSettings(env);
+  const latestVersion = settings.latestVersion;
+  const updateAvailable = currentVersion ? compareVersions(latestVersion, currentVersion) > 0 : true;
+  return json({
+    ok: true,
+    channel,
+    currentVersion,
+    updateAvailable,
+    version: latestVersion,
+    title: `Crimson Weather ${latestVersion}`,
+    changelog: settings.changelog,
+    downloadPageUrl: settings.downloadPageUrl,
+    publishedAt: settings.publishedAt,
+    critical: settings.critical
+  }, 200, {
+    "cache-control": "public, max-age=300"
+  });
 }
 
 function sanitizeText(value, maxLen) {
@@ -91,6 +331,21 @@ async function hashClientId(env, clientId) {
 
 function clientFingerprint(submitterHash) {
   return submitterHash ? `${submitterHash.slice(0, 12)}...${submitterHash.slice(-6)}` : "";
+}
+
+function withClientFingerprint(row) {
+  return { ...row, client_fingerprint: clientFingerprint(row?.submitter_hash || "") };
+}
+
+function normalizeLimit(value, fallback = 100, max = 500) {
+  const parsed = Number.parseInt(value || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, max);
+}
+
+function likeTerm(value) {
+  const clean = sanitizeText(value, 120);
+  return clean ? `%${clean}%` : "";
 }
 
 async function submitterHashFromRequest(request, env) {
@@ -220,6 +475,18 @@ async function isAdmin(request, env) {
   return hasValidAdminSession(request, env);
 }
 
+function hasAdminLoginKey(request, env, body = undefined) {
+  const expected = String(env.ADMIN_LOGIN_KEY || "");
+  if (!expected) return true;
+  const url = new URL(request.url);
+  const supplied =
+    url.searchParams.get("key") ||
+    request.headers.get("x-cw-admin-login-key") ||
+    (body && body.loginKey) ||
+    "";
+  return String(supplied) === expected;
+}
+
 function adminIdentity(request, env) {
   if (env.ADMIN_TOKEN && (request.headers.get("authorization") || "") === `Bearer ${env.ADMIN_TOKEN}`) return "admin-token";
   return request.headers.get("cf-access-authenticated-user-email") || "admin-session";
@@ -237,7 +504,7 @@ async function readJson(request) {
 
 async function queryApprovedPresets(env) {
   const { results } = await env.DB.prepare(
-    "SELECT id,title,author_name,description,tags_json,sha256,size_bytes,format_version,min_addon_version,downloads,likes,created_at,updated_at,approved_at FROM presets WHERE status='approved' AND update_of='' ORDER BY updated_at DESC"
+    "SELECT id,title,author_name,description,tags_json,sha256,size_bytes,format_version,min_addon_version,downloads,likes,created_at,updated_at,approved_at FROM presets WHERE status='approved' AND update_of='' AND deleted_at IS NULL ORDER BY updated_at DESC"
   ).all();
   return results || [];
 }
@@ -331,7 +598,7 @@ async function submitPreset(request, env) {
 }
 
 async function downloadPreset(request, env, id) {
-  const row = await env.DB.prepare("SELECT id,r2_key,status FROM presets WHERE id=? AND status='approved'").bind(id).first();
+  const row = await env.DB.prepare("SELECT id,r2_key,status FROM presets WHERE id=? AND status='approved' AND deleted_at IS NULL").bind(id).first();
   if (!row) return bad("Preset not found.", 404);
   const object = await env.PRESETS.get(row.r2_key);
   if (!object) return bad("Preset file missing.", 404);
@@ -358,7 +625,7 @@ async function downloadPreset(request, env, id) {
 }
 
 async function toggleLike(request, env, id) {
-  const row = await env.DB.prepare("SELECT id FROM presets WHERE id=? AND status='approved'").bind(id).first();
+  const row = await env.DB.prepare("SELECT id FROM presets WHERE id=? AND status='approved' AND deleted_at IS NULL").bind(id).first();
   if (!row) return bad("Preset not found.", 404);
   const clientId = request.headers.get("x-cw-client-id") || "";
   if (!clientId) return bad("Missing anonymous client id.", 400);
@@ -379,17 +646,66 @@ async function toggleLike(request, env, id) {
 }
 
 async function listSubmissions(env, status) {
-  const allowed = ["all", "pending", "approved", "rejected"].includes(status) ? status : "pending";
-  let stmt;
-  if (allowed === "all") {
-    stmt = env.DB.prepare("SELECT * FROM presets ORDER BY updated_at DESC LIMIT 300");
-  } else if (allowed === "approved") {
-    stmt = env.DB.prepare("SELECT * FROM presets WHERE status='approved' AND update_of='' ORDER BY created_at DESC LIMIT 300");
-  } else {
-    stmt = env.DB.prepare("SELECT * FROM presets WHERE status=? ORDER BY created_at DESC LIMIT 300").bind(allowed);
+  return listAdminPresets(env, new URLSearchParams({ status: status || "pending" }), "submissions");
+}
+
+function adminPresetWhere(searchParams, options = {}) {
+  const where = [];
+  const params = [];
+  const deleted = searchParams.get("deleted") || options.deleted || "active";
+  if (deleted === "trash" || deleted === "1" || deleted === "true") {
+    where.push("deleted_at IS NOT NULL");
+  } else if (deleted !== "all") {
+    where.push("deleted_at IS NULL");
   }
-  const { results } = await stmt.all();
-  return json({ ok: true, submissions: results || [] });
+
+  const status = searchParams.get("status") || options.status || "";
+  if (["pending", "approved", "rejected"].includes(status)) {
+    where.push("status=?");
+    params.push(status);
+  }
+
+  const rootOnly = searchParams.get("rootOnly") || options.rootOnly || "";
+  if (rootOnly === "1" || rootOnly === "true") {
+    where.push("update_of=''");
+  }
+
+  const client = sanitizeText(searchParams.get("client") || "", 80).toLowerCase();
+  if (/^[a-f0-9]{12,64}$/.test(client)) {
+    where.push("submitter_hash LIKE ?");
+    params.push(`${client}%`);
+  }
+
+  const search = likeTerm(searchParams.get("q") || "");
+  if (search) {
+    where.push("(id LIKE ? OR title LIKE ? OR author_name LIKE ? OR description LIKE ? OR submitter_hash LIKE ?)");
+    params.push(search, search, search, search, search);
+  }
+
+  return { where: where.length ? `WHERE ${where.join(" AND ")}` : "", params };
+}
+
+function adminPresetOrder(sort) {
+  switch (sort) {
+    case "created": return "created_at DESC";
+    case "oldest": return "created_at ASC";
+    case "downloads": return "downloads DESC, updated_at DESC";
+    case "likes": return "likes DESC, updated_at DESC";
+    case "title": return "title COLLATE NOCASE ASC";
+    case "delete_after": return "delete_after ASC, updated_at DESC";
+    default: return "updated_at DESC";
+  }
+}
+
+async function listAdminPresets(env, searchParams, responseKey = "presets") {
+  const { where, params } = adminPresetWhere(searchParams);
+  const limit = normalizeLimit(searchParams.get("limit"), 200, 500);
+  const order = adminPresetOrder(searchParams.get("sort") || "");
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM presets ${where} ORDER BY ${order} LIMIT ?`
+  ).bind(...params, limit).all();
+  const rows = (results || []).map(withClientFingerprint);
+  return json({ ok: true, [responseKey]: rows });
 }
 
 async function audit(env, request, action, id, note = "") {
@@ -397,13 +713,129 @@ async function audit(env, request, action, id, note = "") {
     .bind(action, id || "", adminIdentity(request, env), note, nowIso()).run();
 }
 
+async function scalarCount(env, sql, ...params) {
+  const row = await env.DB.prepare(sql).bind(...params).first();
+  return Number(row?.count || 0);
+}
+
+async function adminOverview(env) {
+  const [
+    pending,
+    approved,
+    rejected,
+    deleted,
+    clients,
+    totals,
+    topPresets,
+    newestPending
+  ] = await Promise.all([
+    scalarCount(env, "SELECT COUNT(*) AS count FROM presets WHERE status='pending' AND deleted_at IS NULL"),
+    scalarCount(env, "SELECT COUNT(*) AS count FROM presets WHERE status='approved' AND update_of='' AND deleted_at IS NULL"),
+    scalarCount(env, "SELECT COUNT(*) AS count FROM presets WHERE status='rejected' AND deleted_at IS NULL"),
+    scalarCount(env, "SELECT COUNT(*) AS count FROM presets WHERE deleted_at IS NOT NULL"),
+    scalarCount(env, "SELECT COUNT(DISTINCT submitter_hash) AS count FROM presets WHERE submitter_hash<>''"),
+    env.DB.prepare("SELECT COALESCE(SUM(downloads),0) AS downloads, COALESCE(SUM(likes),0) AS likes, COUNT(*) AS presets FROM presets WHERE deleted_at IS NULL").first(),
+    env.DB.prepare("SELECT id,title,author_name,downloads,likes,status,updated_at FROM presets WHERE update_of='' AND deleted_at IS NULL ORDER BY downloads DESC, likes DESC, updated_at DESC LIMIT 8").all(),
+    env.DB.prepare("SELECT id,title,author_name,created_at,updated_at,submitter_hash,update_of FROM presets WHERE status='pending' AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 8").all()
+  ]);
+  return json({
+    ok: true,
+    counts: {
+      pending,
+      approved,
+      rejected,
+      deleted,
+      clients,
+      presets: Number(totals?.presets || 0),
+      downloads: Number(totals?.downloads || 0),
+      likes: Number(totals?.likes || 0)
+    },
+    topPresets: topPresets.results || [],
+    newestPending: (newestPending.results || []).map(withClientFingerprint)
+  });
+}
+
+async function adminGetUpdateSettings(env) {
+  return json({ ok: true, update: await getUpdateSettings(env) }, 200, { "cache-control": "no-store" });
+}
+
+async function adminSaveUpdateSettings(request, env) {
+  const body = await readJson(request);
+  if (!body) return bad("Invalid JSON.");
+  const latestVersion = normalizeVersion(body.latestVersion || body.version || "");
+  if (!/^\d+(?:\.\d+){1,3}$/.test(latestVersion)) return bad("Version must look like 0.6.5.");
+  const downloadPageUrl = String(body.downloadPageUrl || "").trim();
+  if (!/^https:\/\/[^\s]+$/i.test(downloadPageUrl) || downloadPageUrl.length > 300) return bad("Download URL must be an https URL.");
+  const changelog = String(body.changelog || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  if (!changelog.trim()) return bad("Changelog is required.");
+  if (changelog.length > 50000) return bad("Changelog is too long.");
+  const publishedAt = String(body.publishedAt || "").trim().slice(0, 80);
+  const critical = body.critical ? "1" : "0";
+  await setAppSetting(env, request, "update.latestVersion", latestVersion);
+  await setAppSetting(env, request, "update.downloadPageUrl", downloadPageUrl);
+  await setAppSetting(env, request, "update.changelog", changelog);
+  await setAppSetting(env, request, "update.publishedAt", publishedAt);
+  await setAppSetting(env, request, "update.critical", critical);
+  await audit(env, request, "update-settings", "", `latest=${latestVersion}`);
+  return adminGetUpdateSettings(env);
+}
+
+async function listAdminClients(env, searchParams) {
+  const where = ["p.submitter_hash<>''"];
+  const params = [];
+  const search = likeTerm(searchParams.get("q") || "");
+  if (search) {
+    where.push("(p.submitter_hash LIKE ? OR p.title LIKE ? OR p.author_name LIKE ? OR w.label LIKE ? OR w.note LIKE ?)");
+    params.push(search, search, search, search, search);
+  }
+  const orderName = searchParams.get("sort") || "";
+  const order = orderName === "uploads" ? "upload_count DESC, last_upload DESC"
+    : orderName === "downloads" ? "total_downloads DESC, last_upload DESC"
+    : orderName === "likes" ? "total_likes DESC, last_upload DESC"
+    : "last_upload DESC";
+  const limit = normalizeLimit(searchParams.get("limit"), 200, 500);
+  const { results } = await env.DB.prepare(
+    `SELECT
+       p.submitter_hash,
+       COUNT(*) AS upload_count,
+       SUM(CASE WHEN p.status='pending' AND p.deleted_at IS NULL THEN 1 ELSE 0 END) AS pending_count,
+       SUM(CASE WHEN p.status='approved' AND p.update_of='' AND p.deleted_at IS NULL THEN 1 ELSE 0 END) AS approved_count,
+       SUM(CASE WHEN p.status='rejected' AND p.deleted_at IS NULL THEN 1 ELSE 0 END) AS rejected_count,
+       SUM(CASE WHEN p.deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS deleted_count,
+       COALESCE(SUM(p.downloads),0) AS total_downloads,
+       COALESCE(SUM(p.likes),0) AS total_likes,
+       MIN(p.created_at) AS first_upload,
+       MAX(p.updated_at) AS last_upload,
+       COALESCE(w.label,'') AS label,
+       COALESCE(w.note,'') AS note,
+       COALESCE(w.auto_approve,0) AS auto_approve,
+       w.updated_at AS whitelist_updated_at
+     FROM presets p
+     LEFT JOIN client_whitelist w ON w.submitter_hash=p.submitter_hash
+     WHERE ${where.join(" AND ")}
+     GROUP BY p.submitter_hash
+     ORDER BY ${order}
+     LIMIT ?`
+  ).bind(...params, limit).all();
+  return json({ ok: true, clients: (results || []).map(withClientFingerprint) });
+}
+
+async function listAdminAudit(env, searchParams) {
+  const limit = normalizeLimit(searchParams.get("limit"), 100, 300);
+  const { results } = await env.DB.prepare("SELECT * FROM admin_audit ORDER BY created_at DESC LIMIT ?").bind(limit).all();
+  return json({ ok: true, audit: results || [] });
+}
+
 async function approveSubmission(request, env, id) {
-  const row = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND status='pending'").bind(id).first();
+  const row = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND status='pending' AND deleted_at IS NULL").bind(id).first();
   if (!row) return bad("Pending submission not found.", 404);
   const object = await env.PRESETS.get(row.r2_key);
   if (!object) return bad("Pending preset file missing.", 404);
   if (row.update_of) {
-    const target = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND update_of=''").bind(row.update_of).first();
+    const target = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND update_of='' AND deleted_at IS NULL").bind(row.update_of).first();
     if (!target) return bad("Target preset for update was not found.", 404);
     const approvedKey = `approved/${target.id}/preset.ini`;
     await env.PRESETS.put(approvedKey, object.body, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
@@ -431,20 +863,111 @@ async function approveSubmission(request, env, id) {
 
 async function rejectSubmission(request, env, id) {
   const body = await readJson(request) || {};
-  const row = await env.DB.prepare("SELECT id FROM presets WHERE id=? AND status='pending'").bind(id).first();
+  const row = await env.DB.prepare("SELECT id FROM presets WHERE id=? AND status='pending' AND deleted_at IS NULL").bind(id).first();
   if (!row) return bad("Pending submission not found.", 404);
   await env.DB.prepare("UPDATE presets SET status='rejected', rejected_at=?, updated_at=? WHERE id=?").bind(nowIso(), nowIso(), id).run();
   await audit(env, request, "reject", id, sanitizeText(body.note, 300));
   return json({ ok: true, id, status: "rejected" });
 }
 
+async function softDeletePreset(request, env, id, reason = "") {
+  const row = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND deleted_at IS NULL").bind(id).first();
+  if (!row) return bad("Preset not found.", 404);
+  const deletedAt = nowIso();
+  const deleteAfter = addDaysIso(7);
+  const note = sanitizeText(reason || row.status || "", 300);
+  await env.DB.prepare(
+    "UPDATE presets SET deleted_at=?, delete_after=?, deleted_by=?, delete_reason=?, updated_at=? WHERE id=?"
+  ).bind(deletedAt, deleteAfter, adminIdentity(request, env), note, deletedAt, id).run();
+  await audit(env, request, "soft-delete", id, note);
+  if (row.status === "approved" && !row.update_of) await rebuildCatalog(env);
+  return json({ ok: true, id, deleted: true, deletedAt, deleteAfter });
+}
+
+async function restorePresetAdmin(request, env, id) {
+  const row = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND deleted_at IS NOT NULL").bind(id).first();
+  if (!row) return bad("Deleted preset not found.", 404);
+  await env.DB.prepare(
+    "UPDATE presets SET deleted_at=NULL, delete_after=NULL, deleted_by='', delete_reason='', updated_at=? WHERE id=?"
+  ).bind(nowIso(), id).run();
+  await audit(env, request, "restore", id, row.delete_reason || "");
+  if (row.status === "approved" && !row.update_of) await rebuildCatalog(env);
+  return json({ ok: true, id, restored: true });
+}
+
+async function deletePresetFiles(env, id, row) {
+  const keys = new Set([
+    row?.r2_key,
+    `pending/${id}/preset.ini`,
+    `approved/${id}/preset.ini`
+  ]);
+  for (const key of keys) {
+    if (key) await env.PRESETS.delete(key);
+  }
+}
+
+async function purgePresetAdmin(request, env, id, action = "purge") {
+  const row = await env.DB.prepare("SELECT * FROM presets WHERE id=?").bind(id).first();
+  if (!row) return bad("Preset not found.", 404);
+  await deletePresetFiles(env, id, row);
+  await env.DB.prepare("DELETE FROM preset_likes WHERE preset_id=?").bind(id).run();
+  await env.DB.prepare("DELETE FROM preset_downloads_daily WHERE preset_id=?").bind(id).run();
+  await env.DB.prepare("DELETE FROM presets WHERE id=?").bind(id).run();
+  await audit(env, request, action, id, row.status || "");
+  if (row.status === "approved" && !row.update_of) await rebuildCatalog(env);
+  return json({ ok: true, id, purged: true });
+}
+
+async function purgeExpiredDeletedPresets(env) {
+  const now = nowIso();
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM presets WHERE deleted_at IS NOT NULL AND delete_after IS NOT NULL AND delete_after<=? ORDER BY delete_after ASC LIMIT 100"
+  ).bind(now).all();
+  const rows = results || [];
+  let purged = 0;
+  let rebuilt = false;
+  for (const row of rows) {
+    await deletePresetFiles(env, row.id, row);
+    await env.DB.prepare("DELETE FROM preset_likes WHERE preset_id=?").bind(row.id).run();
+    await env.DB.prepare("DELETE FROM preset_downloads_daily WHERE preset_id=?").bind(row.id).run();
+    await env.DB.prepare("DELETE FROM presets WHERE id=?").bind(row.id).run();
+    await env.DB.prepare("INSERT INTO admin_audit (action,preset_id,admin_email_or_token,note,created_at) VALUES (?,?,?,?,?)")
+      .bind("auto-purge", row.id, "scheduled-worker", row.status || "", nowIso()).run();
+    if (row.status === "approved" && !row.update_of) rebuilt = true;
+    purged += 1;
+  }
+  if (rebuilt) await rebuildCatalog(env);
+  return { ok: true, purged };
+}
+
+async function whitelistSubmitterFromPreset(env, request, id, label = "", note = "") {
+  const row = await env.DB.prepare("SELECT id,title,author_name,submitter_hash FROM presets WHERE id=?").bind(id).first();
+  if (!row || !row.submitter_hash) return bad("Preset submitter was not found.", 404);
+  const now = nowIso();
+  const finalLabel = sanitizeText(label, 80) || row.author_name || row.title || id;
+  const finalNote = sanitizeText(note, 300);
+  await env.DB.prepare(
+    "INSERT INTO client_whitelist (submitter_hash,label,auto_approve,note,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(submitter_hash) DO UPDATE SET label=excluded.label,auto_approve=excluded.auto_approve,note=excluded.note,updated_at=excluded.updated_at"
+  ).bind(row.submitter_hash, finalLabel, 1, finalNote, now, now).run();
+  await audit(env, request, "whitelist-from-preset", id, clientFingerprint(row.submitter_hash));
+  return json({ ok: true, submitterHash: row.submitter_hash, fingerprint: clientFingerprint(row.submitter_hash), label: finalLabel });
+}
+
 async function batchSubmissions(request, env) {
   const body = await readJson(request);
   const approvals = Array.isArray(body?.approve) ? body.approve : [];
   const rejections = Array.isArray(body?.reject) ? body.reject : [];
+  const deletions = Array.isArray(body?.delete) ? body.delete : [];
+  const restores = Array.isArray(body?.restore) ? body.restore : [];
+  const purges = Array.isArray(body?.purge) ? body.purge : [];
+  const whitelists = Array.isArray(body?.whitelist) ? body.whitelist : [];
   const results = [];
   for (const id of approvals) results.push(await (await approveSubmission(request, env, String(id))).json());
   for (const id of rejections) results.push(await (await rejectSubmission(request, env, String(id))).json());
+  for (const id of deletions) results.push(await (await softDeletePreset(request, env, String(id), "batch")).json());
+  for (const id of restores) results.push(await (await restorePresetAdmin(request, env, String(id))).json());
+  for (const id of purges) results.push(await (await purgePresetAdmin(request, env, String(id), "batch-purge")).json());
+  for (const id of whitelists) results.push(await (await whitelistSubmitterFromPreset(env, request, String(id))).json());
   return json({ ok: true, results });
 }
 
@@ -455,7 +978,7 @@ async function adminPresetDetail(env, id) {
   const iniText = object ? await object.text() : "";
   return json({
     ok: true,
-    preset: row,
+    preset: withClientFingerprint(row),
     iniText,
     scan: iniText ? scanPresetIni(iniText) : { ok: false, errors: ["Preset file missing."], warnings: [] }
   });
@@ -475,40 +998,15 @@ async function adminPresetIni(env, id) {
 }
 
 async function deletePresetAdmin(request, env, id) {
-  const row = await env.DB.prepare("SELECT * FROM presets WHERE id=?").bind(id).first();
-  if (!row) return bad("Preset not found.", 404);
-  const keys = new Set([
-    row.r2_key,
-    `pending/${id}/preset.ini`,
-    `approved/${id}/preset.ini`
-  ]);
-  for (const key of keys) {
-    if (key) await env.PRESETS.delete(key);
-  }
-  await env.DB.prepare("DELETE FROM preset_likes WHERE preset_id=?").bind(id).run();
-  await env.DB.prepare("DELETE FROM preset_downloads_daily WHERE preset_id=?").bind(id).run();
-  await audit(env, request, "delete", id, row.status || "");
-  await env.DB.prepare("DELETE FROM presets WHERE id=?").bind(id).run();
-  if (row.status === "approved") await rebuildCatalog(env);
-  return json({ ok: true, id, deleted: true });
-}
-
-async function deletePresetFiles(env, id, row) {
-  const keys = new Set([
-    row?.r2_key,
-    `pending/${id}/preset.ini`,
-    `approved/${id}/preset.ini`
-  ]);
-  for (const key of keys) {
-    if (key) await env.PRESETS.delete(key);
-  }
+  const body = await readJson(request) || {};
+  return softDeletePreset(request, env, id, sanitizeText(body.reason || "admin", 300));
 }
 
 async function listMyPresets(request, env) {
   const submitterHash = await submitterHashFromRequest(request, env);
   if (!submitterHash) return bad("Missing anonymous client id.", 400);
   const { results } = await env.DB.prepare(
-    "SELECT id,title,author_name,description,tags_json,status,update_of,downloads,likes,created_at,updated_at,approved_at,rejected_at FROM presets WHERE submitter_hash=? AND update_of='' ORDER BY updated_at DESC LIMIT 100"
+    "SELECT id,title,author_name,description,tags_json,status,update_of,downloads,likes,created_at,updated_at,approved_at,rejected_at FROM presets WHERE submitter_hash=? AND update_of='' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 100"
   ).bind(submitterHash).all();
   return json({ ok: true, clientFingerprint: clientFingerprint(submitterHash), presets: results || [] });
 }
@@ -516,12 +1014,12 @@ async function listMyPresets(request, env) {
 async function deleteMyPreset(request, env, id) {
   const submitterHash = await submitterHashFromRequest(request, env);
   if (!submitterHash) return bad("Missing anonymous client id.", 400);
-  const row = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND submitter_hash=?").bind(id, submitterHash).first();
+  const row = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND submitter_hash=? AND deleted_at IS NULL").bind(id, submitterHash).first();
   if (!row) return bad("Preset not found for this client.", 404);
-  await deletePresetFiles(env, id, row);
-  await env.DB.prepare("DELETE FROM preset_likes WHERE preset_id=?").bind(id).run();
-  await env.DB.prepare("DELETE FROM preset_downloads_daily WHERE preset_id=?").bind(id).run();
-  await env.DB.prepare("DELETE FROM presets WHERE id=?").bind(id).run();
+  const deletedAt = nowIso();
+  await env.DB.prepare(
+    "UPDATE presets SET deleted_at=?, delete_after=?, deleted_by=?, delete_reason=?, updated_at=? WHERE id=?"
+  ).bind(deletedAt, addDaysIso(7), `client:${clientFingerprint(submitterHash)}`, "client delete", deletedAt, id).run();
   if (row.status === "approved" && !row.update_of) await rebuildCatalog(env);
   return json({ ok: true, id, deleted: true });
 }
@@ -529,7 +1027,7 @@ async function deleteMyPreset(request, env, id) {
 async function updateMyPreset(request, env, id) {
   const submitterHash = await submitterHashFromRequest(request, env);
   if (!submitterHash) return bad("Missing anonymous client id.", 400);
-  const target = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND submitter_hash=? AND update_of=''").bind(id, submitterHash).first();
+  const target = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND submitter_hash=? AND update_of='' AND deleted_at IS NULL").bind(id, submitterHash).first();
   if (!target) return bad("Preset not found for this client.", 404);
   const body = await readJson(request);
   if (!body) return bad("Invalid JSON.");
@@ -577,7 +1075,7 @@ async function updateMyPreset(request, env, id) {
 
 async function listWhitelist(env) {
   const { results } = await env.DB.prepare("SELECT * FROM client_whitelist ORDER BY updated_at DESC LIMIT 200").all();
-  return json({ ok: true, clients: results || [] });
+  return json({ ok: true, clients: (results || []).map(withClientFingerprint) });
 }
 
 async function addWhitelist(request, env) {
@@ -605,16 +1103,7 @@ async function addWhitelist(request, env) {
 
 async function whitelistFromPreset(request, env, id) {
   const body = await readJson(request) || {};
-  const row = await env.DB.prepare("SELECT id,title,author_name,submitter_hash FROM presets WHERE id=?").bind(id).first();
-  if (!row || !row.submitter_hash) return bad("Preset submitter was not found.", 404);
-  const now = nowIso();
-  const label = sanitizeText(body.label, 80) || row.author_name || row.title || id;
-  const note = sanitizeText(body.note, 300);
-  await env.DB.prepare(
-    "INSERT INTO client_whitelist (submitter_hash,label,auto_approve,note,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(submitter_hash) DO UPDATE SET label=excluded.label,auto_approve=excluded.auto_approve,note=excluded.note,updated_at=excluded.updated_at"
-  ).bind(row.submitter_hash, label, 1, note, now, now).run();
-  await audit(env, request, "whitelist-from-preset", id, clientFingerprint(row.submitter_hash));
-  return json({ ok: true, submitterHash: row.submitter_hash, fingerprint: clientFingerprint(row.submitter_hash), label });
+  return whitelistSubmitterFromPreset(env, request, id, body.label || "", body.note || "");
 }
 
 async function deleteWhitelist(request, env, submitterHash) {
@@ -671,7 +1160,7 @@ function zipStore(files) {
 }
 
 async function exportPending(env) {
-  const { results } = await env.DB.prepare("SELECT * FROM presets WHERE status='pending' ORDER BY created_at ASC").all();
+  const { results } = await env.DB.prepare("SELECT * FROM presets WHERE status='pending' AND deleted_at IS NULL ORDER BY created_at ASC").all();
   const rows = results || [];
   const files = [{ name: "manifest.json", data: JSON.stringify({ exportedAt: nowIso(), submissions: rows }, null, 2) }];
   for (const row of rows) {
@@ -692,6 +1181,7 @@ async function exportPending(env) {
 
 async function loginAdmin(request, env) {
   const body = await readJson(request);
+  if (!hasAdminLoginKey(request, env, body)) return text("Not found.", 404);
   if (!env.ADMIN_TOKEN || !body || body.token !== env.ADMIN_TOKEN) {
     return bad("Invalid admin token.", 401);
   }
@@ -716,91 +1206,129 @@ const ADMIN_LOGIN_HTML = `<!doctype html>
 <button onclick="login()">Log In</button>
 <p id="msg" class="err"></p>
 <script>
-async function login(){const token=document.getElementById('token').value; const r=await fetch('/api/v1/admin/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token})}); if(r.ok){location.href='/admin';return;} document.getElementById('msg').textContent=await r.text();}
+const loginKey=new URLSearchParams(location.search).get('key')||'';
+async function login(){const token=document.getElementById('token').value; const r=await fetch('/api/v1/admin/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,loginKey})}); if(r.ok){location.href='/admin';return;} document.getElementById('msg').textContent=await r.text();}
 </script></body></html>`;
 
 const ADMIN_HTML = `<!doctype html>
-<html><head><meta charset="utf-8"><title>Crimson Weather Community Presets</title>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Crimson Weather Admin</title>
 <style>
-:root{color-scheme:dark}body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#111;color:#eee}main{max-width:1180px;margin:0 auto;padding:22px}button,input,select,textarea{font:inherit}button{margin:2px;padding:6px 10px;background:#2d4778;color:#fff;border:1px solid #5672aa;cursor:pointer}button.danger{background:#6b2424;border-color:#a64e4e}button.secondary{background:#252525;border-color:#555}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.row{border:1px solid #333;padding:12px;margin:10px 0;background:#181818}.row h3{margin:0 0 6px}.meta{color:#aaa;font-size:12px}.stats{float:right;color:#ddd}.pill{display:inline-block;padding:2px 7px;margin-left:6px;border:1px solid #555;background:#222;color:#ddd}.empty{color:#aaa;margin:16px 0}pre,textarea{width:100%;box-sizing:border-box;background:#0c0c0c;color:#eee;border:1px solid #333;padding:10px;white-space:pre-wrap}textarea{height:120px}.detail{position:fixed;inset:24px;background:#151515;border:1px solid #555;padding:16px;overflow:auto;box-shadow:0 16px 60px #000}.detail[hidden]{display:none}.detail header{display:flex;justify-content:space-between;gap:12px;align-items:center}.notice{color:#ffcf8a}
+:root{color-scheme:dark;--bg:#0f1013;--panel:#181a1f;--panel2:#20232a;--line:#343842;--text:#f2f4f8;--muted:#aeb6c2;--accent:#5d7fc4;--good:#5fb980;--warn:#d3aa55;--bad:#c76565}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Segoe UI,Arial,sans-serif}button,input,select,textarea{font:inherit}button{border:1px solid #6684bf;background:#344f82;color:#fff;padding:7px 11px;cursor:pointer}button.secondary{background:#242832;border-color:#4b5362}button.danger{background:#6b2929;border-color:#a84f4f}button.good{background:#2e6845;border-color:#58a375}button:disabled{opacity:.45;cursor:not-allowed}input,select,textarea{background:#101218;color:var(--text);border:1px solid var(--line);padding:7px 9px}main{max-width:1480px;margin:0 auto;padding:18px}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.top h1{font-size:22px;margin:0}.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 16px}.tab{background:#1d2129;border-color:#3d4656}.tab.active{background:#3a568c;border-color:#6f8ccc}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.card,.panel{background:var(--panel);border:1px solid var(--line);padding:12px}.card b{font-size:24px;display:block}.muted{color:var(--muted);font-size:12px}.message{min-height:20px;color:#ffcf8a;margin:8px 0}.table{width:100%;border-collapse:collapse;background:var(--panel)}th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top}th{background:var(--panel2);color:#dfe6ef;position:sticky;top:0}tr:hover td{background:#1b1f27}.pill{display:inline-block;border:1px solid #555f70;background:#252a34;padding:1px 6px;margin-left:5px;color:#dce4ef}.pending{border-color:var(--warn);color:#ffd991}.approved{border-color:var(--good);color:#a9e8bd}.rejected,.deleted{border-color:var(--bad);color:#ffb0b0}.drawer{position:fixed;inset:20px;background:#14161b;border:1px solid #5d6574;box-shadow:0 18px 70px #000;z-index:5;padding:16px;overflow:auto}.drawer[hidden],section[hidden]{display:none}.drawer header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.split{display:grid;grid-template-columns:minmax(280px,420px) 1fr;gap:12px}pre{white-space:pre-wrap;overflow:auto;background:#0b0d11;border:1px solid #303541;padding:10px;max-height:520px}.right{text-align:right}.empty{padding:18px;color:var(--muted)}.nowrap{white-space:nowrap}.search{min-width:280px}.dangerText{color:#ffb0b0}.clientHash{font-family:Consolas,monospace;font-size:12px;color:#c8d4e4}
 </style></head>
 <body><main>
-<h1>Crimson Weather Community Presets</h1>
-<div class="toolbar">
-  <select id="status" onchange="load()"><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="all">All</option></select>
-  <button onclick="load()" class="secondary">Refresh</button>
-  <a href="/api/v1/admin/submissions/export.zip"><button class="secondary">Download Pending ZIP</button></a>
-  <button onclick="rebuild()" class="secondary">Rebuild Catalog</button>
-  <button onclick="logout()" class="secondary">Log Out</button>
+<div class="top"><h1>Crimson Weather Community Admin</h1><div><button class="secondary" data-action="rebuild">Rebuild Catalog</button> <a href="/api/v1/admin/submissions/export.zip"><button class="secondary">Download Pending ZIP</button></a> <button class="secondary" data-action="logout">Log Out</button></div></div>
+<div class="tabs">
+  <button class="tab active" data-tab="dashboard">Dashboard</button>
+  <button class="tab" data-tab="review">Review Queue</button>
+  <button class="tab" data-tab="presets">Presets</button>
+  <button class="tab" data-tab="clients">Clients</button>
+  <button class="tab" data-tab="update">Update</button>
+  <button class="tab" data-tab="trash">Trash</button>
+  <button class="tab" data-tab="audit">Audit</button>
 </div>
-<h2>Trusted Clients</h2>
-<div class="toolbar">
-  <input id="wlClientId" placeholder="Raw ClientId from addon" style="min-width:320px;background:#0c0c0c;color:#eee;border:1px solid #333;padding:7px">
-  <input id="wlLabel" placeholder="Label" style="min-width:180px;background:#0c0c0c;color:#eee;border:1px solid #333;padding:7px">
-  <button onclick="addWhitelist()">Whitelist ClientId</button>
-  <button onclick="loadWhitelist()" class="secondary">Refresh Trusted</button>
-</div>
-<div id="whitelist" class="meta">Loading trusted clients...</div>
-<h2>Presets</h2>
-<div id="message" class="notice"></div>
-<div id="list">Loading...</div>
-<section id="detail" class="detail" hidden>
-  <header><h2 id="detailTitle"></h2><button onclick="closeDetail()" class="secondary">Close</button></header>
-  <div id="detailMeta" class="meta"></div>
-  <h3>Metadata</h3>
-  <pre id="detailJson"></pre>
-  <h3>INI Content</h3>
-  <pre id="detailIni"></pre>
-  <h3>Deterministic Scan</h3>
-  <pre id="detailScan"></pre>
+<div id="message" class="message"></div>
+
+<section id="dashboard">
+  <div id="cards" class="grid"></div>
+  <div class="split" style="margin-top:12px">
+    <div class="panel"><h2>Newest Pending</h2><div id="dashPending"></div></div>
+    <div class="panel"><h2>Top Presets</h2><div id="dashTop"></div></div>
+  </div>
+</section>
+
+<section id="review" hidden>
+  <div class="toolbar"><button class="good" data-bulk="approve">Approve Selected</button><button class="secondary" data-bulk="reject">Reject Selected</button><button class="danger" data-bulk="delete">Delete Selected</button><button class="secondary" data-action="refresh">Refresh</button></div>
+  <div id="reviewTable"></div>
+</section>
+
+<section id="presets" hidden>
+  <div class="toolbar"><input id="presetSearch" class="search" placeholder="Search title, author, id, client..."><select id="presetStatus"><option value="">All active</option><option value="approved">Approved</option><option value="pending">Pending</option><option value="rejected">Rejected</option></select><select id="presetSort"><option value="updated">Updated</option><option value="created">Created</option><option value="downloads">Downloads</option><option value="likes">Likes</option><option value="title">Title</option></select><button class="secondary" data-action="loadPresets">Search</button></div>
+  <div id="presetTable"></div>
+</section>
+
+<section id="clients" hidden>
+  <div class="toolbar"><input id="clientSearch" class="search" placeholder="Search client hash, label, author..."><select id="clientSort"><option value="last">Last upload</option><option value="uploads">Uploads</option><option value="downloads">Downloads</option><option value="likes">Likes</option></select><button class="secondary" data-action="loadClients">Search</button></div>
+  <div class="panel"><h2>Whitelist Client</h2><div class="toolbar"><input id="wlClientId" class="search" placeholder="Raw ClientId or submitter hash"><input id="wlLabel" placeholder="Label"><input id="wlNote" placeholder="Note"><button data-action="addWhitelist">Whitelist</button></div></div>
+  <div id="clientTable" style="margin-top:12px"></div>
+</section>
+
+<section id="update" hidden>
+  <div class="panel">
+    <h2>Addon Update Notice</h2>
+    <p class="muted">This controls what the addon sees in the overlay header. Saving here updates /api/v1/update without changing addon code.</p>
+    <div class="toolbar">
+      <label>Latest Version <input id="updateVersion" placeholder="0.6.5"></label>
+      <label>Published <input id="updatePublished" placeholder="2026-05-22"></label>
+      <label><input id="updateCritical" type="checkbox"> Critical</label>
+    </div>
+    <div class="toolbar">
+      <label style="flex:1">Download URL <input id="updateUrl" style="width:100%" placeholder="https://www.nexusmods.com/crimsondesert/mods/632?tab=files"></label>
+    </div>
+    <textarea id="updateChangelog" spellcheck="false" style="width:100%;min-height:520px;font-family:Consolas,monospace"></textarea>
+    <div class="toolbar">
+      <button class="good" data-action="saveUpdate">Save Update Notice</button>
+      <button class="secondary" data-action="loadUpdate">Reload</button>
+      <span id="updateSource" class="muted"></span>
+    </div>
+  </div>
+</section>
+
+<section id="trash" hidden>
+  <div class="toolbar"><input id="trashSearch" class="search" placeholder="Search trash..."><button class="secondary" data-action="loadTrash">Search</button><button class="secondary" data-bulk="restore">Restore Selected</button><button class="danger" data-bulk="purge">Purge Selected</button></div>
+  <div id="trashTable"></div>
+</section>
+
+<section id="audit" hidden>
+  <div class="toolbar"><button class="secondary" data-action="loadAudit">Refresh</button></div>
+  <div id="auditTable"></div>
+</section>
+
+<section id="detail" class="drawer" hidden>
+  <header><div><h2 id="detailTitle"></h2><div id="detailMeta" class="muted"></div></div><button class="secondary" data-action="closeDetail">Close</button></header>
+  <div class="split"><div><h3>Metadata</h3><pre id="detailJson"></pre><h3>Scan</h3><pre id="detailScan"></pre></div><div><h3>INI Content</h3><pre id="detailIni"></pre></div></div>
 </section>
 </main>
 <script>
-let currentStatus='pending';
-async function api(path, opts){const r=await fetch(path,opts); if(!r.ok) throw new Error(await r.text()); return r.json();}
-function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
-function msg(text){document.getElementById('message').textContent=text||'';}
-function rowHtml(row){
-  const status='<span class="pill">'+esc(row.status)+'</span>';
-  const stats='<span class="stats">'+Number(row.downloads||0)+' downloads | '+Number(row.likes||0)+' likes</span>';
-  const clientHash=String(row.submitter_hash||'');
-  const clientInfo=clientHash?'<div class=meta>Client hash '+esc(clientHash)+' <button onclick="whitelistPreset(\\''+row.id+'\\')" class="secondary">Whitelist Submitter</button></div>':'';
-  const actions=[
-    '<button onclick="viewPreset(\\''+row.id+'\\')" class="secondary">View Content</button>',
-    row.status==='pending'?'<button onclick="approve(\\''+row.id+'\\')">Approve</button>':'',
-    row.status==='pending'?'<button onclick="rejectOne(\\''+row.id+'\\')" class="secondary">Reject</button>':'',
-    '<button onclick="deleteOne(\\''+row.id+'\\')" class="danger">Delete</button>'
-  ].filter(Boolean).join(' ');
-  const updateOf=row.update_of?'<div class=meta>Update for '+esc(row.update_of)+'</div>':'';
-  return '<div class=row>'+stats+'<h3>'+esc(row.title)+status+'</h3><div class=meta>'+esc(row.id)+' by '+esc(row.author_name)+' | created '+esc(row.created_at)+' | updated '+esc(row.updated_at)+'</div>'+updateOf+clientInfo+'<p>'+esc(row.description||'')+'</p><p>'+actions+'</p></div>';
-}
-async function load(){
-  currentStatus=document.getElementById('status').value;
-  msg('');
-  const data=await api('/api/v1/admin/submissions?status='+encodeURIComponent(currentStatus));
-  document.getElementById('list').innerHTML=data.submissions.length?data.submissions.map(rowHtml).join(''):'<p class="empty">No presets here.</p>';
-}
-async function viewPreset(id){
-  const data=await api('/api/v1/admin/presets/'+encodeURIComponent(id));
-  document.getElementById('detailTitle').textContent=data.preset.title+' by '+data.preset.author_name;
-  document.getElementById('detailMeta').textContent=data.preset.id+' | '+data.preset.status+' | '+data.preset.r2_key;
-  document.getElementById('detailJson').textContent=JSON.stringify(data.preset,null,2);
-  document.getElementById('detailIni').textContent=data.iniText||'(missing file)';
-  document.getElementById('detailScan').textContent=JSON.stringify(data.scan,null,2);
-  document.getElementById('detail').hidden=false;
-}
-function closeDetail(){document.getElementById('detail').hidden=true;}
-async function approve(id){await api('/api/v1/admin/submissions/'+id+'/approve',{method:'POST'}); msg('Approved '+id); load();}
-async function rejectOne(id){const note=prompt('Reject note?')||''; await api('/api/v1/admin/submissions/'+id+'/reject',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note})}); msg('Rejected '+id); load();}
-async function deleteOne(id){if(!confirm('Delete preset '+id+' from D1 and R2? This removes it from the public catalog.'))return; await api('/api/v1/admin/presets/'+encodeURIComponent(id),{method:'DELETE'}); msg('Deleted '+id); closeDetail(); load();}
-async function loadWhitelist(){const data=await api('/api/v1/admin/whitelist'); document.getElementById('whitelist').innerHTML=data.clients.length?data.clients.map(c=>'<div>'+esc(c.label||'(unlabeled)')+' | '+esc(c.submitter_hash)+' | auto '+Number(c.auto_approve||0)+' <button onclick="deleteWhitelist(\\''+c.submitter_hash+'\\')" class="danger">Remove</button></div>').join(''):'No trusted clients yet.';}
-async function addWhitelist(){const clientId=document.getElementById('wlClientId').value; const label=document.getElementById('wlLabel').value; await api('/api/v1/admin/whitelist',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({clientId,label,autoApprove:true})}); document.getElementById('wlClientId').value=''; msg('Client whitelisted'); loadWhitelist();}
-async function whitelistPreset(id){const label=prompt('Trusted label?')||''; await api('/api/v1/admin/whitelist/from-preset/'+encodeURIComponent(id),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label})}); msg('Submitter whitelisted'); loadWhitelist();}
-async function deleteWhitelist(hash){if(!confirm('Remove trusted client?'))return; await api('/api/v1/admin/whitelist/'+encodeURIComponent(hash),{method:'DELETE'}); msg('Trusted client removed'); loadWhitelist();}
-async function rebuild(){await api('/api/v1/admin/catalog/rebuild',{method:'POST'}); msg('Catalog rebuilt');}
-async function logout(){await api('/api/v1/admin/logout',{method:'POST'}); location.reload();}
-load().catch(e=>document.getElementById('list').textContent=e.message);
-loadWhitelist().catch(e=>document.getElementById('whitelist').textContent=e.message);
+const state={tab:'dashboard',selected:new Set()};
+const qs=(s)=>document.querySelector(s);
+const qsa=(s)=>Array.from(document.querySelectorAll(s));
+async function api(path,opts){const r=await fetch(path,opts); if(!r.ok) throw new Error(await r.text()); return r.json();}
+function esc(s){return String(s??'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function msg(text){qs('#message').textContent=text||'';}
+function pill(row){const cls=row.deleted_at?'deleted':row.status;return '<span class="pill '+cls+'">'+esc(row.deleted_at?'deleted':row.status)+'</span>';}
+function client(row){return row.client_fingerprint?'<span class="clientHash">'+esc(row.client_fingerprint)+'</span>':'';}
+function selectCell(row){return '<input type="checkbox" class="rowcheck" data-id="'+esc(row.id)+'">';}
+function actionButton(action,id,label,cls){return '<button class="'+(cls||'secondary')+'" data-action="'+action+'" data-id="'+esc(id)+'">'+label+'</button>';}
+function selectedIds(){return qsa('.rowcheck:checked').map(function(x){return x.dataset.id;});}
+function table(headers,rows,empty){if(!rows.length)return '<div class="empty">'+esc(empty||'No rows.')+'</div>';return '<table class="table"><thead><tr>'+headers.map(function(h){return '<th>'+h+'</th>';}).join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table>';}
+async function setTab(tab){state.tab=tab;qsa('.tab').forEach(function(b){b.classList.toggle('active',b.dataset.tab===tab);});qsa('main>section').forEach(function(s){if(s.id!=='detail')s.hidden=s.id!==tab;});msg('');await loadActive();}
+async function loadActive(){if(state.tab==='dashboard')return loadDashboard();if(state.tab==='review')return loadReview();if(state.tab==='presets')return loadPresets();if(state.tab==='clients')return loadClients();if(state.tab==='update')return loadUpdate();if(state.tab==='trash')return loadTrash();if(state.tab==='audit')return loadAudit();}
+async function loadDashboard(){const d=await api('/api/v1/admin/overview');const cards=[['Pending',d.counts.pending],['Approved',d.counts.approved],['Rejected',d.counts.rejected],['Trash',d.counts.deleted],['Clients',d.counts.clients],['Downloads',d.counts.downloads],['Likes',d.counts.likes]];qs('#cards').innerHTML=cards.map(function(c){return '<div class="card"><span class="muted">'+c[0]+'</span><b>'+Number(c[1]||0)+'</b></div>';}).join('');qs('#dashPending').innerHTML=miniPresetList(d.newestPending||[]);qs('#dashTop').innerHTML=miniPresetList(d.topPresets||[]);}
+function miniPresetList(rows){return rows.length?rows.map(function(r){return '<div class="row"><b>'+esc(r.title)+'</b> '+pill(r)+'<div class="muted">'+esc(r.id)+' by '+esc(r.author_name||'')+' '+client(r)+'</div><div class="muted">'+Number(r.downloads||0)+' downloads | '+Number(r.likes||0)+' likes</div></div>';}).join(''):'<div class="empty">Nothing here.</div>';}
+async function loadReview(){const d=await api('/api/v1/admin/presets?status=pending&deleted=active&sort=created&limit=300');qs('#reviewTable').innerHTML=presetTable(d.presets||[],true);}
+async function loadPresets(){const q=encodeURIComponent(qs('#presetSearch').value);const status=encodeURIComponent(qs('#presetStatus').value);const sort=encodeURIComponent(qs('#presetSort').value);const d=await api('/api/v1/admin/presets?q='+q+'&status='+status+'&sort='+sort+'&deleted=active&limit=300');qs('#presetTable').innerHTML=presetTable(d.presets||[],false);}
+async function loadTrash(){const q=encodeURIComponent(qs('#trashSearch').value);const d=await api('/api/v1/admin/presets?q='+q+'&deleted=trash&sort=delete_after&limit=300');qs('#trashTable').innerHTML=presetTable(d.presets||[],true);}
+function presetTable(rows,checks){return table([(checks?'<input type="checkbox" data-action="toggleAll">':''),'Preset','Client','Stats','Dates','Actions'],rows.map(function(r){const actions=[actionButton('view',r.id,'View'),r.status==='pending'&&!r.deleted_at?actionButton('approve',r.id,'Approve','good'):'',r.status==='pending'&&!r.deleted_at?actionButton('reject',r.id,'Reject'):'',!r.deleted_at?actionButton('whitelistPreset',r.id,'Whitelist'):'',!r.deleted_at?actionButton('delete',r.id,'Delete','danger'):'',r.deleted_at?actionButton('restore',r.id,'Restore','good'):'',r.deleted_at?actionButton('purge',r.id,'Purge','danger'):''].filter(Boolean).join(' ');return '<tr><td>'+(checks?selectCell(r):'')+'</td><td><b>'+esc(r.title)+'</b> '+pill(r)+(r.update_of?'<div class="muted">Update for '+esc(r.update_of)+'</div>':'')+'<div class="muted">'+esc(r.id)+' by '+esc(r.author_name||'')+'</div><div>'+esc(r.description||'')+'</div></td><td>'+client(r)+'</td><td class="nowrap">'+Number(r.downloads||0)+' downloads<br>'+Number(r.likes||0)+' likes</td><td class="muted">Created '+esc(r.created_at||'')+'<br>Updated '+esc(r.updated_at||'')+(r.deleted_at?'<br><span class="dangerText">Purge after '+esc(r.delete_after||'')+'</span>':'')+'</td><td class="nowrap">'+actions+'</td></tr>'; }),'No presets found.');}
+async function loadClients(){const q=encodeURIComponent(qs('#clientSearch').value);const sort=encodeURIComponent(qs('#clientSort').value);const d=await api('/api/v1/admin/clients?q='+q+'&sort='+sort+'&limit=300');qs('#clientTable').innerHTML=table(['Client','Whitelist','Uploads','Stats','Actions'],(d.clients||[]).map(function(c){return '<tr><td><div class="clientHash">'+esc(c.client_fingerprint)+'</div><div class="muted">'+esc(c.submitter_hash)+'</div></td><td><b>'+esc(c.label||'(unlabeled)')+'</b><div class="muted">'+(Number(c.auto_approve||0)?'Auto approve':'Not trusted')+'</div><div>'+esc(c.note||'')+'</div></td><td>Approved '+Number(c.approved_count||0)+'<br>Pending '+Number(c.pending_count||0)+'<br>Rejected '+Number(c.rejected_count||0)+'<br>Deleted '+Number(c.deleted_count||0)+'</td><td>'+Number(c.total_downloads||0)+' downloads<br>'+Number(c.total_likes||0)+' likes<br><span class="muted">'+esc(c.last_upload||'')+'</span></td><td>'+actionButton('clientUploads',c.submitter_hash,'View Uploads')+' '+actionButton('removeWhitelist',c.submitter_hash,'Remove Trust','danger')+'</td></tr>'; }),'No clients found.');}
+async function loadUpdate(){const d=await api('/api/v1/admin/update');const u=d.update||{};qs('#updateVersion').value=u.latestVersion||'';qs('#updateUrl').value=u.downloadPageUrl||'';qs('#updatePublished').value=u.publishedAt||'';qs('#updateCritical').checked=!!u.critical;qs('#updateChangelog').value=u.changelog||'';qs('#updateSource').textContent='Source: '+(u.source||'default');}
+async function saveUpdate(){const body={latestVersion:qs('#updateVersion').value,downloadPageUrl:qs('#updateUrl').value,publishedAt:qs('#updatePublished').value,critical:qs('#updateCritical').checked,changelog:qs('#updateChangelog').value};await api('/api/v1/admin/update',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});msg('Update notice saved');await loadUpdate();}
+async function loadAudit(){const d=await api('/api/v1/admin/audit?limit=200');qs('#auditTable').innerHTML=table(['Time','Action','Preset','Admin','Note'],(d.audit||[]).map(function(a){return '<tr><td>'+esc(a.created_at)+'</td><td>'+esc(a.action)+'</td><td>'+esc(a.preset_id||'')+'</td><td>'+esc(a.admin_email_or_token||'')+'</td><td>'+esc(a.note||'')+'</td></tr>'; }),'No audit entries.');}
+async function viewPreset(id){const d=await api('/api/v1/admin/presets/'+encodeURIComponent(id));qs('#detailTitle').textContent=d.preset.title+' by '+d.preset.author_name;qs('#detailMeta').textContent=d.preset.id+' | '+d.preset.status+' | '+(d.preset.client_fingerprint||'no client')+' | '+d.preset.r2_key;qs('#detailJson').textContent=JSON.stringify(d.preset,null,2);qs('#detailIni').textContent=d.iniText||'(missing file)';qs('#detailScan').textContent=JSON.stringify(d.scan,null,2);qs('#detail').hidden=false;}
+function closeDetail(){qs('#detail').hidden=true;}
+async function approve(id){await api('/api/v1/admin/submissions/'+encodeURIComponent(id)+'/approve',{method:'POST'});msg('Approved '+id);await loadActive();}
+async function rejectOne(id){const note=prompt('Reject note?')||'';await api('/api/v1/admin/submissions/'+encodeURIComponent(id)+'/reject',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note})});msg('Rejected '+id);await loadActive();}
+async function deleteOne(id){if(!confirm('Hide '+id+' now? It will move to Trash and auto-purge after 7 days.'))return;await api('/api/v1/admin/presets/'+encodeURIComponent(id),{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({reason:'admin'})});msg('Moved to Trash '+id);closeDetail();await loadActive();}
+async function restoreOne(id){await api('/api/v1/admin/presets/'+encodeURIComponent(id)+'/restore',{method:'POST'});msg('Restored '+id);await loadActive();}
+async function purgeOne(id){if(!confirm('Permanently purge '+id+'? This deletes DB and R2 data now.'))return;await api('/api/v1/admin/presets/'+encodeURIComponent(id)+'/purge',{method:'POST'});msg('Purged '+id);closeDetail();await loadActive();}
+async function whitelistPreset(id){const label=prompt('Trusted label?')||'';await api('/api/v1/admin/whitelist/from-preset/'+encodeURIComponent(id),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label})});msg('Submitter whitelisted');await loadActive();}
+async function addWhitelist(){const value=qs('#wlClientId').value;const label=qs('#wlLabel').value;const note=qs('#wlNote').value;const body=/^[a-f0-9]{64}$/i.test(value.trim())?{submitterHash:value.trim(),label,note,autoApprove:true}:{clientId:value,label,note,autoApprove:true};await api('/api/v1/admin/whitelist',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});qs('#wlClientId').value='';msg('Client whitelisted');await loadClients();}
+async function removeWhitelist(hash){if(!confirm('Remove trusted client?'))return;await api('/api/v1/admin/whitelist/'+encodeURIComponent(hash),{method:'DELETE'});msg('Trusted client removed');await loadClients();}
+async function bulk(action){const ids=selectedIds();if(!ids.length){msg('Select at least one row.');return;}if(action==='delete'&&!confirm('Move '+ids.length+' preset(s) to Trash for 7 days?'))return;if(action==='purge'&&!confirm('Permanently purge '+ids.length+' preset(s)?'))return;const body={};body[action]=ids;await api('/api/v1/admin/submissions/batch',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});msg('Batch '+action+' complete');await loadActive();}
+async function rebuild(){await api('/api/v1/admin/catalog/rebuild',{method:'POST'});msg('Catalog rebuilt');await loadDashboard();}
+async function logout(){await api('/api/v1/admin/logout',{method:'POST'});location.reload();}
+document.addEventListener('click',function(e){const el=e.target.closest('button,input[type=checkbox]');if(!el)return;const a=el.dataset.action;if(el.dataset.tab){setTab(el.dataset.tab).catch(function(err){msg(err.message);});return;}if(el.dataset.bulk){bulk(el.dataset.bulk).catch(function(err){msg(err.message);});return;}if(a==='toggleAll'){qsa('.rowcheck').forEach(function(c){c.checked=el.checked;});return;}const id=el.dataset.id;if(a==='refresh')loadActive().catch(function(err){msg(err.message);});else if(a==='loadPresets')loadPresets().catch(function(err){msg(err.message);});else if(a==='loadClients')loadClients().catch(function(err){msg(err.message);});else if(a==='loadUpdate')loadUpdate().catch(function(err){msg(err.message);});else if(a==='saveUpdate')saveUpdate().catch(function(err){msg(err.message);});else if(a==='loadTrash')loadTrash().catch(function(err){msg(err.message);});else if(a==='loadAudit')loadAudit().catch(function(err){msg(err.message);});else if(a==='view')viewPreset(id).catch(function(err){msg(err.message);});else if(a==='approve')approve(id).catch(function(err){msg(err.message);});else if(a==='reject')rejectOne(id).catch(function(err){msg(err.message);});else if(a==='delete')deleteOne(id).catch(function(err){msg(err.message);});else if(a==='restore')restoreOne(id).catch(function(err){msg(err.message);});else if(a==='purge')purgeOne(id).catch(function(err){msg(err.message);});else if(a==='whitelistPreset')whitelistPreset(id).catch(function(err){msg(err.message);});else if(a==='clientUploads'){setTab('presets').then(function(){qs('#presetSearch').value=id.slice(0,12);qs('#presetStatus').value='';return loadPresets();}).catch(function(err){msg(err.message);});}else if(a==='removeWhitelist')removeWhitelist(id).catch(function(err){msg(err.message);});else if(a==='addWhitelist')addWhitelist().catch(function(err){msg(err.message);});else if(a==='rebuild')rebuild().catch(function(err){msg(err.message);});else if(a==='logout')logout().catch(function(err){msg(err.message);});else if(a==='closeDetail')closeDetail();});
+setTab('dashboard').catch(function(err){msg(err.message);});
 </script></body></html>`;
 
 export default {
@@ -809,6 +1337,7 @@ export default {
     const method = request.method.toUpperCase();
     try {
       if (method === "GET" && url.pathname === "/api/v1/catalog") return getCatalog(env);
+      if (method === "GET" && url.pathname === "/api/v1/update") return await updateInfo(request, env);
       if (method === "POST" && url.pathname === "/api/v1/presets") return submitPreset(request, env);
       if (method === "GET" && url.pathname === "/api/v1/me/presets") return listMyPresets(request, env);
       let match = url.pathname.match(/^\/api\/v1\/me\/presets\/([^/]+)$/);
@@ -821,11 +1350,20 @@ export default {
       if (method === "POST" && url.pathname === "/api/v1/admin/login") return loginAdmin(request, env);
       if (method === "POST" && url.pathname === "/api/v1/admin/logout") return logoutAdmin();
       if (url.pathname === "/admin" && method === "GET") {
-        if (!(await isAdmin(request, env))) return new Response(ADMIN_LOGIN_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
+        if (!(await isAdmin(request, env))) {
+          if (!hasAdminLoginKey(request, env)) return text("Not found.", 404);
+          return new Response(ADMIN_LOGIN_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
+        }
         return new Response(ADMIN_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
       }
       if (url.pathname.startsWith("/api/v1/admin/")) {
         if (!(await isAdmin(request, env))) return bad("Unauthorized", 401);
+        if (method === "GET" && url.pathname === "/api/v1/admin/overview") return adminOverview(env);
+        if (method === "GET" && url.pathname === "/api/v1/admin/update") return adminGetUpdateSettings(env);
+        if (method === "PUT" && url.pathname === "/api/v1/admin/update") return adminSaveUpdateSettings(request, env);
+        if (method === "GET" && url.pathname === "/api/v1/admin/presets") return listAdminPresets(env, url.searchParams);
+        if (method === "GET" && url.pathname === "/api/v1/admin/clients") return listAdminClients(env, url.searchParams);
+        if (method === "GET" && url.pathname === "/api/v1/admin/audit") return listAdminAudit(env, url.searchParams);
         if (method === "GET" && url.pathname === "/api/v1/admin/submissions") return listSubmissions(env, url.searchParams.get("status") || "pending");
         if (method === "GET" && url.pathname === "/api/v1/admin/submissions/export.zip") return exportPending(env);
         if (method === "POST" && url.pathname === "/api/v1/admin/catalog/rebuild") return json({ ok: true, catalog: await rebuildCatalog(env) });
@@ -836,6 +1374,10 @@ export default {
         if (method === "POST" && match) return whitelistFromPreset(request, env, match[1]);
         match = url.pathname.match(/^\/api\/v1\/admin\/whitelist\/([a-fA-F0-9]{64})$/);
         if (method === "DELETE" && match) return deleteWhitelist(request, env, match[1]);
+        match = url.pathname.match(/^\/api\/v1\/admin\/presets\/([^/]+)\/restore$/);
+        if (method === "POST" && match) return restorePresetAdmin(request, env, match[1]);
+        match = url.pathname.match(/^\/api\/v1\/admin\/presets\/([^/]+)\/purge$/);
+        if (method === "POST" && match) return purgePresetAdmin(request, env, match[1]);
         match = url.pathname.match(/^\/api\/v1\/admin\/presets\/([^/]+)$/);
         if (method === "GET" && match) return adminPresetDetail(env, match[1]);
         if (method === "DELETE" && match) return deletePresetAdmin(request, env, match[1]);
@@ -850,5 +1392,8 @@ export default {
     } catch (error) {
       return bad(error?.message || "Server error.", 500);
     }
+  },
+  async scheduled(_event, env, _ctx) {
+    await purgeExpiredDeletedPresets(env);
   }
 };

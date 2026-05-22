@@ -4,6 +4,9 @@
 #include "overlay_bridge.h"
 #include "preset_service.h"
 #include "runtime_shared.h"
+#if defined(CW_DEV_BUILD)
+#include "dev_mcp_server.h"
+#endif
 
 extern "C" BOOL ReserveBufferBlock(LPVOID pOrigin);
 
@@ -170,8 +173,11 @@ DWORD WINAPI BootstrapThread(void* param) {
 
     OpenStartupLog(module);
 #if defined(CW_DEV_BUILD)
+    if (StartDevMcpServer(module)) {
+        Log("[mcp] DEV pipe server start requested\n");
+    }
     const DevLaunchOption launchOption = g_devLaunchOption.load();
-    const bool useTextureHook = DevLaunchOptionUsesTextureHook(launchOption);
+    const bool useTextureHook = g_cfg.textureSwitcherEnabled && DevLaunchOptionUsesTextureHook(launchOption);
     const bool mayUseRuntimeHooks = DevLaunchOptionUsesRuntimeStartup(launchOption);
     Log("[dev] Bootstrap LaunchOption=%s (%s)\n",
         DevLaunchOptionName(launchOption),
@@ -185,14 +191,20 @@ DWORD WINAPI BootstrapThread(void* param) {
         Log("[i] Initializing sky texture override\n");
         const bool skyTextureOk = TryInitializeSkyTextureOverride(module);
         Log(skyTextureOk ? "[i] Sky texture override initialized\n" : "[W] Sky texture override disabled\n");
+    } else if (!g_cfg.textureSwitcherEnabled) {
+        Log("[i] Sky texture override skipped: TextureSwitcher.Enabled=0\n");
     } else {
         Log("[dev] Sky texture override skipped for LaunchOption=%s\n", DevLaunchOptionName(launchOption));
     }
 #else
     PrimeMinHookRelayBlock();
-    Log("[i] Initializing sky texture override\n");
-    const bool skyTextureOk = TryInitializeSkyTextureOverride(module);
-    Log(skyTextureOk ? "[i] Sky texture override initialized\n" : "[W] Sky texture override disabled\n");
+    if (g_cfg.textureSwitcherEnabled) {
+        Log("[i] Initializing sky texture override\n");
+        const bool skyTextureOk = TryInitializeSkyTextureOverride(module);
+        Log(skyTextureOk ? "[i] Sky texture override initialized\n" : "[W] Sky texture override disabled\n");
+    } else {
+        Log("[i] Sky texture override skipped: TextureSwitcher.Enabled=0\n");
+    }
 #endif
     if (g_cfg.autoStart) {
         Log("[i] ReShade addon loaded; Auto Start enabled\n");
@@ -242,6 +254,9 @@ bool InitializeCrimsonWeather(HMODULE module) {
 
 void ShutdownCrimsonWeather() {
     if (!g_initialized.exchange(false)) {
+#if defined(CW_DEV_BUILD)
+        StopDevMcpServer();
+#endif
         RestoreRuntimePatches();
         StopHotkeyService();
         ShutdownSkyTextureOverride();
@@ -263,6 +278,9 @@ void ShutdownCrimsonWeather() {
     }
 
     SuspendTimeControl();
+#if defined(CW_DEV_BUILD)
+    StopDevMcpServer();
+#endif
     RestoreRuntimePatches();
     StopHotkeyService();
     ShutdownSkyTextureOverride();

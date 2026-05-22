@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_BASE_VERSION "0.6.4"
+#define MOD_BASE_VERSION "0.6.5"
 #if defined(CW_DEV_BUILD)
 #define MOD_VERSION MOD_BASE_VERSION " DEV"
 #else
@@ -40,6 +40,8 @@ struct Config {
     bool autoStart = true;
     bool autoSaved = false;
     bool communityEnabled = true;
+    bool updaterEnabled = true;
+    bool textureSwitcherEnabled = true;
     int effectToggleVK = VK_F10;
     WORD controllerEffectToggleMask = 0;
     bool reshadeDiagnostics = false;
@@ -575,6 +577,7 @@ inline std::atomic<uintptr_t> g_gameRegionHudCallerOffset{ 0 };
 inline std::atomic<int> g_gameRegionHudCallerKind{ 0 };
 inline std::atomic<unsigned long long> g_gameRegionHudLastChangeTick{ 0 };
 inline std::atomic<unsigned int> g_gameRegionHudUpdateCount{ 0 };
+inline std::atomic<unsigned int> g_gameRegionHudPromotedUpdateCount{ 0 };
 inline std::atomic<bool> g_gameRegionHudStableValid{ false };
 inline std::atomic<int> g_gameRegionHudStableAreaId{ 0xFFFF };
 inline std::atomic<int> g_gameRegionHudStableSubAreaId{ 0xFFFF };
