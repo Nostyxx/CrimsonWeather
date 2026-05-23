@@ -118,6 +118,8 @@ constexpr const char* kPresetConfigSection = "Preset";
 constexpr const char* kPresetConfigKeyLastPreset = "LastPreset";
 constexpr const char* kTimeScheduleConfigSection = "TimeSchedule";
 constexpr int kTimeScheduleDefaultBlendSeconds = 120;
+constexpr int kTimeScheduleSourceVisualTimeOverride = 0;
+constexpr int kTimeScheduleSourceGameTime = 1;
 constexpr int kPresetFormatVersion = 6;
 std::string TrimCopy(const std::string& value);
 bool EqualsNoCase(const std::string& a, const std::string& b);
@@ -130,6 +132,7 @@ void TimeScheduleCancelBlendForUserEdit();
 void TimeSchedulePinCurrentEntryForUserEdit();
 void TimeScheduleClearUserEditPin();
 void TimeScheduleClearSelfVisualGuard();
+bool TryGetTimeScheduleClockHour(float& outHour);
 bool SaveSelectedDraftInternal(const char* statusPrefix, const char* logVerb, bool applyAfterSave);
 
 float ClampPresetFloat(float value, float lo, float hi) {
@@ -1226,6 +1229,7 @@ constexpr ULONGLONG kWorldReadyAutoApplyDelayMs = 1000;
 
 bool g_timeScheduleLoaded = false;
 bool g_timeScheduleEnabled = false;
+int g_timeScheduleTimeSource = kTimeScheduleSourceVisualTimeOverride;
 std::vector<PresetScheduleEntry> g_timeScheduleEntries;
 std::string g_timeScheduleActivePresetFile;
 int g_timeScheduleActiveEntryIndex = -1;
@@ -3189,6 +3193,39 @@ void SortScheduleEntries(std::vector<PresetScheduleEntry>& entries) {
     });
 }
 
+int NormalizeScheduleTimeSource(int source) {
+    return source == kTimeScheduleSourceGameTime
+        ? kTimeScheduleSourceGameTime
+        : kTimeScheduleSourceVisualTimeOverride;
+}
+
+int ParseScheduleTimeSource(const char* raw) {
+    const std::string value = TrimCopy(raw ? raw : "");
+    if (value.empty()) {
+        return kTimeScheduleSourceVisualTimeOverride;
+    }
+
+    std::string normalized;
+    normalized.reserve(value.size());
+    for (char c : value) {
+        if (c == '-' || c == '_' || std::isspace(static_cast<unsigned char>(c))) {
+            continue;
+        }
+        normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+
+    if (normalized == "1" || normalized == "gametime" || normalized == "ingametime" || normalized == "native" || normalized == "nativetime") {
+        return kTimeScheduleSourceGameTime;
+    }
+    return kTimeScheduleSourceVisualTimeOverride;
+}
+
+const char* ScheduleTimeSourceConfigValue(int source) {
+    return NormalizeScheduleTimeSource(source) == kTimeScheduleSourceGameTime
+        ? "GameTime"
+        : "VisualTimeOverride";
+}
+
 int FindPresetIndexByFileName(const std::string& rawFileName) {
     const std::string fileName = EnsureIniExtension(TrimCopy(rawFileName));
     if (fileName.empty()) {
@@ -3208,6 +3245,7 @@ void SaveTimeScheduleConfig() {
 
     const int oldCount = GetPrivateProfileIntA(kTimeScheduleConfigSection, "EntryCount", 0, iniPath);
     WritePrivateProfileStringA(kTimeScheduleConfigSection, "Enabled", g_timeScheduleEnabled ? "1" : "0", iniPath);
+    WritePrivateProfileStringA(kTimeScheduleConfigSection, "TimeSource", ScheduleTimeSourceConfigValue(g_timeScheduleTimeSource), iniPath);
 
     char value[64] = {};
     sprintf_s(value, "%d", static_cast<int>(g_timeScheduleEntries.size()));
@@ -3254,6 +3292,9 @@ void EnsureTimeScheduleLoaded() {
     char iniPath[MAX_PATH] = {};
     BuildIniPath(iniPath, sizeof(iniPath));
     g_timeScheduleEnabled = GetPrivateProfileIntA(kTimeScheduleConfigSection, "Enabled", 0, iniPath) != 0;
+    char sourceText[64] = {};
+    GetPrivateProfileStringA(kTimeScheduleConfigSection, "TimeSource", "VisualTimeOverride", sourceText, static_cast<DWORD>(sizeof(sourceText)), iniPath);
+    g_timeScheduleTimeSource = ParseScheduleTimeSource(sourceText);
 
     int count = static_cast<int>(GetPrivateProfileIntA(kTimeScheduleConfigSection, "EntryCount", 0, iniPath));
     count = max(0, min(64, count));
@@ -3284,8 +3325,9 @@ void EnsureTimeScheduleLoaded() {
 
     SortScheduleEntries(g_timeScheduleEntries);
     SaveTimeScheduleConfig();
-    Log("[preset-schedule] loaded enabled=%d entries=%d\n",
+    Log("[preset-schedule] loaded enabled=%d source=%s entries=%d\n",
         g_timeScheduleEnabled ? 1 : 0,
+        ScheduleTimeSourceConfigValue(g_timeScheduleTimeSource),
         static_cast<int>(g_timeScheduleEntries.size()));
 }
 
@@ -3398,12 +3440,11 @@ void LogTimeScheduleDecision(const char* reason, int minuteOfDay, int entryIndex
     const char* selectedPreset = HasSelectedPresetIndexInternal()
         ? g_presetItems[g_selectedPresetIndex].fileName.c_str()
         : "<none>";
-    const float scheduleClockHour = (g_timeCtrlActive.load() && g_timeFreeze.load())
-        ? g_timeTargetHour.load()
-        : g_timeCurrentHour.load();
+    float scheduleClockHour = 0.0f;
+    const bool scheduleClockValid = TryGetTimeScheduleClockHour(scheduleClockHour);
     Log("[preset-schedule-diag] reason=%s minute=%d entry=%d entryPreset=%s "
         "activeEntry=%d lastApplied=%d activeFile=%s selected=%s blend=%u pinned=%u pinnedEntry=%d pinnedPreset=%s "
-        "selfGuard=%u selfHour=%.4f editDraft=%u lastRegion=%d time{ctrl=%u freeze=%u progress=%u target=%.4f current=%.4f schedule=%.4f valid=%u}\n",
+        "selfGuard=%u selfHour=%.4f editDraft=%u lastRegion=%d time{source=%s ctrl=%u freeze=%u progress=%u target=%.4f current=%.4f hud=%02d:%02d schedule=%.4f valid=%u}\n",
         reason ? reason : "unknown",
         minuteOfDay,
         entryIndex,
@@ -3420,20 +3461,45 @@ void LogTimeScheduleDecision(const char* reason, int minuteOfDay, int entryIndex
         g_timeScheduleSelfVisualGuardHour,
         g_editDraftValid ? 1u : 0u,
         g_lastAppliedRegion,
+        ScheduleTimeSourceConfigValue(g_timeScheduleTimeSource),
         g_timeCtrlActive.load() ? 1u : 0u,
         g_timeFreeze.load() ? 1u : 0u,
         g_timeProgressVisualTime.load() ? 1u : 0u,
         g_timeTargetHour.load(),
         g_timeCurrentHour.load(),
+        g_timeUiClockHour24.load(),
+        g_timeUiClockMinute.load(),
         scheduleClockHour,
-        g_timeCurrentHourValid.load() ? 1u : 0u);
+        scheduleClockValid ? 1u : 0u);
 }
 
-float TimeScheduleClockHour() {
-    if (g_timeCtrlActive.load() && g_timeFreeze.load()) {
-        return g_timeTargetHour.load();
+bool TryGetTimeScheduleClockHour(float& outHour) {
+    if (g_timeScheduleTimeSource == kTimeScheduleSourceGameTime) {
+        if (!g_timeUiClockSourceValid.load() || !g_timeUiClockValid.load()) {
+            return false;
+        }
+
+        const int hour = g_timeUiClockHour24.load();
+        const int minute = g_timeUiClockMinute.load();
+        if (hour < 0 || hour >= 24 || minute < 0 || minute >= 60) {
+            return false;
+        }
+
+        outHour = NormalizeHour24(static_cast<float>(hour) + static_cast<float>(minute) / 60.0f);
+        return true;
     }
-    return g_timeCurrentHour.load();
+
+    if (!g_timeCurrentHourValid.load()) {
+        return false;
+    }
+
+    if (g_timeCtrlActive.load() && g_timeFreeze.load()) {
+        outHour = g_timeTargetHour.load();
+    } else {
+        outHour = g_timeCurrentHour.load();
+    }
+    outHour = NormalizeHour24(outHour);
+    return true;
 }
 
 void ApplyScheduledPresetInstantOrStartBlend(int index) {
@@ -3581,12 +3647,14 @@ bool TimeScheduleRuntimeTick(bool worldReady) {
         }
     }
 
-    if (!g_timeScheduleEnabled || !worldReady || !g_timeCurrentHourValid.load()) {
+    float scheduleClockHour = 0.0f;
+    const bool scheduleClockValid = TryGetTimeScheduleClockHour(scheduleClockHour);
+    if (!g_timeScheduleEnabled || !worldReady || !scheduleClockValid) {
         return g_timeScheduleBlendActive;
     }
 
-    const float scheduleClockHour = NormalizeHour24(TimeScheduleClockHour());
-    if (g_timeScheduleSelfVisualGuard) {
+    scheduleClockHour = NormalizeHour24(scheduleClockHour);
+    if (g_timeScheduleSelfVisualGuard && g_timeScheduleTimeSource == kTimeScheduleSourceVisualTimeOverride) {
         if (!(g_timeCtrlActive.load() && g_timeFreeze.load())) {
             TimeScheduleClearSelfVisualGuard();
         } else if (ScheduleHourDelta(scheduleClockHour, g_timeScheduleSelfVisualGuardHour) <= (1.0f / 60.0f)) {
@@ -3599,6 +3667,8 @@ bool TimeScheduleRuntimeTick(bool worldReady) {
             LogTimeScheduleDecision("self-visual-guard-cleared", -1, g_timeScheduleActiveEntryIndex);
             TimeScheduleClearSelfVisualGuard();
         }
+    } else if (g_timeScheduleSelfVisualGuard) {
+        TimeScheduleClearSelfVisualGuard();
     }
 
     const int minuteOfDay = NormalizeScheduleMinute(static_cast<int>(std::floor(scheduleClockHour * 60.0f + 0.0001f)));
@@ -4327,6 +4397,34 @@ void PresetSchedule_SetEnabled(bool enabled) {
     Log("[preset-schedule] %s\n", enabled ? "enabled" : "disabled");
 }
 
+int PresetSchedule_GetTimeSource() {
+    EnsureTimeScheduleLoaded();
+    return NormalizeScheduleTimeSource(g_timeScheduleTimeSource);
+}
+
+void PresetSchedule_SetTimeSource(int source) {
+    EnsureTimeScheduleLoaded();
+    source = NormalizeScheduleTimeSource(source);
+    if (g_timeScheduleTimeSource == source) {
+        return;
+    }
+
+    g_timeScheduleTimeSource = source;
+    g_timeScheduleBlendActive = false;
+    g_timeScheduleActivePresetFile.clear();
+    g_timeScheduleActiveEntryIndex = -1;
+    g_timeScheduleLastAppliedEntryIndex = -1;
+    g_timeScheduleLastDiagMinute = -1;
+    g_timeScheduleLastDiagEntryIndex = -9999;
+    TimeScheduleClearUserEditPin();
+    TimeScheduleClearSelfVisualGuard();
+    SaveTimeScheduleConfig();
+    GUI_SetStatus(source == kTimeScheduleSourceGameTime
+        ? "Time schedule source: in-game time"
+        : "Time schedule source: visual time override");
+    Log("[preset-schedule] time source=%s\n", ScheduleTimeSourceConfigValue(source));
+}
+
 std::vector<PresetScheduleEntry> PresetSchedule_GetEntries() {
     EnsureTimeScheduleLoaded();
     return g_timeScheduleEntries;
@@ -4401,6 +4499,12 @@ PresetScheduleStatus PresetSchedule_GetStatus() {
     EnsureTimeScheduleLoaded();
     PresetScheduleStatus status{};
     status.enabled = g_timeScheduleEnabled;
+    status.timeSource = NormalizeScheduleTimeSource(g_timeScheduleTimeSource);
+    float scheduleClockHour = 0.0f;
+    status.timeSourceValid = TryGetTimeScheduleClockHour(scheduleClockHour);
+    status.currentMinute = status.timeSourceValid
+        ? NormalizeScheduleMinute(static_cast<int>(std::floor(NormalizeHour24(scheduleClockHour) * 60.0f + 0.0001f)))
+        : -1;
     status.activeEntryIndex = g_timeScheduleActiveEntryIndex;
     status.blending = g_timeScheduleBlendActive;
 

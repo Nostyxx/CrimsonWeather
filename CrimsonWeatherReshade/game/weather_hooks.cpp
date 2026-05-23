@@ -1157,7 +1157,7 @@ static void ApplyPackedCelestialOverrides(float* packedOut) {
         packedOut[kPackedSunSizeCos] = cosf(size * kPackedAngleToRad);
     }
     if (g_oMoonSize.active.load()) {
-        const float size = ClampFloat(g_oMoonSize.value.load(), 0.020f, 20.0f);
+        const float size = ClampFloat(g_oMoonSize.value.load(), 0.001f, 100.0f);
         packedOut[kPackedMoonSize] = size;
         packedOut[kPackedMoonSizeCos] = cosf(size * kPackedAngleToRad);
     }

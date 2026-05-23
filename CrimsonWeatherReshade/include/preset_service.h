@@ -217,6 +217,9 @@ struct PresetScheduleRow {
 struct PresetScheduleStatus {
     bool enabled = false;
     bool active = false;
+    int timeSource = 0;
+    bool timeSourceValid = false;
+    int currentMinute = -1;
     int activeEntryIndex = -1;
     std::string activePresetFile;
     std::string activeDisplayName;
@@ -291,6 +294,8 @@ bool Preset_UpdateCommunityPresetText(
 
 bool PresetSchedule_IsEnabled();
 void PresetSchedule_SetEnabled(bool enabled);
+int PresetSchedule_GetTimeSource();
+void PresetSchedule_SetTimeSource(int source);
 std::vector<PresetScheduleEntry> PresetSchedule_GetEntries();
 std::vector<PresetScheduleRow> PresetSchedule_BuildRows();
 PresetScheduleStatus PresetSchedule_GetStatus();

@@ -1556,10 +1556,9 @@ void DrawTimeScheduleTimeline(const std::vector<PresetScheduleRow>& rows, const 
         draw->AddText(ImVec2(tickX, trackY + trackH + 7.0f), mutedText, tick.c_str());
     }
 
-    int currentMinute = -1;
+    int currentMinute = status.currentMinute;
     int currentRowIndex = -1;
-    if (g_timeCurrentHourValid.load()) {
-        currentMinute = HourToMinuteOfDayFloor(g_timeCurrentHour.load());
+    if (status.timeSourceValid && currentMinute >= 0) {
         if (scheduleEnabled) {
             currentRowIndex = FindScheduleTimelineRowAtMinute(segments, currentMinute);
             const float x = minuteToX(currentMinute);
@@ -1738,6 +1737,16 @@ void DrawTimeScheduleSection() {
     }
     if (Preset_GetCount() <= 0) {
         ImGui::EndDisabled();
+    }
+
+    int timeSource = PresetSchedule_GetTimeSource();
+    if (ImGui::RadioButton("Use visual time override time", timeSource == 0)) {
+        PresetSchedule_SetTimeSource(0);
+        timeSource = 0;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Use in-game time", timeSource == 1)) {
+        PresetSchedule_SetTimeSource(1);
     }
 
     const std::vector<PresetScheduleRow> rows = PresetSchedule_BuildRows();
@@ -3347,6 +3356,25 @@ void DrawAtmosphereTab() {
     ImGui::Spacing();
     ImGui::SeparatorText("Fog");
 
+    bool noFog = detachedEdit ? editData.noFog : g_noFog.load();
+    bool noFogOverrideChanged = false;
+    const bool noFogChanged = regionScoped
+        ? DrawOverrideCheckboxRow("No Fog", "no_fog", &noFog, &overrideMask.noFog, &noFogOverrideChanged)
+        : ImGui::Checkbox("No Fog", &noFog);
+    if (noFogOverrideChanged) {
+        editChanged = true;
+    }
+    if (noFogChanged) {
+        if (detachedEdit) {
+            editData.noFog = noFog;
+            if (regionScoped) overrideMask.noFog = true;
+            editChanged = true;
+        } else {
+            g_noFog.store(noFog);
+        }
+        GUI_SetStatus(noFog ? "No Fog enabled" : "No Fog disabled");
+    }
+
     float fogFromWind = detachedEdit ? editData.nativeFog : (g_oNativeFog.active.load() ? g_oNativeFog.value.load() : 1.0f);
     const bool fogFromWindNative = detachedEdit ? !editData.nativeFogEnabled : !g_oNativeFog.active.load();
     const bool fogBlocked = detachedEdit ? (editData.forceClearSky || editData.noFog) : (g_forceClear.load() || g_noFog.load());
@@ -3605,25 +3633,6 @@ void DrawAtmosphereTab() {
                 DrawHookUnavailable(RuntimeHookId::WindPack);
             }
         }
-    }
-
-    bool noFog = detachedEdit ? editData.noFog : g_noFog.load();
-    bool noFogOverrideChanged = false;
-    const bool noFogChanged = regionScoped
-        ? DrawOverrideCheckboxRow("No Fog", "no_fog", &noFog, &overrideMask.noFog, &noFogOverrideChanged)
-        : ImGui::Checkbox("No Fog", &noFog);
-    if (noFogOverrideChanged) {
-        editChanged = true;
-    }
-    if (noFogChanged) {
-        if (detachedEdit) {
-            editData.noFog = noFog;
-            if (regionScoped) overrideMask.noFog = true;
-            editChanged = true;
-        } else {
-            g_noFog.store(noFog);
-        }
-        GUI_SetStatus(noFog ? "No Fog enabled" : "No Fog disabled");
     }
 
     if (detachedEdit && editChanged) {
@@ -3942,17 +3951,17 @@ void DrawCelestialTab() {
                 if (!visible) {
                     continue;
                 }
-                if (i > 0) {
-                    const char* pack = MilkywayTextureOptionPack(i);
-                    const char* group = (pack && pack[0]) ? pack : "Loose";
-                    if (!currentPack || strcmp(currentPack, group) != 0) {
-                        DrawTexturePackHeader(group);
-                        currentPack = group;
+                const char* optionPack = i > 0 ? MilkywayTextureOptionPack(i) : "";
+                const bool optionHasPack = optionPack && optionPack[0];
+                if (optionHasPack) {
+                    if (!currentPack || strcmp(currentPack, optionPack) != 0) {
+                        DrawTexturePackHeader(optionPack);
+                        currentPack = optionPack;
                     }
                 }
                 ++visibleCount;
                 const bool selected = i == milkywayTexture;
-                if (i > 0) {
+                if (optionHasPack) {
                     ImGui::Indent(12.0f);
                 }
                 if (ImGui::Selectable(optionLabel, selected)) {
@@ -3966,7 +3975,7 @@ void DrawCelestialTab() {
                         MilkywayTextureSelectOption(i);
                     }
                 }
-                if (i > 0) {
+                if (optionHasPack) {
                     ImGui::Unindent(12.0f);
                 }
                 if (selected) {
@@ -4283,17 +4292,17 @@ void DrawCelestialTab() {
                 if (!visible) {
                     continue;
                 }
-                if (i > 0) {
-                    const char* pack = MoonTextureOptionPack(i);
-                    const char* group = (pack && pack[0]) ? pack : "Loose";
-                    if (!currentPack || strcmp(currentPack, group) != 0) {
-                        DrawTexturePackHeader(group);
-                        currentPack = group;
+                const char* optionPack = i > 0 ? MoonTextureOptionPack(i) : "";
+                const bool optionHasPack = optionPack && optionPack[0];
+                if (optionHasPack) {
+                    if (!currentPack || strcmp(currentPack, optionPack) != 0) {
+                        DrawTexturePackHeader(optionPack);
+                        currentPack = optionPack;
                     }
                 }
                 ++visibleCount;
                 const bool selected = i == moonTexture;
-                if (i > 0) {
+                if (optionHasPack) {
                     ImGui::Indent(12.0f);
                 }
                 char optionDisplay[256] = {};
@@ -4309,7 +4318,7 @@ void DrawCelestialTab() {
                         MoonTextureSelectOption(i);
                     }
                 }
-                if (i > 0) {
+                if (optionHasPack) {
                     ImGui::Unindent(12.0f);
                 }
                 if (selected) {

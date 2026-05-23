@@ -384,8 +384,40 @@ TextureSlot g_milkywaySlot(
 
 TextureSlot* g_textureSlots[] = { &g_moonSlot, &g_milkywaySlot };
 
+constexpr const char* kNoMoonOptionName = "No Moon";
+constexpr const char* kNoMilkywayOptionName = "No Milky Way";
+constexpr const char* kNoMoonSentinelPath = "cw://builtin/no-moon";
+constexpr const char* kNoMilkywaySentinelPath = "cw://builtin/no-milkyway";
+
+bool StringEqualsIgnoreCase(const std::string& a, const std::string& b);
+
 bool TextureSwitcherEnabled() {
     return g_cfg.textureSwitcherEnabled;
+}
+
+bool IsBlankTexturePath(const std::string& path) {
+    return StringEqualsIgnoreCase(path, kNoMoonSentinelPath) ||
+           StringEqualsIgnoreCase(path, kNoMilkywaySentinelPath);
+}
+
+const char* BlankTextureOptionName(const TextureSlot& slot) {
+    return &slot == &g_moonSlot ? kNoMoonOptionName : kNoMilkywayOptionName;
+}
+
+const char* BlankTextureSentinelPath(const TextureSlot& slot) {
+    return &slot == &g_moonSlot ? kNoMoonSentinelPath : kNoMilkywaySentinelPath;
+}
+
+void BuildBlankSkyImage(SkyImageData& image) {
+    image.pixels.assign(4, 0);
+    image.mipLevels.clear();
+    image.mipLevels.push_back({ 1, 1, 1, 4, 0, 4 });
+    image.width = 1;
+    image.height = 1;
+    image.mips = 1;
+    image.sourceRows = 1;
+    image.sourceRowPitch = 4;
+    image.format = DXGI_FORMAT_R8G8B8A8_UNORM;
 }
 
 void SetTextureStatus(TextureSlot& slot, const char* fmt, ...) {
@@ -1073,6 +1105,13 @@ void RefreshTextureListLocked(TextureSlot& slot) {
             return packCmp < 0;
         }
         return _stricmp(a.label.c_str(), b.label.c_str()) < 0;
+    });
+    slot.options.insert(slot.options.begin(), {
+        BlankTextureOptionName(slot),
+        BlankTextureOptionName(slot),
+        "",
+        BlankTextureSentinelPath(slot),
+        false
     });
 
     slot.selectedOption = 0;
@@ -2049,7 +2088,9 @@ ID3D12Resource* EnsureFileResource(TextureSlot& slot, ID3D12Device* device) {
 
     SkyImageData image{};
     char loadStatus[128] = {};
-    if (!LoadSkyImageFile(requestedPath, image, loadStatus, sizeof(loadStatus))) {
+    if (IsBlankTexturePath(requestedPath)) {
+        BuildBlankSkyImage(image);
+    } else if (!LoadSkyImageFile(requestedPath, image, loadStatus, sizeof(loadStatus))) {
         SetTextureStatus(slot, "%s: %s", slot.displayName, loadStatus[0] ? loadStatus : "load failed");
         return nullptr;
     }
@@ -2789,6 +2830,32 @@ void TryProveTextureFromNativeCopy(TextureSlot& slot,
         return;
     }
 
+    bool trackedNativeCandidate = false;
+    bool alreadyProven = false;
+    if (g_hookLockReady.load()) {
+        EnterCriticalSection(&g_hookLock);
+        trackedNativeCandidate = IsNativeResourceLocked(slot, dst->pResource);
+        alreadyProven = slot.contentProofHit;
+        LeaveCriticalSection(&g_hookLock);
+    }
+    if (alreadyProven) {
+        return;
+    }
+    if (!trackedNativeCandidate) {
+        const uint32_t count = slot.contentRejectLogCount.fetch_add(1);
+        if (count < 4) {
+            Log("[%s] content proof skipped untracked native-sized copy dest=%p %llux%u mips=%u fmt=%s(%u)\n",
+                slot.logTag,
+                dst->pResource,
+                static_cast<unsigned long long>(dstDesc.Width),
+                dstDesc.Height,
+                dstDesc.MipLevels,
+                FormatName(dstDesc.Format),
+                static_cast<unsigned>(dstDesc.Format));
+        }
+        return;
+    }
+
     const D3D12_SUBRESOURCE_FOOTPRINT& footprint = src->PlacedFootprint.Footprint;
     if (footprint.Width != slot.nativeWidth ||
         footprint.Height != slot.nativeHeight ||
@@ -2827,20 +2894,18 @@ void TryProveTextureFromNativeCopy(TextureSlot& slot,
     }
 
     if (slot.expectedTopMipHash == 0) {
-        if (IsNativeResourceLocked(slot, dst->pResource)) {
-            const uint32_t count = slot.contentRejectLogCount.fetch_add(1);
-            if (count < 6) {
-                Log("[%s] content proof observed hash=0x%llX dest=%p offset=%llu rowPitch=%u (not enforced yet)\n",
-                    slot.logTag,
-                    static_cast<unsigned long long>(hash),
-                    dst->pResource,
-                    static_cast<unsigned long long>(src->PlacedFootprint.Offset),
-                    src->PlacedFootprint.Footprint.RowPitch);
-            }
-            EnterCriticalSection(&g_hookLock);
-            PromoteContentProvenTextureLocked(slot, dst->pResource, "CopyTextureRegionObserved", hash, src->PlacedFootprint.Footprint.RowPitch);
-            LeaveCriticalSection(&g_hookLock);
+        const uint32_t count = slot.contentRejectLogCount.fetch_add(1);
+        if (count < 6) {
+            Log("[%s] content proof observed hash=0x%llX dest=%p offset=%llu rowPitch=%u (not enforced yet)\n",
+                slot.logTag,
+                static_cast<unsigned long long>(hash),
+                dst->pResource,
+                static_cast<unsigned long long>(src->PlacedFootprint.Offset),
+                src->PlacedFootprint.Footprint.RowPitch);
         }
+        EnterCriticalSection(&g_hookLock);
+        PromoteContentProvenTextureLocked(slot, dst->pResource, "CopyTextureRegionObserved", hash, src->PlacedFootprint.Footprint.RowPitch);
+        LeaveCriticalSection(&g_hookLock);
         return;
     }
 

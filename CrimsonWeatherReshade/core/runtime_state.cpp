@@ -88,6 +88,7 @@ void WriteDefaultConfig(const char* path) {
     WritePrivateProfileStringA("General", "LogEnabled", "0", path);
     WritePrivateProfileStringA("General", "AutoStart", "1", path);
     WritePrivateProfileStringA("General", "AutoSaved", "0", path);
+    WritePrivateProfileStringA("General", "ToastNotification", "1", path);
     WritePrivateProfileStringA("General", "ExtendedSliderRange", "0", path);
     WritePrivateProfileStringA("General", "HotkeyToggleEffect", "F10", path);
     WritePrivateProfileStringA(
@@ -104,6 +105,7 @@ void WriteDefaultConfig(const char* path) {
 #if !defined(CW_WIND_ONLY)
     WritePrivateProfileStringA("Preset", "LastPreset", "", path);
     WritePrivateProfileStringA("TimeSchedule", "Enabled", "0", path);
+    WritePrivateProfileStringA("TimeSchedule", "TimeSource", "VisualTimeOverride", path);
     WritePrivateProfileStringA("TimeSchedule", "EntryCount", "0", path);
     WritePrivateProfileStringA("Community", "Enabled", "1", path);
     WritePrivateProfileStringA("Updater", "Enabled", "1", path);
@@ -134,6 +136,9 @@ void PatchMissingConfigKeys(const char* path) {
     }
     if (GetPrivateProfileStringA("General", "AutoSaved", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("General", "AutoSaved", "0", path);
+    }
+    if (GetPrivateProfileStringA("General", "ToastNotification", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("General", "ToastNotification", "1", path);
     }
     if (GetPrivateProfileStringA("General", "HotkeyToggleEffect", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("General", "HotkeyToggleEffect", "F10", path);
@@ -169,6 +174,9 @@ void PatchMissingConfigKeys(const char* path) {
     WritePrivateProfileStringA("Preset", "LastPreset", buf, path);
     if (GetPrivateProfileStringA("TimeSchedule", "Enabled", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("TimeSchedule", "Enabled", "0", path);
+    }
+    if (GetPrivateProfileStringA("TimeSchedule", "TimeSource", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("TimeSchedule", "TimeSource", "VisualTimeOverride", path);
     }
     if (GetPrivateProfileStringA("TimeSchedule", "EntryCount", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("TimeSchedule", "EntryCount", "0", path);
@@ -718,6 +726,8 @@ void LoadConfig(const char* dir) {
     g_cfg.autoStart = atoi(buf) != 0;
     GetPrivateProfileStringA("General", "AutoSaved", "0", buf, sizeof(buf), path);
     g_cfg.autoSaved = atoi(buf) != 0;
+    GetPrivateProfileStringA("General", "ToastNotification", "1", buf, sizeof(buf), path);
+    g_cfg.toastNotification = atoi(buf) != 0;
     GetPrivateProfileStringA("General", "ExtendedSliderRange", "0", buf, sizeof(buf), path);
     g_extendedSliderRange.store(atoi(buf) != 0);
     GetPrivateProfileStringA("General", "HotkeyToggleEffect", "F10", buf, sizeof(buf), path);
@@ -760,6 +770,7 @@ void SaveGeneralConfig() {
     char path[MAX_PATH] = {};
     BuildIniPath(path, sizeof(path));
     WritePrivateProfileStringA("General", "AutoSaved", g_cfg.autoSaved ? "1" : "0", path);
+    WritePrivateProfileStringA("General", "ToastNotification", g_cfg.toastNotification ? "1" : "0", path);
     WritePrivateProfileStringA("General", "ExtendedSliderRange", g_extendedSliderRange.load() ? "1" : "0", path);
 }
 
@@ -1675,7 +1686,7 @@ bool NativeToastReady() {
 }
 
 void ShowNativeToast(const char* msg) {
-    if (!msg || !msg[0] || !NativeToastReady()) {
+    if (!g_cfg.toastNotification || !msg || !msg[0] || !NativeToastReady()) {
         return;
     }
 

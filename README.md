@@ -2,7 +2,7 @@
 
 ReShade `.addon64` weather-control mod for `CrimsonDesert.exe`.
 
-Current stable release: `0.6.5`.
+Current stable release: `0.6.6`.
 
 The current main branch is the ReShade addon rewrite. The older DXGI/ImGui build is kept on the `legacy` branch.
 
@@ -23,6 +23,7 @@ Main build:
 - Preset `.ini` files saved next to the addon
 - Downloaded community preset `.ini` files in `CrimsonWeather/community/preset`
 - Community catalog cache in `CrimsonWeather/community/catalog.v1.json`
+- Community identity and local like state in `CrimsonWeather/community/state.v1`
 - Optional moon textures in `CrimsonWeather/moon/{Pack Name}/{Moon Name}/moon.dds` or `moon.png`
 - Optional animated moon texture packs in `CrimsonWeather/moon/{Pack Name}/{Moon Name}/manifest.json`
 - Optional Milky Way textures in `CrimsonWeather/milkyway/{Pack Name}/{Sky Name}/milkyway.dds` or `milkyway.png`
@@ -52,13 +53,14 @@ Open the ReShade overlay and use the `Crimson Weather` addon tab.
 The edit scope selector is always visible at the top of the overlay. Use it to edit global preset values or per-region overrides from any tab.
 
 Tabs and controls:
-- **Presets**: load/save presets, save-as, reset sliders, edit global or per-region preset scopes, and configure the optional Time Schedule
-- **General**: rain, thunder, dust, snow, force clear sky, no rain, no dust, no snow, visual time override, progress visual time, advance interval, wind, and no wind
-- **Atmosphere**: Rayleigh scattering color, cloud amount, cloud height, cloud density, mid clouds, high clouds, cloud alpha, cloud phase, cloud scattering, native fog, volume fog scatter color, aerosol height, aerosol density, aerosol absorption, fog height baseline, fog height falloff, and no fog
-- **Celestial**: moon texture, Milky Way texture, night sky tilt, night sky phase, sun light intensity, sun size, sun yaw/pitch lock, moon light intensity, moon size, moon yaw/pitch lock, and moon rotation
+- **Presets**: load/save local and downloaded community presets, save-as, reset sliders, edit global or per-region preset scopes, and configure the optional Time Schedule
+- **Community**: browse, search, sort, download, like/unlike, submit, update, and delete community preset uploads
+- **General**: visual time override, progress visual time, Match In-Game Clock, advance interval, wind, and no wind
+- **Weather**: force clear sky, rain, dust, snow, thunder, no rain, no dust, no snow, snow accumulation boundaries, and snow coverage threshold
+- **Atmosphere**: Rayleigh scattering color, Rayleigh height, ozone ratio, cloud amount, cloud height, cloud density, mid clouds, high clouds, cloud alpha, cloud fade range, cloud detail ratio, cloud phase, cloud scattering, cloud flow, cloud visible range, fog, no fog, volume fog scatter color, Mie scatter color, aerosol height, aerosol density, aerosol absorption, fog height baseline, and fog height falloff
+- **Celestial**: static/animated moon texture, Milky Way texture, no-moon/no-Milky-Way options, night sky tilt, night sky phase, sun light intensity, sun size, sun yaw/pitch lock, moon light intensity, moon size, moon yaw/pitch lock, and moon rotation
 - **Experiment**: 2C, 2D, cloud variation, legacy fog, and puddle scale
 - **Status**: current effective values, active hook state, startup health, and whether each value comes from global preset or a region override
-- **Dev**: DEV-build-only live atmosphere lab controls
 
 ## Presets
 
@@ -74,17 +76,19 @@ Supported regions:
 
 Old preset files still load. Saving a preset rewrites it into the current format.
 
-Moon and Milky Way texture presets save the texture name only, not a full local path. If a saved texture is missing, Crimson Weather resets that preset entry back to Native.
+Moon and Milky Way texture presets save the texture name only, not a full local path. If a saved texture is missing, Crimson Weather resets that preset entry back to Native. The texture browsers also provide `No Moon` and `No Milky Way` options.
 
 Animated moon texture packs use the same Moon Texture browser as static moon textures. Put animated packs under `CrimsonWeather/moon/{Pack Name}/{Moon Name}` with a `manifest.json` file and sequential frame files.
 
 Animated moon manifest files support JSONC-style comments, frame durations, loop modes, start frame, and random start. Supported loop modes are `forward`, `pingpong`, `once`, and `hold`.
 
+Static Moon and Milky Way replacements support `.png`, legacy DDS, and DX10 DDS textures. DDS is recommended for finished texture packs.
+
 Region overrides are saved only for values that differ from the global preset. The Status tab shows which values are inherited and which are region-specific.
 
 ## Community Presets
 
-The main addon build includes a `Community` overlay tab for browsing, searching, downloading, liking, and submitting presets through the configured community backend.
+The main addon build includes a `Community` overlay tab for browsing, searching, sorting, downloading, liking, and submitting presets through the configured community backend. The My Uploads section lets the submitting install delete uploads and submit updates once an upload is no longer pending.
 
 Downloaded community presets are stored separately from user-authored local presets at:
 
@@ -94,11 +98,13 @@ The regular Presets tab loads both local preset `.ini` files next to the addon a
 
 Downloaded community presets can show an update action when a newer approved version is available.
 
+Community access is anonymous and identified locally by `CrimsonWeather/community/state.v1`. Keep this file if you want this installation to continue recognizing its uploads and likes. Setting `[Community] Enabled=0` disables community network activity.
+
 ## Time Schedule
 
 The Time Schedule is global and disabled by default. It lives in `CrimsonWeather.ini`, not inside preset files.
 
-When enabled, Crimson Weather selects presets by detected visual in-game time. Schedule entries use AM/PM time ranges and can cross midnight. Gaps are generated automatically; a gap with no preset leaves the current/manual/last scheduled preset active.
+When enabled, Crimson Weather selects presets using either the visual time override clock or the detected in-game HUD clock, selectable in the Time Schedule UI. Schedule entries use AM/PM time ranges and can cross midnight. Gaps are generated automatically; a gap with no preset leaves the current/manual/last scheduled preset active.
 
 Each schedule entry can blend from the current effective state into the target preset over a real-time duration. Region overrides still apply during scheduled preset use.
 
@@ -119,6 +125,7 @@ Default effect toggle hotkeys:
 LogEnabled=0
 AutoStart=1
 AutoSaved=0
+ToastNotification=1
 ExtendedSliderRange=0
 HotkeyToggleEffect=F10
 _HotkeyOptions=F1-F12, INSERT, DELETE, HOME, END, PGUP, PGDN, or single letter A-Z
@@ -132,18 +139,24 @@ LastPreset=
 
 [TimeSchedule]
 Enabled=0
+TimeSource=VisualTimeOverride
 EntryCount=0
 
 [Community]
 Enabled=1
 
-[Wind]
-Multiplier=1.0000
+[Updater]
+Enabled=1
+
+[TextureSwitcher]
+Enabled=1
 ```
 
 `AutoSaved=1` automatically saves edits to the currently selected preset shortly after the active UI interaction ends. It does not create new preset files; use `Create Preset` or `Save As` first.
 
-WindOnly uses `CrimsonWeather.WindOnly.ini`. DEV uses `CrimsonWeather.DEV.ini`.
+`ToastNotification=0` disables the in-game toast messages shown by Crimson Weather. `TextureSwitcher` and `Updater` can also be disabled independently by setting their `Enabled` value to `0`.
+
+WindOnly uses `CrimsonWeather.WindOnly.ini` and stores its wind multiplier under `[Wind]`. DEV uses `CrimsonWeather.DEV.ini`.
 
 ## Build
 
