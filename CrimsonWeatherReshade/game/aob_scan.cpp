@@ -206,13 +206,6 @@ size_t GetRuntimeHookStatusEntries(RuntimeHookStatusEntry* outEntries, size_t ma
     return count;
 }
 
-bool RuntimeHookInstalled(RuntimeHookId id) {
-    if (id == RuntimeHookId::Count) {
-        return false;
-    }
-    return g_runtimeHookControls[static_cast<size_t>(id)].installed.load();
-}
-
 bool RuntimeHookEnabled(RuntimeHookId id) {
     if (id == RuntimeHookId::Count) {
         return false;
@@ -276,110 +269,6 @@ static uintptr_t ScanModule(const char*pat){
             bool ok=true;for(size_t k=0;k<len;k++)if(mask[k]&&mem[j+k]!=bytes[k]){ok=false;break;}
             if(ok)return base+j;}
     }return 0;}
-
-#if defined(CW_DEV_BUILD)
-static void* AllocateNearCodeCave(uintptr_t target, size_t size) {
-    SYSTEM_INFO si{};
-    GetSystemInfo(&si);
-    const uintptr_t granularity = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
-    const uintptr_t lowLimit = target > 0x70000000ull ? target - 0x70000000ull : granularity;
-    const uintptr_t highLimit = target + 0x70000000ull;
-    const uintptr_t alignedTarget = target & ~(granularity - 1);
-
-    for (uintptr_t delta = granularity; delta < 0x70000000ull; delta += granularity) {
-        const uintptr_t candidates[2] = {
-            alignedTarget >= delta ? alignedTarget - delta : 0,
-            alignedTarget + delta
-        };
-        for (uintptr_t candidate : candidates) {
-            if (candidate < lowLimit || candidate > highLimit) {
-                continue;
-            }
-            void* mem = VirtualAlloc(reinterpret_cast<void*>(candidate), size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-            if (mem) {
-                return mem;
-            }
-        }
-    }
-
-    return nullptr;
-}
-
-static bool PatchIndirectCallWithRelay(uintptr_t callSite, void* detour, const char* name) {
-    if (!callSite || !detour) {
-        return false;
-    }
-
-    uint8_t original[6] = {};
-    if (!ReadBytesSafe(callSite, original, sizeof(original))) {
-        Log("[W] AOB: %s patch site unreadable\n", name);
-        return false;
-    }
-    if (original[0] != 0xFF || original[1] != 0x90) {
-        Log("[W] AOB: %s patch site has unexpected bytes %02X %02X at %p\n",
-            name, original[0], original[1], reinterpret_cast<void*>(callSite));
-        return false;
-    }
-
-    uint8_t* relay = reinterpret_cast<uint8_t*>(AllocateNearCodeCave(callSite, 0x1000));
-    if (!relay) {
-        Log("[W] AOB: %s relay allocation failed near %p\n", name, reinterpret_cast<void*>(callSite));
-        return false;
-    }
-
-    relay[0] = 0x48; // mov rax, imm64
-    relay[1] = 0xB8;
-    *reinterpret_cast<uintptr_t*>(relay + 2) = reinterpret_cast<uintptr_t>(detour);
-    relay[10] = 0xFF; // jmp rax
-    relay[11] = 0xE0;
-
-    const int64_t rel64 = reinterpret_cast<uintptr_t>(relay) - (callSite + 5);
-    if (rel64 < INT32_MIN || rel64 > INT32_MAX) {
-        Log("[W] AOB: %s relay out of rel32 range site=%p relay=%p\n",
-            name, reinterpret_cast<void*>(callSite), relay);
-        return false;
-    }
-
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(reinterpret_cast<void*>(callSite), 6, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        Log("[W] AOB: %s VirtualProtect failed at %p\n", name, reinterpret_cast<void*>(callSite));
-        return false;
-    }
-
-    auto* patch = reinterpret_cast<uint8_t*>(callSite);
-    patch[0] = 0xE8;
-    *reinterpret_cast<int32_t*>(patch + 1) = static_cast<int32_t>(rel64);
-    patch[5] = 0x90;
-    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(callSite), 6);
-
-    DWORD restoreProtect = 0;
-    VirtualProtect(reinterpret_cast<void*>(callSite), 6, oldProtect, &restoreProtect);
-
-    Log("[AOB] %s call patch = %p relay=%p detour=%p\n",
-        name, reinterpret_cast<void*>(callSite), relay, detour);
-    return true;
-}
-
-static uintptr_t FindShadowAoParamsUploadCallAOB() {
-    uintptr_t hit = ScanModule("4C 8D 45 E8 48 8B D6 48 8B CB FF 90 98 03 00 00");
-    if (hit) {
-        return hit + 10;
-    }
-
-    hit = ScanModule("4C 8D 85 ?? ?? ?? ?? 48 8B D6 48 8B CB FF 90 98 03 00 00");
-    if (hit) {
-        return hit + 13;
-    }
-
-    hit = ScanModule("4C 8D 85 ?? ?? ?? ?? 48 8B D6 48 8B CB FF 90 ?? ?? ?? ??");
-    if (hit) {
-        return hit + 13;
-    }
-
-    hit = ScanModule("4C 8D 45 ?? 48 8B D6 48 8B CB FF 90 ?? ?? ?? ??");
-    return hit ? hit + 10 : 0;
-}
-#endif
 
 static uintptr_t ReadCall(uintptr_t a){
     if(*reinterpret_cast<uint8_t*>(a)!=0xE8)return 0;
@@ -554,15 +443,6 @@ static uintptr_t ResolveAkPostEventById() {
     );
 }
 
-static uintptr_t ResolveSpawnGameGlobalEffect() {
-    return ScanModule(
-        "48 89 5C 24 08 55 56 57 41 54 41 55 41 56 41 57 "
-        "48 8D AC 24 ?? ?? ?? ?? B8 30 11 00 00 E8 ?? ?? ?? ?? "
-        "48 2B E0 C5 F8 29 B4 24 20 11 00 00 4C 8B F2 48 8B F1 "
-        "45 33 ED 48 8B CA E8"
-    );
-}
-
 static bool LooksLikeSceneFrameUpdate(uintptr_t f) {
     if (!f) return false;
     __try {
@@ -638,12 +518,6 @@ static bool TryReadIntSafe(const int* ptr, int* outValue) {
         *outValue = 0;
         return false;
     }
-}
-
-static bool IsValidatedCallTarget(uintptr_t addr) {
-    if (!IsExecutableAddress(addr)) return false;
-    if (LooksLikeFunctionEntry(addr)) return true;
-    return FindFunctionStartViaUnwind(addr) != 0;
 }
 
 static RuntimeHealthState AggregateTargetHealth(std::initializer_list<AobTargetId> ids, std::string& outNote) {
@@ -1645,14 +1519,6 @@ bool RunAOBScan(){
     } else {
         Log("[W] SoundManager global not found (thunder audio bank preload unavailable)\n");
     }
-
-    uintptr_t addrSpawnGameGlobalEffect = ResolveSpawnGameGlobalEffect();
-    if (addrSpawnGameGlobalEffect) {
-        Log("[AOB] SpawnGameGlobalEffect = %p\n", (void*)addrSpawnGameGlobalEffect);
-    } else {
-        Log("[W] SpawnGameGlobalEffect not found (native thunder global-effect bridge unavailable)\n");
-    }
-    g_pSpawnGameGlobalEffect = reinterpret_cast<SpawnGameGlobalEffect_fn>(addrSpawnGameGlobalEffect);
 
     uintptr_t addrActivate     = EC(0x2AA,"ActivateEffect");
     uintptr_t addrSetIntensity = EC(0x2CC,"SetIntensity");

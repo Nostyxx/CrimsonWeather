@@ -2,6 +2,11 @@
 #include "runtime_shared.h"
 #include "preset_service.h"
 #include "sky_texture_override.h"
+#include "preset_model.h"
+#include "preset_format.h"
+#include "preset_schedule.h"
+
+using namespace preset_internal;
 
 #include <algorithm>
 #include <array>
@@ -16,80 +21,7 @@
 bool SelectPresetIndexInternal(int index, bool applyImmediately, const char* statusPrefix, const char* toastPrefix, const char* logVerb);
 
 namespace {
-constexpr const char* kPresetHeader = "[CrimsonWeatherPreset]";
 constexpr float kCloudScatteringCoefficientMin = 0.00001f;
-
-struct PresetListItem {
-    std::string fileName;
-    std::string displayName;
-    std::string fullPath;
-};
-
-struct WeatherPresetMask {
-    bool forceClearSky = false;
-    bool noRain = false;
-    bool rain = false;
-    bool thunder = false;
-    bool noDust = false;
-    bool dust = false;
-    bool noSnow = false;
-    bool snow = false;
-    bool snowAccumBoundaryA = false;
-    bool snowAccumBoundaryB = false;
-    bool snowCoverageThreshold = false;
-    bool time = false;
-    bool cloudAmount = false;
-    bool cloudHeight = false;
-    bool cloudDensity = false;
-    bool midClouds = false;
-    bool highClouds = false;
-    bool cloudAlpha = false;
-    bool cloudFadeRange = false;
-    bool cloudDetailRatio = false;
-    bool cloudPhaseFront = false;
-    bool cloudScatteringCoefficient = false;
-    bool cloudFlow = false;
-    bool cloudVisibleRange = false;
-    bool rayleighHeight = false;
-    bool ozoneRatio = false;
-    bool rayleighScatteringColor = false;
-    bool exp2C = false;
-    bool exp2D = false;
-    bool cloudVariation = false;
-    bool nightSkyRotation = false;
-    bool nightSkyYaw = false;
-    bool sunSize = false;
-    bool sunLightIntensity = false;
-    bool sunYaw = false;
-    bool sunPitch = false;
-    bool moonSize = false;
-    bool moonLightIntensity = false;
-    bool moonYaw = false;
-    bool moonPitch = false;
-    bool moonRoll = false;
-    bool moonTexture = false;
-    bool milkywayTexture = false;
-    bool fog = false;
-    bool nativeFog = false;
-    bool volumeFogScatterColor = false;
-    bool mieScatterColor = false;
-    bool mieScaleHeight = false;
-    bool mieAerosolDensity = false;
-    bool mieAerosolAbsorption = false;
-    bool heightFogBaseline = false;
-    bool heightFogFalloff = false;
-    bool noFog = false;
-    bool wind = false;
-    bool noWind = false;
-    bool puddleScale = false;
-};
-
-struct WeatherPresetPackage {
-    WeatherPresetData global{};
-    std::array<bool, kPresetRegionCount> regionEnabled{};
-    std::array<WeatherPresetData, kPresetRegionCount> region{};
-    std::array<WeatherPresetMask, kPresetRegionCount> regionMask{};
-};
 
 std::vector<PresetListItem> g_presetItems;
 bool g_presetsInitialized = false;
@@ -116,75 +48,12 @@ constexpr bool kPresetVerboseTestLog = false;
 constexpr const char* kNewPresetDisplayName = "[New Preset]";
 constexpr const char* kPresetConfigSection = "Preset";
 constexpr const char* kPresetConfigKeyLastPreset = "LastPreset";
-constexpr const char* kTimeScheduleConfigSection = "TimeSchedule";
-constexpr int kTimeScheduleDefaultBlendSeconds = 120;
-constexpr int kTimeScheduleSourceVisualTimeOverride = 0;
-constexpr int kTimeScheduleSourceGameTime = 1;
-constexpr int kPresetFormatVersion = 6;
-std::string TrimCopy(const std::string& value);
-bool EqualsNoCase(const std::string& a, const std::string& b);
 WeatherPresetData CaptureCurrentPresetData();
 void ApplyPresetData(const WeatherPresetData& data);
-void EnsureTimeScheduleLoaded();
-bool TimeScheduleRuntimeTick(bool worldReady);
-void TimeScheduleDisableForManualSelection();
-void TimeScheduleCancelBlendForUserEdit();
-void TimeSchedulePinCurrentEntryForUserEdit();
-void TimeScheduleClearUserEditPin();
-void TimeScheduleClearSelfVisualGuard();
-bool TryGetTimeScheduleClockHour(float& outHour);
 bool SaveSelectedDraftInternal(const char* statusPrefix, const char* logVerb, bool applyAfterSave);
 
-float ClampPresetFloat(float value, float lo, float hi) {
-    return min(hi, max(lo, value));
-}
-
-float ClampExtendedPresetFloat(float value, float normalLo, float normalHi, float extendedLo, float extendedHi) {
-    return g_extendedSliderRange.load()
-        ? ClampPresetFloat(value, extendedLo, extendedHi)
-        : ClampPresetFloat(value, normalLo, normalHi);
-}
-
-float ClampPresetRain(float value) { return ClampExtendedPresetFloat(value, 0.0f, 1.0f, 0.0f, 5.0f); }
-float ClampPresetThunder(float value) { return ClampExtendedPresetFloat(value, 0.0f, 1.0f, 0.0f, 5.0f); }
-float ClampPresetDust(float value) { return ClampExtendedPresetFloat(value, 0.0f, 2.0f, 0.0f, 10.0f); }
-float ClampPresetSnow(float value) { return ClampExtendedPresetFloat(value, 0.0f, 1.0f, 0.0f, 5.0f); }
-float ClampPresetSnowBoundary(float value) { return ClampPresetFloat(value, -1000.0f, 1500.0f); }
-float ClampPresetCloudAmount(float value) { return ClampExtendedPresetFloat(value, 0.0f, 15.0f, 0.0f, 50.0f); }
-float ClampPresetCloudHeight(float value) { return ClampExtendedPresetFloat(value, -15.0f, 15.0f, -50.0f, 50.0f); }
-float ClampPresetCloudDensity(float value) { return ClampExtendedPresetFloat(value, 0.0f, 10.0f, 0.0f, 50.0f); }
-float ClampPresetCloudWide(float value) { return ClampExtendedPresetFloat(value, 0.0f, 15.0f, 0.0f, 50.0f); }
-float ClampPresetFogPercent(float value) { return ClampExtendedPresetFloat(value, 0.0f, 100.0f, 0.0f, 500.0f); }
-float ClampPresetNativeFog(float value) { return ClampExtendedPresetFloat(value, 0.0f, 15.0f, 0.0f, 50.0f); }
-float ClampPresetWind(float value) { return ClampExtendedPresetFloat(value, 0.0f, 15.0f, 0.0f, 50.0f); }
-float ClampPresetPuddleScale(float value) { return ClampExtendedPresetFloat(value, 0.0f, 1.0f, 0.0f, 5.0f); }
-float ClampPresetPitch(float value) { return ClampExtendedPresetFloat(value, -89.0f, 89.0f, -180.0f, 180.0f); }
-float ClampPresetYaw(float value) { return ClampExtendedPresetFloat(value, -180.0f, 180.0f, -360.0f, 360.0f); }
-float ClampPresetSunSize(float value) { return ClampExtendedPresetFloat(value, 0.01f, 10.0f, 0.001f, 100.0f); }
-float ClampPresetMoonSize(float value) { return ClampExtendedPresetFloat(value, 0.020f, 20.0f, 0.001f, 100.0f); }
-float ClampPresetLightIntensity(float value) { return ClampExtendedPresetFloat(value, 0.0f, 20.0f, 0.0f, 100.0f); }
-float ClampPresetMieScaleHeight(float value) { return ClampExtendedPresetFloat(value, 10.0f, 20000.0f, 1.0f, 200000.0f); }
-float ClampPresetMieDensity(float value) { return ClampExtendedPresetFloat(value, 0.0f, 20.0f, 0.0f, 100.0f); }
-float ClampPresetMieAbsorption(float value) { return ClampExtendedPresetFloat(value, 0.0f, 5.0f, 0.0f, 100.0f); }
-float ClampPresetHeightFogBaseline(float value) { return ClampExtendedPresetFloat(value, -5000.0f, 5000.0f, -50000.0f, 50000.0f); }
-float ClampPresetHeightFogFalloff(float value) { return ClampExtendedPresetFloat(value, 0.0f, 5.0f, 0.0f, 100.0f); }
-float ClampPresetCloudAlpha(float value) { return ClampExtendedPresetFloat(value, 0.0f, 50.0f, 0.0f, 100.0f); }
-float ClampPresetCloudFadeRange(float value) { return ClampExtendedPresetFloat(value, 0.0f, 100000.0f, 0.0f, 200000.0f); }
-float ClampPresetCloudDetailRatio(float value) { return ClampPresetFloat(value, 0.0f, 1.5f); }
-float ClampPresetCloudPhaseFront(float value) { return ClampExtendedPresetFloat(value, -1.0f, 1.0f, -1.0f, 1.0f); }
-float ClampPresetCloudScatteringCoefficient(float value) { return ClampExtendedPresetFloat(value, kCloudScatteringCoefficientMin, 1.0f, kCloudScatteringCoefficientMin, 100.0f); }
-float ClampPresetCloudFlow(float value) { return ClampExtendedPresetFloat(value, 0.0f, 10.0f, 0.0f, 50.0f); }
-float ClampPresetCloudVisibleRange(float value) { return ClampPresetFloat(value, 0.0f, 10.0f); }
-float ClampPresetRayleighHeight(float value) { return ClampExtendedPresetFloat(value, 10.0f, 20000.0f, 1.0f, 200000.0f); }
-float ClampPresetOzoneRatio(float value) { return ClampExtendedPresetFloat(value, 0.0f, 10.0f, 0.0f, 100.0f); }
-float ClampPresetColorComponent(float value) { return ClampPresetFloat(value, 0.0f, 10.0f); }
-
-WeatherPresetColor ClampPresetColor(WeatherPresetColor color, bool includeAlpha) {
-    color.r = ClampPresetColorComponent(color.r);
-    color.g = ClampPresetColorComponent(color.g);
-    color.b = ClampPresetColorComponent(color.b);
-    color.a = includeAlpha ? ClampPresetColorComponent(color.a) : 1.0f;
-    return color;
+PresetFormatOptions CurrentPresetFormatOptions() {
+    return { g_extendedSliderRange.load() };
 }
 
 bool HasSelectedPresetIndexInternal() {
@@ -215,836 +84,6 @@ void SetSelectedPresetBaseline(const WeatherPresetPackage& package) {
     g_newPresetDraftActive = false;
     g_autoSavePending = false;
     g_autoSaveLastEditTick = 0;
-}
-
-bool FloatNearlyEqual(float a, float b, float epsilon = kPresetFloatEpsilon) {
-    return std::fabs(a - b) <= epsilon;
-}
-
-bool HourNearlyEqual(float a, float b, float epsilon = kPresetFloatEpsilon) {
-    const float na = NormalizeHour24(a);
-    const float nb = NormalizeHour24(b);
-    float delta = std::fabs(na - nb);
-    if (delta > 12.0f) delta = 24.0f - delta;
-    return delta <= epsilon;
-}
-
-bool EnabledFloatNearlyEqual(bool aEnabled, float a, bool bEnabled, float b) {
-    if (aEnabled != bEnabled) {
-        return false;
-    }
-    return !aEnabled || FloatNearlyEqual(a, b);
-}
-
-bool TimePresetNearlyEqual(const WeatherPresetData& a, const WeatherPresetData& b) {
-    if (a.visualTimeOverride != b.visualTimeOverride) {
-        return false;
-    }
-    if (!a.visualTimeOverride) {
-        return true;
-    }
-    if (a.progressVisualTime != b.progressVisualTime) {
-        return false;
-    }
-    if (a.progressVisualTime && a.progressVisualTimeMatchGameTime != b.progressVisualTimeMatchGameTime) {
-        return false;
-    }
-    if (!HourNearlyEqual(a.timeHour, b.timeHour)) {
-        return false;
-    }
-    if (!a.progressVisualTime) {
-        return true;
-    }
-    return FloatNearlyEqual(a.progressVisualTimeIntervalMs, b.progressVisualTimeIntervalMs);
-}
-
-bool EnabledStringEquals(bool aEnabled, const std::string& a, bool bEnabled, const std::string& b) {
-    if (aEnabled != bEnabled) {
-        return false;
-    }
-    return !aEnabled || EqualsNoCase(a, b);
-}
-
-bool ColorNearlyEqual(const WeatherPresetColor& a, const WeatherPresetColor& b, bool includeAlpha) {
-    return FloatNearlyEqual(a.r, b.r) &&
-        FloatNearlyEqual(a.g, b.g) &&
-        FloatNearlyEqual(a.b, b.b) &&
-        (!includeAlpha || FloatNearlyEqual(a.a, b.a));
-}
-
-bool EnabledColorNearlyEqual(bool aEnabled, const WeatherPresetColor& a, bool bEnabled, const WeatherPresetColor& b, bool includeAlpha) {
-    if (aEnabled != bEnabled) {
-        return false;
-    }
-    return !aEnabled || ColorNearlyEqual(a, b, includeAlpha);
-}
-
-bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
-    return a.forceClearSky == b.forceClearSky &&
-        a.noRain == b.noRain &&
-        FloatNearlyEqual(a.rain, b.rain) &&
-        FloatNearlyEqual(a.thunder, b.thunder) &&
-        a.noDust == b.noDust &&
-        FloatNearlyEqual(a.dust, b.dust) &&
-        a.noSnow == b.noSnow &&
-        FloatNearlyEqual(a.snow, b.snow) &&
-        EnabledFloatNearlyEqual(a.snowAccumBoundaryAEnabled, a.snowAccumBoundaryA, b.snowAccumBoundaryAEnabled, b.snowAccumBoundaryA) &&
-        EnabledFloatNearlyEqual(a.snowAccumBoundaryBEnabled, a.snowAccumBoundaryB, b.snowAccumBoundaryBEnabled, b.snowAccumBoundaryB) &&
-        EnabledFloatNearlyEqual(a.snowCoverageThresholdEnabled, a.snowCoverageThreshold, b.snowCoverageThresholdEnabled, b.snowCoverageThreshold) &&
-        TimePresetNearlyEqual(a, b) &&
-        EnabledFloatNearlyEqual(a.cloudAmountEnabled, a.cloudAmount, b.cloudAmountEnabled, b.cloudAmount) &&
-        EnabledFloatNearlyEqual(a.cloudHeightEnabled, a.cloudHeight, b.cloudHeightEnabled, b.cloudHeight) &&
-        EnabledFloatNearlyEqual(a.cloudDensityEnabled, a.cloudDensity, b.cloudDensityEnabled, b.cloudDensity) &&
-        EnabledFloatNearlyEqual(a.midCloudsEnabled, a.midClouds, b.midCloudsEnabled, b.midClouds) &&
-        EnabledFloatNearlyEqual(a.highCloudsEnabled, a.highClouds, b.highCloudsEnabled, b.highClouds) &&
-        EnabledFloatNearlyEqual(a.cloudAlphaEnabled, a.cloudAlpha, b.cloudAlphaEnabled, b.cloudAlpha) &&
-        EnabledFloatNearlyEqual(a.cloudFadeRangeEnabled, a.cloudFadeRange, b.cloudFadeRangeEnabled, b.cloudFadeRange) &&
-        EnabledFloatNearlyEqual(a.cloudDetailRatioEnabled, a.cloudDetailRatio, b.cloudDetailRatioEnabled, b.cloudDetailRatio) &&
-        EnabledFloatNearlyEqual(a.cloudPhaseFrontEnabled, a.cloudPhaseFront, b.cloudPhaseFrontEnabled, b.cloudPhaseFront) &&
-        EnabledFloatNearlyEqual(a.cloudScatteringCoefficientEnabled, a.cloudScatteringCoefficient, b.cloudScatteringCoefficientEnabled, b.cloudScatteringCoefficient) &&
-        EnabledFloatNearlyEqual(a.cloudFlowEnabled, a.cloudFlow, b.cloudFlowEnabled, b.cloudFlow) &&
-        EnabledFloatNearlyEqual(a.cloudVisibleRangeEnabled, a.cloudVisibleRange, b.cloudVisibleRangeEnabled, b.cloudVisibleRange) &&
-        EnabledFloatNearlyEqual(a.rayleighHeightEnabled, a.rayleighHeight, b.rayleighHeightEnabled, b.rayleighHeight) &&
-        EnabledFloatNearlyEqual(a.ozoneRatioEnabled, a.ozoneRatio, b.ozoneRatioEnabled, b.ozoneRatio) &&
-        EnabledColorNearlyEqual(a.rayleighScatteringColorEnabled, a.rayleighScatteringColor, b.rayleighScatteringColorEnabled, b.rayleighScatteringColor, false) &&
-        EnabledFloatNearlyEqual(a.exp2CEnabled, a.exp2C, b.exp2CEnabled, b.exp2C) &&
-        EnabledFloatNearlyEqual(a.exp2DEnabled, a.exp2D, b.exp2DEnabled, b.exp2D) &&
-        EnabledFloatNearlyEqual(a.cloudVariationEnabled, a.cloudVariation, b.cloudVariationEnabled, b.cloudVariation) &&
-        EnabledFloatNearlyEqual(a.nightSkyRotationEnabled, a.nightSkyRotation, b.nightSkyRotationEnabled, b.nightSkyRotation) &&
-        EnabledFloatNearlyEqual(a.nightSkyYawEnabled, a.nightSkyYaw, b.nightSkyYawEnabled, b.nightSkyYaw) &&
-        EnabledFloatNearlyEqual(a.sunSizeEnabled, a.sunSize, b.sunSizeEnabled, b.sunSize) &&
-        EnabledFloatNearlyEqual(a.sunLightIntensityEnabled, a.sunLightIntensity, b.sunLightIntensityEnabled, b.sunLightIntensity) &&
-        EnabledFloatNearlyEqual(a.sunYawEnabled, a.sunYaw, b.sunYawEnabled, b.sunYaw) &&
-        EnabledFloatNearlyEqual(a.sunPitchEnabled, a.sunPitch, b.sunPitchEnabled, b.sunPitch) &&
-        EnabledFloatNearlyEqual(a.moonSizeEnabled, a.moonSize, b.moonSizeEnabled, b.moonSize) &&
-        EnabledFloatNearlyEqual(a.moonLightIntensityEnabled, a.moonLightIntensity, b.moonLightIntensityEnabled, b.moonLightIntensity) &&
-        EnabledFloatNearlyEqual(a.moonYawEnabled, a.moonYaw, b.moonYawEnabled, b.moonYaw) &&
-        EnabledFloatNearlyEqual(a.moonPitchEnabled, a.moonPitch, b.moonPitchEnabled, b.moonPitch) &&
-        EnabledFloatNearlyEqual(a.moonRollEnabled, a.moonRoll, b.moonRollEnabled, b.moonRoll) &&
-        EnabledStringEquals(a.moonTextureEnabled, a.moonTexture, b.moonTextureEnabled, b.moonTexture) &&
-        EnabledStringEquals(a.milkywayTextureEnabled, a.milkywayTexture, b.milkywayTextureEnabled, b.milkywayTexture) &&
-        EnabledFloatNearlyEqual(a.fogEnabled, a.fogPercent, b.fogEnabled, b.fogPercent) &&
-        EnabledFloatNearlyEqual(a.nativeFogEnabled, a.nativeFog, b.nativeFogEnabled, b.nativeFog) &&
-        EnabledColorNearlyEqual(a.volumeFogScatterColorEnabled, a.volumeFogScatterColor, b.volumeFogScatterColorEnabled, b.volumeFogScatterColor, true) &&
-        EnabledColorNearlyEqual(a.mieScatterColorEnabled, a.mieScatterColor, b.mieScatterColorEnabled, b.mieScatterColor, true) &&
-        EnabledFloatNearlyEqual(a.mieScaleHeightEnabled, a.mieScaleHeight, b.mieScaleHeightEnabled, b.mieScaleHeight) &&
-        EnabledFloatNearlyEqual(a.mieAerosolDensityEnabled, a.mieAerosolDensity, b.mieAerosolDensityEnabled, b.mieAerosolDensity) &&
-        EnabledFloatNearlyEqual(a.mieAerosolAbsorptionEnabled, a.mieAerosolAbsorption, b.mieAerosolAbsorptionEnabled, b.mieAerosolAbsorption) &&
-        EnabledFloatNearlyEqual(a.heightFogBaselineEnabled, a.heightFogBaseline, b.heightFogBaselineEnabled, b.heightFogBaseline) &&
-        EnabledFloatNearlyEqual(a.heightFogFalloffEnabled, a.heightFogFalloff, b.heightFogFalloffEnabled, b.heightFogFalloff) &&
-        a.noFog == b.noFog &&
-        FloatNearlyEqual(a.wind, b.wind) &&
-        a.noWind == b.noWind &&
-        EnabledFloatNearlyEqual(a.puddleScaleEnabled, a.puddleScale, b.puddleScaleEnabled, b.puddleScale);
-}
-
-bool PresetMaskAny(const WeatherPresetMask& mask) {
-    return mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow ||
-        mask.snowAccumBoundaryA || mask.snowAccumBoundaryB || mask.snowCoverageThreshold || mask.time ||
-        mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds ||
-        mask.highClouds || mask.cloudAlpha || mask.cloudFadeRange || mask.cloudDetailRatio ||
-        mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.cloudFlow || mask.cloudVisibleRange ||
-        mask.rayleighHeight || mask.ozoneRatio || mask.rayleighScatteringColor ||
-        mask.exp2C || mask.exp2D || mask.cloudVariation ||
-        mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunLightIntensity || mask.sunYaw || mask.sunPitch ||
-        mask.moonSize || mask.moonLightIntensity || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture ||
-        mask.fog || mask.nativeFog || mask.volumeFogScatterColor || mask.mieScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
-        mask.mieAerosolAbsorption || mask.heightFogBaseline || mask.heightFogFalloff || mask.noFog || mask.wind ||
-        mask.noWind || mask.puddleScale;
-}
-
-WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
-    WeatherPresetSourceMask out{};
-    out.forceClearSky = mask.forceClearSky;
-    out.noRain = mask.noRain;
-    out.rain = mask.rain;
-    out.thunder = mask.thunder;
-    out.noDust = mask.noDust;
-    out.dust = mask.dust;
-    out.noSnow = mask.noSnow;
-    out.snow = mask.snow;
-    out.snowAccumBoundaryA = mask.snowAccumBoundaryA;
-    out.snowAccumBoundaryB = mask.snowAccumBoundaryB;
-    out.snowCoverageThreshold = mask.snowCoverageThreshold;
-    out.time = mask.time;
-    out.cloudAmount = mask.cloudAmount;
-    out.cloudHeight = mask.cloudHeight;
-    out.cloudDensity = mask.cloudDensity;
-    out.midClouds = mask.midClouds;
-    out.highClouds = mask.highClouds;
-    out.cloudAlpha = mask.cloudAlpha;
-    out.cloudFadeRange = mask.cloudFadeRange;
-    out.cloudDetailRatio = mask.cloudDetailRatio;
-    out.cloudPhaseFront = mask.cloudPhaseFront;
-    out.cloudScatteringCoefficient = mask.cloudScatteringCoefficient;
-    out.cloudFlow = mask.cloudFlow;
-    out.cloudVisibleRange = mask.cloudVisibleRange;
-    out.rayleighHeight = mask.rayleighHeight;
-    out.ozoneRatio = mask.ozoneRatio;
-    out.rayleighScatteringColor = mask.rayleighScatteringColor;
-    out.exp2C = mask.exp2C;
-    out.exp2D = mask.exp2D;
-    out.cloudVariation = mask.cloudVariation;
-    out.nightSkyRotation = mask.nightSkyRotation;
-    out.nightSkyYaw = mask.nightSkyYaw;
-    out.sunSize = mask.sunSize;
-    out.sunLightIntensity = mask.sunLightIntensity;
-    out.sunYaw = mask.sunYaw;
-    out.sunPitch = mask.sunPitch;
-    out.moonSize = mask.moonSize;
-    out.moonLightIntensity = mask.moonLightIntensity;
-    out.moonYaw = mask.moonYaw;
-    out.moonPitch = mask.moonPitch;
-    out.moonRoll = mask.moonRoll;
-    out.moonTexture = mask.moonTexture;
-    out.milkywayTexture = mask.milkywayTexture;
-    out.fog = mask.fog;
-    out.nativeFog = mask.nativeFog;
-    out.volumeFogScatterColor = mask.volumeFogScatterColor;
-    out.mieScatterColor = mask.mieScatterColor;
-    out.mieScaleHeight = mask.mieScaleHeight;
-    out.mieAerosolDensity = mask.mieAerosolDensity;
-    out.mieAerosolAbsorption = mask.mieAerosolAbsorption;
-    out.heightFogBaseline = mask.heightFogBaseline;
-    out.heightFogFalloff = mask.heightFogFalloff;
-    out.noFog = mask.noFog;
-    out.wind = mask.wind;
-    out.noWind = mask.noWind;
-    out.puddleScale = mask.puddleScale;
-    return out;
-}
-
-WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
-    WeatherPresetMask mask{};
-    mask.forceClearSky = source.forceClearSky;
-    mask.noRain = source.noRain;
-    mask.rain = source.rain;
-    mask.thunder = source.thunder;
-    mask.noDust = source.noDust;
-    mask.dust = source.dust;
-    mask.noSnow = source.noSnow;
-    mask.snow = source.snow;
-    mask.snowAccumBoundaryA = source.snowAccumBoundaryA;
-    mask.snowAccumBoundaryB = source.snowAccumBoundaryB;
-    mask.snowCoverageThreshold = source.snowCoverageThreshold;
-    mask.time = source.time;
-    mask.cloudAmount = source.cloudAmount;
-    mask.cloudHeight = source.cloudHeight;
-    mask.cloudDensity = source.cloudDensity;
-    mask.midClouds = source.midClouds;
-    mask.highClouds = source.highClouds;
-    mask.cloudAlpha = source.cloudAlpha;
-    mask.cloudFadeRange = source.cloudFadeRange;
-    mask.cloudDetailRatio = source.cloudDetailRatio;
-    mask.cloudPhaseFront = source.cloudPhaseFront;
-    mask.cloudScatteringCoefficient = source.cloudScatteringCoefficient;
-    mask.cloudFlow = source.cloudFlow;
-    mask.cloudVisibleRange = source.cloudVisibleRange;
-    mask.rayleighHeight = source.rayleighHeight;
-    mask.ozoneRatio = source.ozoneRatio;
-    mask.rayleighScatteringColor = source.rayleighScatteringColor;
-    mask.exp2C = source.exp2C;
-    mask.exp2D = source.exp2D;
-    mask.cloudVariation = source.cloudVariation;
-    mask.nightSkyRotation = source.nightSkyRotation;
-    mask.nightSkyYaw = source.nightSkyYaw;
-    mask.sunSize = source.sunSize;
-    mask.sunLightIntensity = source.sunLightIntensity;
-    mask.sunYaw = source.sunYaw;
-    mask.sunPitch = source.sunPitch;
-    mask.moonSize = source.moonSize;
-    mask.moonLightIntensity = source.moonLightIntensity;
-    mask.moonYaw = source.moonYaw;
-    mask.moonPitch = source.moonPitch;
-    mask.moonRoll = source.moonRoll;
-    mask.moonTexture = source.moonTexture;
-    mask.milkywayTexture = source.milkywayTexture;
-    mask.fog = source.fog;
-    mask.nativeFog = source.nativeFog;
-    mask.volumeFogScatterColor = source.volumeFogScatterColor;
-    mask.mieScatterColor = source.mieScatterColor;
-    mask.mieScaleHeight = source.mieScaleHeight;
-    mask.mieAerosolDensity = source.mieAerosolDensity;
-    mask.mieAerosolAbsorption = source.mieAerosolAbsorption;
-    mask.heightFogBaseline = source.heightFogBaseline;
-    mask.heightFogFalloff = source.heightFogFalloff;
-    mask.noFog = source.noFog;
-    mask.wind = source.wind;
-    mask.noWind = source.noWind;
-    mask.puddleScale = source.puddleScale;
-    return mask;
-}
-
-bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
-    return a.forceClearSky == b.forceClearSky &&
-        a.noRain == b.noRain &&
-        a.rain == b.rain &&
-        a.thunder == b.thunder &&
-        a.noDust == b.noDust &&
-        a.dust == b.dust &&
-        a.noSnow == b.noSnow &&
-        a.snow == b.snow &&
-        a.snowAccumBoundaryA == b.snowAccumBoundaryA &&
-        a.snowAccumBoundaryB == b.snowAccumBoundaryB &&
-        a.snowCoverageThreshold == b.snowCoverageThreshold &&
-        a.time == b.time &&
-        a.cloudAmount == b.cloudAmount &&
-        a.cloudHeight == b.cloudHeight &&
-        a.cloudDensity == b.cloudDensity &&
-        a.midClouds == b.midClouds &&
-        a.highClouds == b.highClouds &&
-        a.cloudAlpha == b.cloudAlpha &&
-        a.cloudFadeRange == b.cloudFadeRange &&
-        a.cloudDetailRatio == b.cloudDetailRatio &&
-        a.cloudPhaseFront == b.cloudPhaseFront &&
-        a.cloudScatteringCoefficient == b.cloudScatteringCoefficient &&
-        a.cloudFlow == b.cloudFlow &&
-        a.cloudVisibleRange == b.cloudVisibleRange &&
-        a.rayleighHeight == b.rayleighHeight &&
-        a.ozoneRatio == b.ozoneRatio &&
-        a.rayleighScatteringColor == b.rayleighScatteringColor &&
-        a.exp2C == b.exp2C &&
-        a.exp2D == b.exp2D &&
-        a.cloudVariation == b.cloudVariation &&
-        a.nightSkyRotation == b.nightSkyRotation &&
-        a.nightSkyYaw == b.nightSkyYaw &&
-        a.sunSize == b.sunSize &&
-        a.sunLightIntensity == b.sunLightIntensity &&
-        a.sunYaw == b.sunYaw &&
-        a.sunPitch == b.sunPitch &&
-        a.moonSize == b.moonSize &&
-        a.moonLightIntensity == b.moonLightIntensity &&
-        a.moonYaw == b.moonYaw &&
-        a.moonPitch == b.moonPitch &&
-        a.moonRoll == b.moonRoll &&
-        a.moonTexture == b.moonTexture &&
-        a.milkywayTexture == b.milkywayTexture &&
-        a.fog == b.fog &&
-        a.nativeFog == b.nativeFog &&
-        a.volumeFogScatterColor == b.volumeFogScatterColor &&
-        a.mieScatterColor == b.mieScatterColor &&
-        a.mieScaleHeight == b.mieScaleHeight &&
-        a.mieAerosolDensity == b.mieAerosolDensity &&
-        a.mieAerosolAbsorption == b.mieAerosolAbsorption &&
-        a.heightFogBaseline == b.heightFogBaseline &&
-        a.heightFogFalloff == b.heightFogFalloff &&
-        a.noFog == b.noFog &&
-        a.wind == b.wind &&
-        a.noWind == b.noWind &&
-        a.puddleScale == b.puddleScale;
-}
-
-WeatherPresetMask BuildFullPresetMask() {
-    WeatherPresetMask mask{};
-    mask.forceClearSky = true;
-    mask.noRain = true;
-    mask.rain = true;
-    mask.thunder = true;
-    mask.noDust = true;
-    mask.dust = true;
-    mask.noSnow = true;
-    mask.snow = true;
-    mask.snowAccumBoundaryA = true;
-    mask.snowAccumBoundaryB = true;
-    mask.snowCoverageThreshold = true;
-    mask.time = true;
-    mask.cloudAmount = true;
-    mask.cloudHeight = true;
-    mask.cloudDensity = true;
-    mask.midClouds = true;
-    mask.highClouds = true;
-    mask.cloudAlpha = true;
-    mask.cloudFadeRange = true;
-    mask.cloudDetailRatio = true;
-    mask.cloudPhaseFront = true;
-    mask.cloudScatteringCoefficient = true;
-    mask.cloudFlow = true;
-    mask.cloudVisibleRange = true;
-    mask.rayleighHeight = true;
-    mask.ozoneRatio = true;
-    mask.rayleighScatteringColor = true;
-    mask.exp2C = true;
-    mask.exp2D = true;
-    mask.cloudVariation = true;
-    mask.nightSkyRotation = true;
-    mask.nightSkyYaw = true;
-    mask.sunSize = true;
-    mask.sunLightIntensity = true;
-    mask.sunYaw = true;
-    mask.sunPitch = true;
-    mask.moonSize = true;
-    mask.moonLightIntensity = true;
-    mask.moonYaw = true;
-    mask.moonPitch = true;
-    mask.moonRoll = true;
-    mask.moonTexture = true;
-    mask.milkywayTexture = true;
-    mask.fog = true;
-    mask.nativeFog = true;
-    mask.volumeFogScatterColor = true;
-    mask.mieScatterColor = true;
-    mask.mieScaleHeight = true;
-    mask.mieAerosolDensity = true;
-    mask.mieAerosolAbsorption = true;
-    mask.heightFogBaseline = true;
-    mask.heightFogFalloff = true;
-    mask.noFog = true;
-    mask.wind = true;
-    mask.noWind = true;
-    mask.puddleScale = true;
-    return mask;
-}
-
-WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const WeatherPresetData& value) {
-    WeatherPresetMask mask{};
-    mask.forceClearSky = base.forceClearSky != value.forceClearSky;
-    mask.noRain = base.noRain != value.noRain;
-    mask.rain = !FloatNearlyEqual(base.rain, value.rain);
-    mask.thunder = !FloatNearlyEqual(base.thunder, value.thunder);
-    mask.noDust = base.noDust != value.noDust;
-    mask.dust = !FloatNearlyEqual(base.dust, value.dust);
-    mask.noSnow = base.noSnow != value.noSnow;
-    mask.snow = !FloatNearlyEqual(base.snow, value.snow);
-    mask.snowAccumBoundaryA = !EnabledFloatNearlyEqual(base.snowAccumBoundaryAEnabled, base.snowAccumBoundaryA, value.snowAccumBoundaryAEnabled, value.snowAccumBoundaryA);
-    mask.snowAccumBoundaryB = !EnabledFloatNearlyEqual(base.snowAccumBoundaryBEnabled, base.snowAccumBoundaryB, value.snowAccumBoundaryBEnabled, value.snowAccumBoundaryB);
-    mask.snowCoverageThreshold = !EnabledFloatNearlyEqual(base.snowCoverageThresholdEnabled, base.snowCoverageThreshold, value.snowCoverageThresholdEnabled, value.snowCoverageThreshold);
-    mask.time = !TimePresetNearlyEqual(base, value);
-    mask.cloudAmount = !EnabledFloatNearlyEqual(base.cloudAmountEnabled, base.cloudAmount, value.cloudAmountEnabled, value.cloudAmount);
-    mask.cloudHeight = !EnabledFloatNearlyEqual(base.cloudHeightEnabled, base.cloudHeight, value.cloudHeightEnabled, value.cloudHeight);
-    mask.cloudDensity = !EnabledFloatNearlyEqual(base.cloudDensityEnabled, base.cloudDensity, value.cloudDensityEnabled, value.cloudDensity);
-    mask.midClouds = !EnabledFloatNearlyEqual(base.midCloudsEnabled, base.midClouds, value.midCloudsEnabled, value.midClouds);
-    mask.highClouds = !EnabledFloatNearlyEqual(base.highCloudsEnabled, base.highClouds, value.highCloudsEnabled, value.highClouds);
-    mask.cloudAlpha = !EnabledFloatNearlyEqual(base.cloudAlphaEnabled, base.cloudAlpha, value.cloudAlphaEnabled, value.cloudAlpha);
-    mask.cloudFadeRange = !EnabledFloatNearlyEqual(base.cloudFadeRangeEnabled, base.cloudFadeRange, value.cloudFadeRangeEnabled, value.cloudFadeRange);
-    mask.cloudDetailRatio = !EnabledFloatNearlyEqual(base.cloudDetailRatioEnabled, base.cloudDetailRatio, value.cloudDetailRatioEnabled, value.cloudDetailRatio);
-    mask.cloudPhaseFront = !EnabledFloatNearlyEqual(base.cloudPhaseFrontEnabled, base.cloudPhaseFront, value.cloudPhaseFrontEnabled, value.cloudPhaseFront);
-    mask.cloudScatteringCoefficient = !EnabledFloatNearlyEqual(base.cloudScatteringCoefficientEnabled, base.cloudScatteringCoefficient, value.cloudScatteringCoefficientEnabled, value.cloudScatteringCoefficient);
-    mask.cloudFlow = !EnabledFloatNearlyEqual(base.cloudFlowEnabled, base.cloudFlow, value.cloudFlowEnabled, value.cloudFlow);
-    mask.cloudVisibleRange = !EnabledFloatNearlyEqual(base.cloudVisibleRangeEnabled, base.cloudVisibleRange, value.cloudVisibleRangeEnabled, value.cloudVisibleRange);
-    mask.rayleighHeight = !EnabledFloatNearlyEqual(base.rayleighHeightEnabled, base.rayleighHeight, value.rayleighHeightEnabled, value.rayleighHeight);
-    mask.ozoneRatio = !EnabledFloatNearlyEqual(base.ozoneRatioEnabled, base.ozoneRatio, value.ozoneRatioEnabled, value.ozoneRatio);
-    mask.rayleighScatteringColor = !EnabledColorNearlyEqual(base.rayleighScatteringColorEnabled, base.rayleighScatteringColor, value.rayleighScatteringColorEnabled, value.rayleighScatteringColor, false);
-    mask.exp2C = !EnabledFloatNearlyEqual(base.exp2CEnabled, base.exp2C, value.exp2CEnabled, value.exp2C);
-    mask.exp2D = !EnabledFloatNearlyEqual(base.exp2DEnabled, base.exp2D, value.exp2DEnabled, value.exp2D);
-    mask.cloudVariation = !EnabledFloatNearlyEqual(base.cloudVariationEnabled, base.cloudVariation, value.cloudVariationEnabled, value.cloudVariation);
-    mask.nightSkyRotation = !EnabledFloatNearlyEqual(base.nightSkyRotationEnabled, base.nightSkyRotation, value.nightSkyRotationEnabled, value.nightSkyRotation);
-    mask.nightSkyYaw = !EnabledFloatNearlyEqual(base.nightSkyYawEnabled, base.nightSkyYaw, value.nightSkyYawEnabled, value.nightSkyYaw);
-    mask.sunSize = !EnabledFloatNearlyEqual(base.sunSizeEnabled, base.sunSize, value.sunSizeEnabled, value.sunSize);
-    mask.sunLightIntensity = !EnabledFloatNearlyEqual(base.sunLightIntensityEnabled, base.sunLightIntensity, value.sunLightIntensityEnabled, value.sunLightIntensity);
-    mask.sunYaw = !EnabledFloatNearlyEqual(base.sunYawEnabled, base.sunYaw, value.sunYawEnabled, value.sunYaw);
-    mask.sunPitch = !EnabledFloatNearlyEqual(base.sunPitchEnabled, base.sunPitch, value.sunPitchEnabled, value.sunPitch);
-    mask.moonSize = !EnabledFloatNearlyEqual(base.moonSizeEnabled, base.moonSize, value.moonSizeEnabled, value.moonSize);
-    mask.moonLightIntensity = !EnabledFloatNearlyEqual(base.moonLightIntensityEnabled, base.moonLightIntensity, value.moonLightIntensityEnabled, value.moonLightIntensity);
-    mask.moonYaw = !EnabledFloatNearlyEqual(base.moonYawEnabled, base.moonYaw, value.moonYawEnabled, value.moonYaw);
-    mask.moonPitch = !EnabledFloatNearlyEqual(base.moonPitchEnabled, base.moonPitch, value.moonPitchEnabled, value.moonPitch);
-    mask.moonRoll = !EnabledFloatNearlyEqual(base.moonRollEnabled, base.moonRoll, value.moonRollEnabled, value.moonRoll);
-    mask.moonTexture = !EnabledStringEquals(base.moonTextureEnabled, base.moonTexture, value.moonTextureEnabled, value.moonTexture);
-    mask.milkywayTexture = !EnabledStringEquals(base.milkywayTextureEnabled, base.milkywayTexture, value.milkywayTextureEnabled, value.milkywayTexture);
-    mask.fog = !EnabledFloatNearlyEqual(base.fogEnabled, base.fogPercent, value.fogEnabled, value.fogPercent);
-    mask.nativeFog = !EnabledFloatNearlyEqual(base.nativeFogEnabled, base.nativeFog, value.nativeFogEnabled, value.nativeFog);
-    mask.volumeFogScatterColor = !EnabledColorNearlyEqual(base.volumeFogScatterColorEnabled, base.volumeFogScatterColor, value.volumeFogScatterColorEnabled, value.volumeFogScatterColor, true);
-    mask.mieScatterColor = !EnabledColorNearlyEqual(base.mieScatterColorEnabled, base.mieScatterColor, value.mieScatterColorEnabled, value.mieScatterColor, true);
-    mask.mieScaleHeight = !EnabledFloatNearlyEqual(base.mieScaleHeightEnabled, base.mieScaleHeight, value.mieScaleHeightEnabled, value.mieScaleHeight);
-    mask.mieAerosolDensity = !EnabledFloatNearlyEqual(base.mieAerosolDensityEnabled, base.mieAerosolDensity, value.mieAerosolDensityEnabled, value.mieAerosolDensity);
-    mask.mieAerosolAbsorption = !EnabledFloatNearlyEqual(base.mieAerosolAbsorptionEnabled, base.mieAerosolAbsorption, value.mieAerosolAbsorptionEnabled, value.mieAerosolAbsorption);
-    mask.heightFogBaseline = !EnabledFloatNearlyEqual(base.heightFogBaselineEnabled, base.heightFogBaseline, value.heightFogBaselineEnabled, value.heightFogBaseline);
-    mask.heightFogFalloff = !EnabledFloatNearlyEqual(base.heightFogFalloffEnabled, base.heightFogFalloff, value.heightFogFalloffEnabled, value.heightFogFalloff);
-    mask.noFog = base.noFog != value.noFog;
-    mask.wind = !FloatNearlyEqual(base.wind, value.wind);
-    mask.noWind = base.noWind != value.noWind;
-    mask.puddleScale = !EnabledFloatNearlyEqual(base.puddleScaleEnabled, base.puddleScale, value.puddleScaleEnabled, value.puddleScale);
-    return mask;
-}
-
-void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source, const WeatherPresetMask& mask) {
-    if (mask.forceClearSky) target.forceClearSky = source.forceClearSky;
-    if (mask.noRain) target.noRain = source.noRain;
-    if (mask.rain) target.rain = source.rain;
-    if (mask.thunder) target.thunder = source.thunder;
-    if (mask.noDust) target.noDust = source.noDust;
-    if (mask.dust) target.dust = source.dust;
-    if (mask.noSnow) target.noSnow = source.noSnow;
-    if (mask.snow) target.snow = source.snow;
-    if (mask.snowAccumBoundaryA) { target.snowAccumBoundaryAEnabled = source.snowAccumBoundaryAEnabled; target.snowAccumBoundaryA = source.snowAccumBoundaryA; }
-    if (mask.snowAccumBoundaryB) { target.snowAccumBoundaryBEnabled = source.snowAccumBoundaryBEnabled; target.snowAccumBoundaryB = source.snowAccumBoundaryB; }
-    if (mask.snowCoverageThreshold) { target.snowCoverageThresholdEnabled = source.snowCoverageThresholdEnabled; target.snowCoverageThreshold = source.snowCoverageThreshold; }
-    if (mask.time) {
-        target.visualTimeOverride = source.visualTimeOverride;
-        target.progressVisualTime = source.visualTimeOverride && source.progressVisualTime;
-        target.progressVisualTimeMatchGameTime = target.progressVisualTime && source.progressVisualTimeMatchGameTime;
-        target.progressVisualTimeIntervalMs = source.progressVisualTimeIntervalMs;
-        target.timeHour = source.timeHour;
-    }
-    if (mask.cloudAmount) {
-        target.cloudAmountEnabled = source.cloudAmountEnabled;
-        target.cloudAmount = source.cloudAmount;
-    }
-    if (mask.cloudHeight) {
-        target.cloudHeightEnabled = source.cloudHeightEnabled;
-        target.cloudHeight = source.cloudHeight;
-    }
-    if (mask.cloudDensity) {
-        target.cloudDensityEnabled = source.cloudDensityEnabled;
-        target.cloudDensity = source.cloudDensity;
-    }
-    if (mask.midClouds) {
-        target.midCloudsEnabled = source.midCloudsEnabled;
-        target.midClouds = source.midClouds;
-    }
-    if (mask.highClouds) {
-        target.highCloudsEnabled = source.highCloudsEnabled;
-        target.highClouds = source.highClouds;
-    }
-    if (mask.cloudAlpha) {
-        target.cloudAlphaEnabled = source.cloudAlphaEnabled;
-        target.cloudAlpha = source.cloudAlpha;
-    }
-    if (mask.cloudFadeRange) {
-        target.cloudFadeRangeEnabled = source.cloudFadeRangeEnabled;
-        target.cloudFadeRange = source.cloudFadeRange;
-    }
-    if (mask.cloudDetailRatio) {
-        target.cloudDetailRatioEnabled = source.cloudDetailRatioEnabled;
-        target.cloudDetailRatio = source.cloudDetailRatio;
-    }
-    if (mask.cloudPhaseFront) {
-        target.cloudPhaseFrontEnabled = source.cloudPhaseFrontEnabled;
-        target.cloudPhaseFront = source.cloudPhaseFront;
-    }
-    if (mask.cloudScatteringCoefficient) {
-        target.cloudScatteringCoefficientEnabled = source.cloudScatteringCoefficientEnabled;
-        target.cloudScatteringCoefficient = source.cloudScatteringCoefficient;
-    }
-    if (mask.cloudFlow) {
-        target.cloudFlowEnabled = source.cloudFlowEnabled;
-        target.cloudFlow = source.cloudFlow;
-    }
-    if (mask.cloudVisibleRange) {
-        target.cloudVisibleRangeEnabled = source.cloudVisibleRangeEnabled;
-        target.cloudVisibleRange = source.cloudVisibleRange;
-    }
-    if (mask.rayleighHeight) {
-        target.rayleighHeightEnabled = source.rayleighHeightEnabled;
-        target.rayleighHeight = source.rayleighHeight;
-    }
-    if (mask.ozoneRatio) {
-        target.ozoneRatioEnabled = source.ozoneRatioEnabled;
-        target.ozoneRatio = source.ozoneRatio;
-    }
-    if (mask.rayleighScatteringColor) {
-        target.rayleighScatteringColorEnabled = source.rayleighScatteringColorEnabled;
-        target.rayleighScatteringColor = source.rayleighScatteringColor;
-    }
-    if (mask.exp2C) {
-        target.exp2CEnabled = source.exp2CEnabled;
-        target.exp2C = source.exp2C;
-    }
-    if (mask.exp2D) {
-        target.exp2DEnabled = source.exp2DEnabled;
-        target.exp2D = source.exp2D;
-    }
-    if (mask.cloudVariation) {
-        target.cloudVariationEnabled = source.cloudVariationEnabled;
-        target.cloudVariation = source.cloudVariation;
-    }
-    if (mask.nightSkyRotation) {
-        target.nightSkyRotationEnabled = source.nightSkyRotationEnabled;
-        target.nightSkyRotation = source.nightSkyRotation;
-    }
-    if (mask.nightSkyYaw) {
-        target.nightSkyYawEnabled = source.nightSkyYawEnabled;
-        target.nightSkyYaw = source.nightSkyYaw;
-    }
-    if (mask.sunSize) {
-        target.sunSizeEnabled = source.sunSizeEnabled;
-        target.sunSize = source.sunSize;
-    }
-    if (mask.sunLightIntensity) {
-        target.sunLightIntensityEnabled = source.sunLightIntensityEnabled;
-        target.sunLightIntensity = source.sunLightIntensity;
-    }
-    if (mask.sunYaw) {
-        target.sunYawEnabled = source.sunYawEnabled;
-        target.sunYaw = source.sunYaw;
-    }
-    if (mask.sunPitch) {
-        target.sunPitchEnabled = source.sunPitchEnabled;
-        target.sunPitch = source.sunPitch;
-    }
-    if (mask.moonSize) {
-        target.moonSizeEnabled = source.moonSizeEnabled;
-        target.moonSize = source.moonSize;
-    }
-    if (mask.moonLightIntensity) {
-        target.moonLightIntensityEnabled = source.moonLightIntensityEnabled;
-        target.moonLightIntensity = source.moonLightIntensity;
-    }
-    if (mask.moonYaw) {
-        target.moonYawEnabled = source.moonYawEnabled;
-        target.moonYaw = source.moonYaw;
-    }
-    if (mask.moonPitch) {
-        target.moonPitchEnabled = source.moonPitchEnabled;
-        target.moonPitch = source.moonPitch;
-    }
-    if (mask.moonRoll) {
-        target.moonRollEnabled = source.moonRollEnabled;
-        target.moonRoll = source.moonRoll;
-    }
-    if (mask.moonTexture) {
-        target.moonTextureEnabled = source.moonTextureEnabled;
-        target.moonTexture = source.moonTexture;
-    }
-    if (mask.milkywayTexture) {
-        target.milkywayTextureEnabled = source.milkywayTextureEnabled;
-        target.milkywayTexture = source.milkywayTexture;
-    }
-    if (mask.fog) {
-        target.fogEnabled = source.fogEnabled;
-        target.fogPercent = source.fogPercent;
-    }
-    if (mask.nativeFog) {
-        target.nativeFogEnabled = source.nativeFogEnabled;
-        target.nativeFog = source.nativeFog;
-    }
-    if (mask.volumeFogScatterColor) {
-        target.volumeFogScatterColorEnabled = source.volumeFogScatterColorEnabled;
-        target.volumeFogScatterColor = source.volumeFogScatterColor;
-    }
-    if (mask.mieScatterColor) {
-        target.mieScatterColorEnabled = source.mieScatterColorEnabled;
-        target.mieScatterColor = source.mieScatterColor;
-    }
-    if (mask.mieScaleHeight) {
-        target.mieScaleHeightEnabled = source.mieScaleHeightEnabled;
-        target.mieScaleHeight = source.mieScaleHeight;
-    }
-    if (mask.mieAerosolDensity) {
-        target.mieAerosolDensityEnabled = source.mieAerosolDensityEnabled;
-        target.mieAerosolDensity = source.mieAerosolDensity;
-    }
-    if (mask.mieAerosolAbsorption) {
-        target.mieAerosolAbsorptionEnabled = source.mieAerosolAbsorptionEnabled;
-        target.mieAerosolAbsorption = source.mieAerosolAbsorption;
-    }
-    if (mask.heightFogBaseline) {
-        target.heightFogBaselineEnabled = source.heightFogBaselineEnabled;
-        target.heightFogBaseline = source.heightFogBaseline;
-    }
-    if (mask.heightFogFalloff) {
-        target.heightFogFalloffEnabled = source.heightFogFalloffEnabled;
-        target.heightFogFalloff = source.heightFogFalloff;
-    }
-    if (mask.noFog) target.noFog = source.noFog;
-    if (mask.wind) target.wind = source.wind;
-    if (mask.noWind) target.noWind = source.noWind;
-    if (mask.puddleScale) {
-        target.puddleScaleEnabled = source.puddleScaleEnabled;
-        target.puddleScale = source.puddleScale;
-    }
-}
-
-float LerpPresetFloat(float a, float b, float t) {
-    return a + (b - a) * t;
-}
-
-WeatherPresetColor LerpPresetColor(const WeatherPresetColor& a, const WeatherPresetColor& b, float t) {
-    return {
-        LerpPresetFloat(a.r, b.r, t),
-        LerpPresetFloat(a.g, b.g, t),
-        LerpPresetFloat(a.b, b.b, t),
-        LerpPresetFloat(a.a, b.a, t),
-    };
-}
-
-float LerpPresetHour(float a, float b, float t) {
-    const float na = NormalizeHour24(a);
-    const float nb = NormalizeHour24(b);
-    float delta = nb - na;
-    if (delta > 12.0f) delta -= 24.0f;
-    if (delta < -12.0f) delta += 24.0f;
-    return NormalizeHour24(na + delta * t);
-}
-
-float NormalizeSignedDegrees(float value) {
-    while (value > 180.0f) value -= 360.0f;
-    while (value < -180.0f) value += 360.0f;
-    return value;
-}
-
-float LerpPresetDegrees180(float a, float b, float t) {
-    float delta = NormalizeSignedDegrees(b - a);
-    return NormalizeSignedDegrees(a + delta * t);
-}
-
-bool ChoosePresetBool(bool a, bool b, float t) {
-    return t >= 0.5f ? b : a;
-}
-
-WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPresetData& b, float t) {
-    t = ClampPresetFloat(t, 0.0f, 1.0f);
-    if (t <= 0.0001f) return a;
-    if (t >= 0.9999f) return b;
-
-    WeatherPresetData out{};
-    out.forceClearSky = ChoosePresetBool(a.forceClearSky, b.forceClearSky, t);
-    out.noRain = ChoosePresetBool(a.noRain, b.noRain, t);
-    out.rain = LerpPresetFloat(a.rain, b.rain, t);
-    out.thunder = LerpPresetFloat(a.thunder, b.thunder, t);
-    out.noDust = ChoosePresetBool(a.noDust, b.noDust, t);
-    out.dust = LerpPresetFloat(a.dust, b.dust, t);
-    out.noSnow = ChoosePresetBool(a.noSnow, b.noSnow, t);
-    out.snow = LerpPresetFloat(a.snow, b.snow, t);
-    out.snowAccumBoundaryAEnabled = a.snowAccumBoundaryAEnabled || b.snowAccumBoundaryAEnabled;
-    out.snowAccumBoundaryA = LerpPresetFloat(a.snowAccumBoundaryA, b.snowAccumBoundaryA, t);
-    out.snowAccumBoundaryBEnabled = a.snowAccumBoundaryBEnabled || b.snowAccumBoundaryBEnabled;
-    out.snowAccumBoundaryB = LerpPresetFloat(a.snowAccumBoundaryB, b.snowAccumBoundaryB, t);
-    out.snowCoverageThresholdEnabled = a.snowCoverageThresholdEnabled || b.snowCoverageThresholdEnabled;
-    out.snowCoverageThreshold = LerpPresetFloat(a.snowCoverageThreshold, b.snowCoverageThreshold, t);
-    out.visualTimeOverride = ChoosePresetBool(a.visualTimeOverride, b.visualTimeOverride, t);
-    out.progressVisualTime = out.visualTimeOverride && ChoosePresetBool(a.progressVisualTime, b.progressVisualTime, t);
-    out.progressVisualTimeMatchGameTime = out.progressVisualTime && ChoosePresetBool(a.progressVisualTimeMatchGameTime, b.progressVisualTimeMatchGameTime, t);
-    out.progressVisualTimeIntervalMs = (t < 0.5f) ? a.progressVisualTimeIntervalMs : b.progressVisualTimeIntervalMs;
-    out.timeHour = (a.visualTimeOverride && b.visualTimeOverride)
-        ? LerpPresetHour(a.timeHour, b.timeHour, t)
-        : (out.visualTimeOverride ? b.timeHour : a.timeHour);
-    out.cloudAmountEnabled = a.cloudAmountEnabled || b.cloudAmountEnabled;
-    out.cloudAmount = LerpPresetFloat(a.cloudAmount, b.cloudAmount, t);
-    out.cloudHeightEnabled = a.cloudHeightEnabled || b.cloudHeightEnabled;
-    out.cloudHeight = LerpPresetFloat(a.cloudHeight, b.cloudHeight, t);
-    out.cloudDensityEnabled = a.cloudDensityEnabled || b.cloudDensityEnabled;
-    out.cloudDensity = LerpPresetFloat(a.cloudDensity, b.cloudDensity, t);
-    out.midCloudsEnabled = a.midCloudsEnabled || b.midCloudsEnabled;
-    out.midClouds = LerpPresetFloat(a.midClouds, b.midClouds, t);
-    out.highCloudsEnabled = a.highCloudsEnabled || b.highCloudsEnabled;
-    out.highClouds = LerpPresetFloat(a.highClouds, b.highClouds, t);
-    out.cloudAlphaEnabled = a.cloudAlphaEnabled || b.cloudAlphaEnabled;
-    out.cloudAlpha = LerpPresetFloat(a.cloudAlpha, b.cloudAlpha, t);
-    out.cloudFadeRangeEnabled = a.cloudFadeRangeEnabled || b.cloudFadeRangeEnabled;
-    out.cloudFadeRange = LerpPresetFloat(a.cloudFadeRange, b.cloudFadeRange, t);
-    out.cloudDetailRatioEnabled = a.cloudDetailRatioEnabled || b.cloudDetailRatioEnabled;
-    out.cloudDetailRatio = LerpPresetFloat(a.cloudDetailRatio, b.cloudDetailRatio, t);
-    out.cloudPhaseFrontEnabled = a.cloudPhaseFrontEnabled || b.cloudPhaseFrontEnabled;
-    out.cloudPhaseFront = LerpPresetFloat(a.cloudPhaseFront, b.cloudPhaseFront, t);
-    out.cloudScatteringCoefficientEnabled = a.cloudScatteringCoefficientEnabled || b.cloudScatteringCoefficientEnabled;
-    out.cloudScatteringCoefficient = LerpPresetFloat(a.cloudScatteringCoefficient, b.cloudScatteringCoefficient, t);
-    out.cloudFlowEnabled = a.cloudFlowEnabled || b.cloudFlowEnabled;
-    out.cloudFlow = LerpPresetFloat(a.cloudFlow, b.cloudFlow, t);
-    out.cloudVisibleRangeEnabled = a.cloudVisibleRangeEnabled || b.cloudVisibleRangeEnabled;
-    out.cloudVisibleRange = LerpPresetFloat(a.cloudVisibleRange, b.cloudVisibleRange, t);
-    out.rayleighHeightEnabled = a.rayleighHeightEnabled || b.rayleighHeightEnabled;
-    out.rayleighHeight = LerpPresetFloat(a.rayleighHeight, b.rayleighHeight, t);
-    out.ozoneRatioEnabled = a.ozoneRatioEnabled || b.ozoneRatioEnabled;
-    out.ozoneRatio = LerpPresetFloat(a.ozoneRatio, b.ozoneRatio, t);
-    out.rayleighScatteringColorEnabled = a.rayleighScatteringColorEnabled || b.rayleighScatteringColorEnabled;
-    out.rayleighScatteringColor = LerpPresetColor(a.rayleighScatteringColor, b.rayleighScatteringColor, t);
-    out.exp2CEnabled = a.exp2CEnabled || b.exp2CEnabled;
-    out.exp2C = LerpPresetFloat(a.exp2C, b.exp2C, t);
-    out.exp2DEnabled = a.exp2DEnabled || b.exp2DEnabled;
-    out.exp2D = LerpPresetFloat(a.exp2D, b.exp2D, t);
-    out.cloudVariationEnabled = a.cloudVariationEnabled || b.cloudVariationEnabled;
-    out.cloudVariation = LerpPresetFloat(a.cloudVariation, b.cloudVariation, t);
-    out.nightSkyRotationEnabled = a.nightSkyRotationEnabled || b.nightSkyRotationEnabled;
-    out.nightSkyRotation = LerpPresetFloat(a.nightSkyRotation, b.nightSkyRotation, t);
-    out.nightSkyYawEnabled = a.nightSkyYawEnabled || b.nightSkyYawEnabled;
-    out.nightSkyYaw = LerpPresetDegrees180(a.nightSkyYaw, b.nightSkyYaw, t);
-    out.sunSizeEnabled = a.sunSizeEnabled || b.sunSizeEnabled;
-    out.sunSize = LerpPresetFloat(a.sunSize, b.sunSize, t);
-    out.sunLightIntensityEnabled = a.sunLightIntensityEnabled || b.sunLightIntensityEnabled;
-    out.sunLightIntensity = LerpPresetFloat(a.sunLightIntensity, b.sunLightIntensity, t);
-    out.sunYawEnabled = a.sunYawEnabled || b.sunYawEnabled;
-    out.sunYaw = LerpPresetDegrees180(a.sunYaw, b.sunYaw, t);
-    out.sunPitchEnabled = a.sunPitchEnabled || b.sunPitchEnabled;
-    out.sunPitch = LerpPresetFloat(a.sunPitch, b.sunPitch, t);
-    out.moonSizeEnabled = a.moonSizeEnabled || b.moonSizeEnabled;
-    out.moonSize = LerpPresetFloat(a.moonSize, b.moonSize, t);
-    out.moonLightIntensityEnabled = a.moonLightIntensityEnabled || b.moonLightIntensityEnabled;
-    out.moonLightIntensity = LerpPresetFloat(a.moonLightIntensity, b.moonLightIntensity, t);
-    out.moonYawEnabled = a.moonYawEnabled || b.moonYawEnabled;
-    out.moonYaw = LerpPresetDegrees180(a.moonYaw, b.moonYaw, t);
-    out.moonPitchEnabled = a.moonPitchEnabled || b.moonPitchEnabled;
-    out.moonPitch = LerpPresetFloat(a.moonPitch, b.moonPitch, t);
-    out.moonRollEnabled = a.moonRollEnabled || b.moonRollEnabled;
-    out.moonRoll = LerpPresetDegrees180(a.moonRoll, b.moonRoll, t);
-    out.moonTextureEnabled = ChoosePresetBool(a.moonTextureEnabled, b.moonTextureEnabled, t);
-    out.moonTexture = t >= 0.5f ? b.moonTexture : a.moonTexture;
-    out.milkywayTextureEnabled = ChoosePresetBool(a.milkywayTextureEnabled, b.milkywayTextureEnabled, t);
-    out.milkywayTexture = t >= 0.5f ? b.milkywayTexture : a.milkywayTexture;
-    out.fogEnabled = a.fogEnabled || b.fogEnabled;
-    out.fogPercent = LerpPresetFloat(a.fogPercent, b.fogPercent, t);
-    out.nativeFogEnabled = a.nativeFogEnabled || b.nativeFogEnabled;
-    out.nativeFog = LerpPresetFloat(a.nativeFog, b.nativeFog, t);
-    out.volumeFogScatterColorEnabled = a.volumeFogScatterColorEnabled || b.volumeFogScatterColorEnabled;
-    out.volumeFogScatterColor = LerpPresetColor(a.volumeFogScatterColor, b.volumeFogScatterColor, t);
-    out.mieScatterColorEnabled = a.mieScatterColorEnabled || b.mieScatterColorEnabled;
-    out.mieScatterColor = LerpPresetColor(a.mieScatterColor, b.mieScatterColor, t);
-    out.mieScaleHeightEnabled = a.mieScaleHeightEnabled || b.mieScaleHeightEnabled;
-    out.mieScaleHeight = LerpPresetFloat(a.mieScaleHeight, b.mieScaleHeight, t);
-    out.mieAerosolDensityEnabled = a.mieAerosolDensityEnabled || b.mieAerosolDensityEnabled;
-    out.mieAerosolDensity = LerpPresetFloat(a.mieAerosolDensity, b.mieAerosolDensity, t);
-    out.mieAerosolAbsorptionEnabled = a.mieAerosolAbsorptionEnabled || b.mieAerosolAbsorptionEnabled;
-    out.mieAerosolAbsorption = LerpPresetFloat(a.mieAerosolAbsorption, b.mieAerosolAbsorption, t);
-    out.heightFogBaselineEnabled = a.heightFogBaselineEnabled || b.heightFogBaselineEnabled;
-    out.heightFogBaseline = LerpPresetFloat(a.heightFogBaseline, b.heightFogBaseline, t);
-    out.heightFogFalloffEnabled = a.heightFogFalloffEnabled || b.heightFogFalloffEnabled;
-    out.heightFogFalloff = LerpPresetFloat(a.heightFogFalloff, b.heightFogFalloff, t);
-    out.noFog = ChoosePresetBool(a.noFog, b.noFog, t);
-    out.wind = LerpPresetFloat(a.wind, b.wind, t);
-    out.noWind = ChoosePresetBool(a.noWind, b.noWind, t);
-    out.puddleScaleEnabled = a.puddleScaleEnabled || b.puddleScaleEnabled;
-    out.puddleScale = LerpPresetFloat(a.puddleScale, b.puddleScale, t);
-    return out;
-}
-
-bool IsPresetRegionId(int regionId) {
-    return regionId >= kPresetRegionGlobal && regionId < kPresetRegionCount;
-}
-
-const char* RegionToken(int regionId) {
-    switch (regionId) {
-    case kPresetRegionHernand: return "Hernand";
-    case kPresetRegionDemeniss: return "Demeniss";
-    case kPresetRegionDelesyia: return "Delesyia";
-    case kPresetRegionPailune: return "Pailune";
-    case kPresetRegionCrimsonDesert: return "CrimsonDesert";
-    case kPresetRegionAbyss: return "Abyss";
-    default: return "Global";
-    }
-}
-
-const char* RegionDisplayName(int regionId) {
-    switch (regionId) {
-    case kPresetRegionHernand: return "Hernand";
-    case kPresetRegionDemeniss: return "Demeniss";
-    case kPresetRegionDelesyia: return "Delesyia";
-    case kPresetRegionPailune: return "Pailune";
-    case kPresetRegionCrimsonDesert: return "Crimson Desert";
-    case kPresetRegionAbyss: return "Abyss";
-    default: return "Global";
-    }
-}
-
-int RegionIdFromToken(const std::string& token) {
-    if (EqualsNoCase(token, "Hernand")) return kPresetRegionHernand;
-    if (EqualsNoCase(token, "Demeniss")) return kPresetRegionDemeniss;
-    if (EqualsNoCase(token, "Delesyia")) return kPresetRegionDelesyia;
-    if (EqualsNoCase(token, "Pailune")) return kPresetRegionPailune;
-    if (EqualsNoCase(token, "CrimsonDesert") || EqualsNoCase(token, "Crimson Desert")) return kPresetRegionCrimsonDesert;
-    if (EqualsNoCase(token, "Abyss")) return kPresetRegionAbyss;
-    return kPresetRegionGlobal;
-}
-
-int CurrentMajorRegionForPreset() {
-    const int region = g_regionMajorId.load();
-    return IsPresetRegionId(region) ? region : kPresetRegionGlobal;
-}
-
-WeatherPresetData EffectivePresetDataForRegion(const WeatherPresetPackage& package, int regionId) {
-    WeatherPresetData data = package.global;
-    if (regionId > kPresetRegionGlobal && regionId < kPresetRegionCount && package.regionEnabled[regionId]) {
-        ApplyPresetMask(data, package.region[regionId], package.regionMask[regionId]);
-    }
-    return data;
 }
 
 void AppendMaskField(std::string& out, bool enabled, const char* name) {
@@ -1227,33 +266,6 @@ bool g_autoApplyRememberedArmed = false;
 ULONGLONG g_worldReadyStableStartTick = 0;
 constexpr ULONGLONG kWorldReadyAutoApplyDelayMs = 1000;
 
-bool g_timeScheduleLoaded = false;
-bool g_timeScheduleEnabled = false;
-int g_timeScheduleTimeSource = kTimeScheduleSourceVisualTimeOverride;
-std::vector<PresetScheduleEntry> g_timeScheduleEntries;
-std::string g_timeScheduleActivePresetFile;
-int g_timeScheduleActiveEntryIndex = -1;
-int g_timeScheduleLastAppliedEntryIndex = -1;
-std::string g_timeScheduleLastMissingPresetFile;
-bool g_timeScheduleBlendActive = false;
-WeatherPresetData g_timeScheduleBlendFrom{};
-WeatherPresetPackage g_timeScheduleBlendTargetPackage{};
-std::string g_timeScheduleBlendPresetFile;
-std::string g_timeScheduleBlendFromPresetFile;
-ULONGLONG g_timeScheduleBlendStartTick = 0;
-int g_timeScheduleBlendSeconds = 0;
-int g_timeScheduleBlendLogBucket = -1;
-bool g_timeScheduleUserEditPinned = false;
-int g_timeScheduleUserEditPinnedEntryIndex = -1;
-std::string g_timeScheduleUserEditPinnedPresetFile;
-bool g_timeScheduleSelfVisualGuard = false;
-float g_timeScheduleSelfVisualGuardHour = -1.0f;
-std::string g_timeScheduleSelfVisualGuardPresetFile;
-bool g_timeScheduleSelfVisualGuardSkipLogged = false;
-int g_timeScheduleLastDiagMinute = -1;
-int g_timeScheduleLastDiagEntryIndex = -9999;
-bool g_timeScheduleLastDiagPinned = false;
-
 void LoadRememberedPresetNameOnce() {
     if (g_rememberedPresetLoaded) return;
     g_rememberedPresetLoaded = true;
@@ -1283,91 +295,6 @@ void PersistRememberedPresetName(const char* fileNameOrNull) {
         g_rememberedPresetName.empty() ? "<none>" : g_rememberedPresetName.c_str());
 }
 
-std::string TrimCopy(const std::string& value) {
-    size_t start = 0;
-    size_t end = value.size();
-    while (start < end && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
-        ++start;
-    }
-    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
-        --end;
-    }
-    return value.substr(start, end - start);
-}
-
-void StripUtf8Bom(std::string& value) {
-    if (value.size() >= 3 &&
-        static_cast<unsigned char>(value[0]) == 0xEF &&
-        static_cast<unsigned char>(value[1]) == 0xBB &&
-        static_cast<unsigned char>(value[2]) == 0xBF) {
-        value.erase(0, 3);
-    }
-}
-
-bool EqualsNoCase(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool EndsWithIni(const std::string& value) {
-    if (value.size() < 4) return false;
-    return _stricmp(value.c_str() + value.size() - 4, ".ini") == 0;
-}
-
-std::string EnsureIniExtension(const std::string& value) {
-    if (value.empty()) return value;
-    return EndsWithIni(value) ? value : (value + ".ini");
-}
-
-std::string GetPresetDisplayNameFromFileName(const std::string& fileName) {
-    if (EndsWithIni(fileName)) {
-        return fileName.substr(0, fileName.size() - 4);
-    }
-    return fileName;
-}
-
-std::string GetPresetDirectory() {
-    if (g_pluginDir[0]) return std::string(g_pluginDir);
-    return ".";
-}
-
-std::string JoinPath(const std::string& dir, const std::string& fileName) {
-    if (dir.empty()) return fileName;
-    if (dir.back() == '\\' || dir.back() == '/') return dir + fileName;
-    return dir + "\\" + fileName;
-}
-
-std::string GetCommunityPresetDirectory() {
-    return JoinPath(JoinPath(JoinPath(GetPresetDirectory(), "CrimsonWeather"), "community"), "preset");
-}
-
-bool ReadPresetHeaderLine(const char* path, std::string& outLine) {
-    outLine.clear();
-    if (!path || !path[0]) return false;
-    FILE* fp = nullptr;
-    if (fopen_s(&fp, path, "rb") != 0 || !fp) return false;
-    char line[64] = {};
-    const char* raw = fgets(line, static_cast<int>(sizeof(line)), fp);
-    fclose(fp);
-    if (!raw) return false;
-    outLine = line;
-    StripUtf8Bom(outLine);
-    outLine = TrimCopy(outLine);
-    return !outLine.empty();
-}
-
-bool IsValidPresetFile(const char* path) {
-    std::string firstLine;
-    if (!ReadPresetHeaderLine(path, firstLine)) return false;
-    return firstLine == kPresetHeader;
-}
-
 bool RememberedPresetMatches(const PresetListItem& item, const std::string& rememberedRaw) {
     if (rememberedRaw.empty()) return false;
     const std::string trimmed = TrimCopy(rememberedRaw);
@@ -1376,677 +303,6 @@ bool RememberedPresetMatches(const PresetListItem& item, const std::string& reme
     if (EqualsNoCase(item.displayName, trimmed)) return true;
     if (EqualsNoCase(GetPresetDisplayNameFromFileName(item.fileName), trimmed)) return true;
     return EqualsNoCase(item.fileName, EnsureIniExtension(trimmed));
-}
-
-bool TryParseBool(const std::string& text, bool& outValue) {
-    std::string trimmed = TrimCopy(text);
-    if (trimmed.empty()) return false;
-    if (_stricmp(trimmed.c_str(), "1") == 0 || _stricmp(trimmed.c_str(), "true") == 0 ||
-        _stricmp(trimmed.c_str(), "yes") == 0 || _stricmp(trimmed.c_str(), "on") == 0) {
-        outValue = true;
-        return true;
-    }
-    if (_stricmp(trimmed.c_str(), "0") == 0 || _stricmp(trimmed.c_str(), "false") == 0 ||
-        _stricmp(trimmed.c_str(), "no") == 0 || _stricmp(trimmed.c_str(), "off") == 0) {
-        outValue = false;
-        return true;
-    }
-    return false;
-}
-
-bool TryParseFloat(const std::string& text, float& outValue) {
-    std::string trimmed = TrimCopy(text);
-    if (trimmed.empty()) return false;
-    char* endPtr = nullptr;
-    const float parsed = strtof(trimmed.c_str(), &endPtr);
-    if (endPtr == trimmed.c_str() || (endPtr && *endPtr != '\0') || !std::isfinite(parsed)) {
-        return false;
-    }
-    outValue = parsed;
-    return true;
-}
-
-struct PresetParseState {
-    WeatherPresetData data{};
-    WeatherPresetMask mask{};
-    bool cloudAmountEnabledSeen = false;
-    bool cloudHeightEnabledSeen = false;
-    bool cloudDensityEnabledSeen = false;
-    bool midCloudsEnabledSeen = false;
-    bool highCloudsEnabledSeen = false;
-    bool cloudAlphaEnabledSeen = false;
-    bool cloudFadeRangeEnabledSeen = false;
-    bool cloudDetailRatioEnabledSeen = false;
-    bool cloudPhaseFrontEnabledSeen = false;
-    bool cloudScatteringCoefficientEnabledSeen = false;
-    bool cloudFlowEnabledSeen = false;
-    bool cloudVisibleRangeEnabledSeen = false;
-    bool snowAccumBoundaryAEnabledSeen = false;
-    bool snowAccumBoundaryBEnabledSeen = false;
-    bool snowCoverageThresholdEnabledSeen = false;
-    bool rayleighHeightEnabledSeen = false;
-    bool ozoneRatioEnabledSeen = false;
-    bool rayleighScatteringColorEnabledSeen = false;
-    bool exp2CEnabledSeen = false;
-    bool exp2DEnabledSeen = false;
-    bool cloudVariationEnabledSeen = false;
-    bool nightSkyRotationEnabledSeen = false;
-    bool nightSkyYawEnabledSeen = false;
-    bool sunSizeEnabledSeen = false;
-    bool sunLightIntensityEnabledSeen = false;
-    bool sunYawEnabledSeen = false;
-    bool sunPitchEnabledSeen = false;
-    bool moonSizeEnabledSeen = false;
-    bool moonLightIntensityEnabledSeen = false;
-    bool moonYawEnabledSeen = false;
-    bool moonPitchEnabledSeen = false;
-    bool moonRollEnabledSeen = false;
-    bool moonTextureEnabledSeen = false;
-    bool milkywayTextureEnabledSeen = false;
-    bool fogEnabledSeen = false;
-    bool nativeFogEnabledSeen = false;
-    bool volumeFogScatterColorEnabledSeen = false;
-    bool mieScatterColorEnabledSeen = false;
-    bool mieScaleHeightEnabledSeen = false;
-    bool mieAerosolDensityEnabledSeen = false;
-    bool mieAerosolAbsorptionEnabledSeen = false;
-    bool heightFogBaselineEnabledSeen = false;
-    bool heightFogFalloffEnabledSeen = false;
-    bool puddleScaleEnabledSeen = false;
-    bool sawLegacyAlias = false;
-};
-
-bool KeyEquals(const std::string& key, const char* expected) {
-    return _stricmp(key.c_str(), expected) == 0;
-}
-
-void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
-    if (KeyEquals(key, "ForceClearSky")) mask.forceClearSky = true;
-    else if (KeyEquals(key, "NoRain")) mask.noRain = true;
-    else if (KeyEquals(key, "Rain")) mask.rain = true;
-    else if (KeyEquals(key, "Thunder")) mask.thunder = true;
-    else if (KeyEquals(key, "NoDust")) mask.noDust = true;
-    else if (KeyEquals(key, "Dust")) mask.dust = true;
-    else if (KeyEquals(key, "NoSnow")) mask.noSnow = true;
-    else if (KeyEquals(key, "Snow")) mask.snow = true;
-    else if (KeyEquals(key, "SnowAccumBoundaryAEnabled") || KeyEquals(key, "SnowAccumBoundaryA")) mask.snowAccumBoundaryA = true;
-    else if (KeyEquals(key, "SnowAccumBoundaryBEnabled") || KeyEquals(key, "SnowAccumBoundaryB")) mask.snowAccumBoundaryB = true;
-    else if (KeyEquals(key, "SnowCoverageThresholdEnabled") || KeyEquals(key, "SnowCoverageThreshold")) mask.snowCoverageThreshold = true;
-    else if (KeyEquals(key, "VisualTimeOverride") || KeyEquals(key, "ProgressVisualTime") || KeyEquals(key, "ProgressVisualTimeMatchGameTime") || KeyEquals(key, "ProgressVisualTimeIntervalMs") || KeyEquals(key, "TimeHour")) mask.time = true;
-    else if (KeyEquals(key, "CloudAmountEnabled") || KeyEquals(key, "CloudAmount")) mask.cloudAmount = true;
-    else if (KeyEquals(key, "CloudHeightEnabled") || KeyEquals(key, "CloudHeight")) mask.cloudHeight = true;
-    else if (KeyEquals(key, "CloudDensityEnabled") || KeyEquals(key, "CloudDensity")) mask.cloudDensity = true;
-    else if (KeyEquals(key, "MidCloudsEnabled") || KeyEquals(key, "MidClouds") ||
-             KeyEquals(key, "HighCloudsEnabled") || KeyEquals(key, "HighClouds") ||
-             KeyEquals(key, "CloudScrollEnabled") || KeyEquals(key, "CloudScroll")) mask.midClouds = true;
-    else if (KeyEquals(key, "HighCloudLayerEnabled") || KeyEquals(key, "HighCloudLayer")) mask.highClouds = true;
-    else if (KeyEquals(key, "CloudAlphaEnabled") || KeyEquals(key, "CloudAlpha")) mask.cloudAlpha = true;
-    else if (KeyEquals(key, "CloudFadeRangeEnabled") || KeyEquals(key, "CloudFadeRange")) mask.cloudFadeRange = true;
-    else if (KeyEquals(key, "CloudDetailRatioEnabled") || KeyEquals(key, "CloudDetailRatio")) mask.cloudDetailRatio = true;
-    else if (KeyEquals(key, "CloudPhaseFrontEnabled") || KeyEquals(key, "CloudPhaseFront")) mask.cloudPhaseFront = true;
-    else if (KeyEquals(key, "CloudScatteringCoefficientEnabled") || KeyEquals(key, "CloudScatteringCoefficient")) mask.cloudScatteringCoefficient = true;
-    else if (KeyEquals(key, "CloudFlowEnabled") || KeyEquals(key, "CloudFlow")) mask.cloudFlow = true;
-    else if (KeyEquals(key, "CloudVisibleRangeEnabled") || KeyEquals(key, "CloudVisibleRange")) mask.cloudVisibleRange = true;
-    else if (KeyEquals(key, "RayleighHeightEnabled") || KeyEquals(key, "RayleighHeight")) mask.rayleighHeight = true;
-    else if (KeyEquals(key, "OzoneRatioEnabled") || KeyEquals(key, "OzoneRatio")) mask.ozoneRatio = true;
-    else if (KeyEquals(key, "RayleighScatteringColorEnabled") ||
-             KeyEquals(key, "RayleighScatteringColorR") ||
-             KeyEquals(key, "RayleighScatteringColorG") ||
-             KeyEquals(key, "RayleighScatteringColorB")) mask.rayleighScatteringColor = true;
-    else if (KeyEquals(key, "2CEnabled") || KeyEquals(key, "2C")) mask.exp2C = true;
-    else if (KeyEquals(key, "2DEnabled") || KeyEquals(key, "2D")) mask.exp2D = true;
-    else if (KeyEquals(key, "CloudVariationEnabled") || KeyEquals(key, "CloudVariation") ||
-             KeyEquals(key, "CloudThicknessEnabled") || KeyEquals(key, "CloudThickness")) mask.cloudVariation = true;
-    else if (KeyEquals(key, "NightSkyTiltEnabled") || KeyEquals(key, "NightSkyTilt")) mask.nightSkyRotation = true;
-    else if (KeyEquals(key, "NightSkyPhaseEnabled") || KeyEquals(key, "NightSkyPhase")) mask.nightSkyYaw = true;
-    else if (KeyEquals(key, "SunSizeEnabled") || KeyEquals(key, "SunSize")) mask.sunSize = true;
-    else if (KeyEquals(key, "SunLightIntensityEnabled") || KeyEquals(key, "SunLightIntensity")) mask.sunLightIntensity = true;
-    else if (KeyEquals(key, "SunYawEnabled") || KeyEquals(key, "SunYaw")) mask.sunYaw = true;
-    else if (KeyEquals(key, "SunPitchEnabled") || KeyEquals(key, "SunPitch")) mask.sunPitch = true;
-    else if (KeyEquals(key, "MoonSizeEnabled") || KeyEquals(key, "MoonSize")) mask.moonSize = true;
-    else if (KeyEquals(key, "MoonLightIntensityEnabled") || KeyEquals(key, "MoonLightIntensity")) mask.moonLightIntensity = true;
-    else if (KeyEquals(key, "MoonYawEnabled") || KeyEquals(key, "MoonYaw")) mask.moonYaw = true;
-    else if (KeyEquals(key, "MoonPitchEnabled") || KeyEquals(key, "MoonPitch")) mask.moonPitch = true;
-    else if (KeyEquals(key, "MoonRollEnabled") || KeyEquals(key, "MoonRoll")) mask.moonRoll = true;
-    else if (KeyEquals(key, "MoonTextureEnabled") || KeyEquals(key, "MoonTexture")) mask.moonTexture = true;
-    else if (KeyEquals(key, "MilkywayTextureEnabled") || KeyEquals(key, "MilkywayTexture")) mask.milkywayTexture = true;
-    else if (KeyEquals(key, "FogEnabled") || KeyEquals(key, "Fog")) mask.fog = true;
-    else if (KeyEquals(key, "NativeFogEnabled") || KeyEquals(key, "NativeFog") ||
-             KeyEquals(key, "PlainFogEnabled") || KeyEquals(key, "PlainFog")) mask.nativeFog = true;
-    else if (KeyEquals(key, "VolumeFogScatterColorEnabled") ||
-             KeyEquals(key, "VolumeFogScatterColorR") ||
-             KeyEquals(key, "VolumeFogScatterColorG") ||
-             KeyEquals(key, "VolumeFogScatterColorB") ||
-             KeyEquals(key, "VolumeFogScatterColorA")) mask.volumeFogScatterColor = true;
-    else if (KeyEquals(key, "MieScatterColorEnabled") ||
-             KeyEquals(key, "MieScatterColorR") ||
-             KeyEquals(key, "MieScatterColorG") ||
-             KeyEquals(key, "MieScatterColorB") ||
-             KeyEquals(key, "MieScatterColorA")) mask.mieScatterColor = true;
-    else if (KeyEquals(key, "MieScaleHeightEnabled") || KeyEquals(key, "MieScaleHeight")) mask.mieScaleHeight = true;
-    else if (KeyEquals(key, "MieAerosolDensityEnabled") || KeyEquals(key, "MieAerosolDensity")) mask.mieAerosolDensity = true;
-    else if (KeyEquals(key, "MieAerosolAbsorptionEnabled") || KeyEquals(key, "MieAerosolAbsorption")) mask.mieAerosolAbsorption = true;
-    else if (KeyEquals(key, "HeightFogBaselineEnabled") || KeyEquals(key, "HeightFogBaseline")) mask.heightFogBaseline = true;
-    else if (KeyEquals(key, "HeightFogFalloffEnabled") || KeyEquals(key, "HeightFogFalloff")) mask.heightFogFalloff = true;
-    else if (KeyEquals(key, "NoFog")) mask.noFog = true;
-    else if (KeyEquals(key, "Wind")) mask.wind = true;
-    else if (KeyEquals(key, "NoWind")) mask.noWind = true;
-    else if (KeyEquals(key, "PuddleScaleEnabled") || KeyEquals(key, "PuddleScale")) mask.puddleScale = true;
-}
-
-bool ParseSnowPresetKeyValue(const std::string& key, const std::string& value, PresetParseState& state) {
-    bool boolValue = false;
-    float floatValue = 0.0f;
-    WeatherPresetData& data = state.data;
-
-    if (KeyEquals(key, "SnowAccumBoundaryAEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.snowAccumBoundaryAEnabled = boolValue;
-            state.snowAccumBoundaryAEnabledSeen = true;
-        }
-        return true;
-    }
-    if (KeyEquals(key, "SnowAccumBoundaryA")) {
-        if (TryParseFloat(value, floatValue)) data.snowAccumBoundaryA = floatValue;
-        return true;
-    }
-    if (KeyEquals(key, "SnowAccumBoundaryBEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.snowAccumBoundaryBEnabled = boolValue;
-            state.snowAccumBoundaryBEnabledSeen = true;
-        }
-        return true;
-    }
-    if (KeyEquals(key, "SnowAccumBoundaryB")) {
-        if (TryParseFloat(value, floatValue)) data.snowAccumBoundaryB = floatValue;
-        return true;
-    }
-    if (KeyEquals(key, "SnowCoverageThresholdEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.snowCoverageThresholdEnabled = boolValue;
-            state.snowCoverageThresholdEnabledSeen = true;
-        }
-        return true;
-    }
-    if (KeyEquals(key, "SnowCoverageThreshold")) {
-        if (TryParseFloat(value, floatValue)) data.snowCoverageThreshold = floatValue;
-        return true;
-    }
-    return false;
-}
-
-void ParsePresetKeyValue(const std::string& key, const std::string& value, PresetParseState& state) {
-    bool boolValue = false;
-    float floatValue = 0.0f;
-    WeatherPresetData& data = state.data;
-    MarkPresetMaskForKey(key, state.mask);
-
-    if (KeyEquals(key, "ForceClearSky")) {
-        if (TryParseBool(value, boolValue)) data.forceClearSky = boolValue;
-    } else if (KeyEquals(key, "NoRain")) {
-        if (TryParseBool(value, boolValue)) data.noRain = boolValue;
-    } else if (KeyEquals(key, "Rain")) {
-        if (TryParseFloat(value, floatValue)) data.rain = floatValue;
-    } else if (KeyEquals(key, "Thunder")) {
-        if (TryParseFloat(value, floatValue)) data.thunder = floatValue;
-    } else if (KeyEquals(key, "NoDust")) {
-        if (TryParseBool(value, boolValue)) data.noDust = boolValue;
-    } else if (KeyEquals(key, "Dust")) {
-        if (TryParseFloat(value, floatValue)) data.dust = floatValue;
-    } else if (KeyEquals(key, "NoSnow")) {
-        if (TryParseBool(value, boolValue)) data.noSnow = boolValue;
-    } else if (KeyEquals(key, "Snow")) {
-        if (TryParseFloat(value, floatValue)) data.snow = floatValue;
-    } else if (ParseSnowPresetKeyValue(key, value, state)) {
-    } else if (KeyEquals(key, "VisualTimeOverride")) {
-        if (TryParseBool(value, boolValue)) data.visualTimeOverride = boolValue;
-    } else if (KeyEquals(key, "ProgressVisualTime")) {
-        if (TryParseBool(value, boolValue)) data.progressVisualTime = boolValue;
-    } else if (KeyEquals(key, "ProgressVisualTimeMatchGameTime")) {
-        if (TryParseBool(value, boolValue)) data.progressVisualTimeMatchGameTime = boolValue;
-    } else if (KeyEquals(key, "ProgressVisualTimeIntervalMs")) {
-        if (TryParseFloat(value, floatValue)) data.progressVisualTimeIntervalMs = floatValue;
-    } else if (KeyEquals(key, "TimeHour")) {
-        if (TryParseFloat(value, floatValue)) data.timeHour = floatValue;
-    } else if (KeyEquals(key, "CloudAmountEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudAmountEnabled = boolValue;
-            state.cloudAmountEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudAmount")) {
-        if (TryParseFloat(value, floatValue)) data.cloudAmount = floatValue;
-    } else if (KeyEquals(key, "CloudHeightEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudHeightEnabled = boolValue;
-            state.cloudHeightEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudHeight")) {
-        if (TryParseFloat(value, floatValue)) data.cloudHeight = floatValue;
-    } else if (KeyEquals(key, "CloudDensityEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudDensityEnabled = boolValue;
-            state.cloudDensityEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudDensity")) {
-        if (TryParseFloat(value, floatValue)) data.cloudDensity = floatValue;
-    } else if (KeyEquals(key, "MidCloudsEnabled") ||
-               KeyEquals(key, "HighCloudsEnabled") ||
-               KeyEquals(key, "CloudScrollEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.midCloudsEnabled = boolValue;
-            state.midCloudsEnabledSeen = true;
-            if (!KeyEquals(key, "MidCloudsEnabled")) state.sawLegacyAlias = true;
-        }
-    } else if (KeyEquals(key, "MidClouds") ||
-               KeyEquals(key, "HighClouds") ||
-               KeyEquals(key, "CloudScroll")) {
-        if (TryParseFloat(value, floatValue)) {
-            data.midClouds = floatValue;
-            if (!KeyEquals(key, "MidClouds")) state.sawLegacyAlias = true;
-        }
-    } else if (KeyEquals(key, "HighCloudLayerEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.highCloudsEnabled = boolValue;
-            state.highCloudsEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "HighCloudLayer")) {
-        if (TryParseFloat(value, floatValue)) data.highClouds = floatValue;
-    } else if (KeyEquals(key, "CloudAlphaEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudAlphaEnabled = boolValue;
-            state.cloudAlphaEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudAlpha")) {
-        if (TryParseFloat(value, floatValue)) data.cloudAlpha = floatValue;
-    } else if (KeyEquals(key, "CloudFadeRangeEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudFadeRangeEnabled = boolValue;
-            state.cloudFadeRangeEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudFadeRange")) {
-        if (TryParseFloat(value, floatValue)) data.cloudFadeRange = floatValue;
-    } else if (KeyEquals(key, "CloudDetailRatioEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudDetailRatioEnabled = boolValue;
-            state.cloudDetailRatioEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudDetailRatio")) {
-        if (TryParseFloat(value, floatValue)) data.cloudDetailRatio = floatValue;
-    } else if (KeyEquals(key, "CloudPhaseFrontEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudPhaseFrontEnabled = boolValue;
-            state.cloudPhaseFrontEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudPhaseFront")) {
-        if (TryParseFloat(value, floatValue)) data.cloudPhaseFront = floatValue;
-    } else if (KeyEquals(key, "CloudScatteringCoefficientEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudScatteringCoefficientEnabled = boolValue;
-            state.cloudScatteringCoefficientEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudScatteringCoefficient")) {
-        if (TryParseFloat(value, floatValue)) data.cloudScatteringCoefficient = floatValue;
-    } else if (KeyEquals(key, "CloudFlowEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudFlowEnabled = boolValue;
-            state.cloudFlowEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudFlow")) {
-        if (TryParseFloat(value, floatValue)) data.cloudFlow = floatValue;
-    } else if (KeyEquals(key, "CloudVisibleRangeEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudVisibleRangeEnabled = boolValue;
-            state.cloudVisibleRangeEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudVisibleRange")) {
-        if (TryParseFloat(value, floatValue)) data.cloudVisibleRange = floatValue;
-    } else if (KeyEquals(key, "RayleighHeightEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.rayleighHeightEnabled = boolValue;
-            state.rayleighHeightEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "RayleighHeight")) {
-        if (TryParseFloat(value, floatValue)) data.rayleighHeight = floatValue;
-    } else if (KeyEquals(key, "OzoneRatioEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.ozoneRatioEnabled = boolValue;
-            state.ozoneRatioEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "OzoneRatio")) {
-        if (TryParseFloat(value, floatValue)) data.ozoneRatio = floatValue;
-    } else if (KeyEquals(key, "RayleighScatteringColorEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.rayleighScatteringColorEnabled = boolValue;
-            state.rayleighScatteringColorEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "RayleighScatteringColorR")) {
-        if (TryParseFloat(value, floatValue)) data.rayleighScatteringColor.r = floatValue;
-    } else if (KeyEquals(key, "RayleighScatteringColorG")) {
-        if (TryParseFloat(value, floatValue)) data.rayleighScatteringColor.g = floatValue;
-    } else if (KeyEquals(key, "RayleighScatteringColorB")) {
-        if (TryParseFloat(value, floatValue)) data.rayleighScatteringColor.b = floatValue;
-    } else if (KeyEquals(key, "2CEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.exp2CEnabled = boolValue;
-            state.exp2CEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "2C")) {
-        if (TryParseFloat(value, floatValue)) data.exp2C = floatValue;
-    } else if (KeyEquals(key, "2DEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.exp2DEnabled = boolValue;
-            state.exp2DEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "2D")) {
-        if (TryParseFloat(value, floatValue)) data.exp2D = floatValue;
-    } else if (KeyEquals(key, "CloudVariationEnabled") ||
-               KeyEquals(key, "CloudThicknessEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.cloudVariationEnabled = boolValue;
-            state.cloudVariationEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "CloudVariation") ||
-               KeyEquals(key, "CloudThickness")) {
-        if (TryParseFloat(value, floatValue)) data.cloudVariation = floatValue;
-    } else if (KeyEquals(key, "NightSkyTiltEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.nightSkyRotationEnabled = boolValue;
-            state.nightSkyRotationEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "NightSkyTilt")) {
-        if (TryParseFloat(value, floatValue)) data.nightSkyRotation = floatValue;
-    } else if (KeyEquals(key, "NightSkyPhaseEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.nightSkyYawEnabled = boolValue;
-            state.nightSkyYawEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "NightSkyPhase")) {
-        if (TryParseFloat(value, floatValue)) data.nightSkyYaw = floatValue;
-    } else if (KeyEquals(key, "SunSizeEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.sunSizeEnabled = boolValue;
-            state.sunSizeEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "SunSize")) {
-        if (TryParseFloat(value, floatValue)) data.sunSize = floatValue;
-    } else if (KeyEquals(key, "SunLightIntensityEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.sunLightIntensityEnabled = boolValue;
-            state.sunLightIntensityEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "SunLightIntensity")) {
-        if (TryParseFloat(value, floatValue)) data.sunLightIntensity = floatValue;
-    } else if (KeyEquals(key, "SunYawEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.sunYawEnabled = boolValue;
-            state.sunYawEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "SunYaw")) {
-        if (TryParseFloat(value, floatValue)) data.sunYaw = floatValue;
-    } else if (KeyEquals(key, "SunPitchEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.sunPitchEnabled = boolValue;
-            state.sunPitchEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "SunPitch")) {
-        if (TryParseFloat(value, floatValue)) data.sunPitch = floatValue;
-    } else if (KeyEquals(key, "MoonSizeEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.moonSizeEnabled = boolValue;
-            state.moonSizeEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MoonSize")) {
-        if (TryParseFloat(value, floatValue)) data.moonSize = floatValue;
-    } else if (KeyEquals(key, "MoonLightIntensityEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.moonLightIntensityEnabled = boolValue;
-            state.moonLightIntensityEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MoonLightIntensity")) {
-        if (TryParseFloat(value, floatValue)) data.moonLightIntensity = floatValue;
-    } else if (KeyEquals(key, "MoonYawEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.moonYawEnabled = boolValue;
-            state.moonYawEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MoonYaw")) {
-        if (TryParseFloat(value, floatValue)) data.moonYaw = floatValue;
-    } else if (KeyEquals(key, "MoonPitchEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.moonPitchEnabled = boolValue;
-            state.moonPitchEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MoonPitch")) {
-        if (TryParseFloat(value, floatValue)) data.moonPitch = floatValue;
-    } else if (KeyEquals(key, "MoonRollEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.moonRollEnabled = boolValue;
-            state.moonRollEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MoonRoll")) {
-        if (TryParseFloat(value, floatValue)) data.moonRoll = floatValue;
-    } else if (KeyEquals(key, "MoonTextureEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.moonTextureEnabled = boolValue;
-            state.moonTextureEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MoonTexture")) {
-        data.moonTexture = TrimCopy(value);
-    } else if (KeyEquals(key, "MilkywayTextureEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.milkywayTextureEnabled = boolValue;
-            state.milkywayTextureEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MilkywayTexture")) {
-        data.milkywayTexture = TrimCopy(value);
-    } else if (KeyEquals(key, "FogEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.fogEnabled = boolValue;
-            state.fogEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "Fog")) {
-        if (TryParseFloat(value, floatValue)) data.fogPercent = floatValue;
-    } else if (KeyEquals(key, "NativeFogEnabled") || KeyEquals(key, "PlainFogEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.nativeFogEnabled = boolValue;
-            state.nativeFogEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "NativeFog") || KeyEquals(key, "PlainFog")) {
-        if (TryParseFloat(value, floatValue)) data.nativeFog = floatValue;
-    } else if (KeyEquals(key, "VolumeFogScatterColorEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.volumeFogScatterColorEnabled = boolValue;
-            state.volumeFogScatterColorEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "VolumeFogScatterColorR")) {
-        if (TryParseFloat(value, floatValue)) data.volumeFogScatterColor.r = floatValue;
-    } else if (KeyEquals(key, "VolumeFogScatterColorG")) {
-        if (TryParseFloat(value, floatValue)) data.volumeFogScatterColor.g = floatValue;
-    } else if (KeyEquals(key, "VolumeFogScatterColorB")) {
-        if (TryParseFloat(value, floatValue)) data.volumeFogScatterColor.b = floatValue;
-    } else if (KeyEquals(key, "VolumeFogScatterColorA")) {
-        if (TryParseFloat(value, floatValue)) data.volumeFogScatterColor.a = floatValue;
-    } else if (KeyEquals(key, "MieScatterColorEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.mieScatterColorEnabled = boolValue;
-            state.mieScatterColorEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MieScatterColorR")) {
-        if (TryParseFloat(value, floatValue)) data.mieScatterColor.r = floatValue;
-    } else if (KeyEquals(key, "MieScatterColorG")) {
-        if (TryParseFloat(value, floatValue)) data.mieScatterColor.g = floatValue;
-    } else if (KeyEquals(key, "MieScatterColorB")) {
-        if (TryParseFloat(value, floatValue)) data.mieScatterColor.b = floatValue;
-    } else if (KeyEquals(key, "MieScatterColorA")) {
-        if (TryParseFloat(value, floatValue)) data.mieScatterColor.a = floatValue;
-    } else if (KeyEquals(key, "MieScaleHeightEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.mieScaleHeightEnabled = boolValue;
-            state.mieScaleHeightEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MieScaleHeight")) {
-        if (TryParseFloat(value, floatValue)) data.mieScaleHeight = floatValue;
-    } else if (KeyEquals(key, "MieAerosolDensityEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.mieAerosolDensityEnabled = boolValue;
-            state.mieAerosolDensityEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MieAerosolDensity")) {
-        if (TryParseFloat(value, floatValue)) data.mieAerosolDensity = floatValue;
-    } else if (KeyEquals(key, "MieAerosolAbsorptionEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.mieAerosolAbsorptionEnabled = boolValue;
-            state.mieAerosolAbsorptionEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "MieAerosolAbsorption")) {
-        if (TryParseFloat(value, floatValue)) data.mieAerosolAbsorption = floatValue;
-    } else if (KeyEquals(key, "HeightFogBaselineEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.heightFogBaselineEnabled = boolValue;
-            state.heightFogBaselineEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "HeightFogBaseline")) {
-        if (TryParseFloat(value, floatValue)) data.heightFogBaseline = floatValue;
-    } else if (KeyEquals(key, "HeightFogFalloffEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.heightFogFalloffEnabled = boolValue;
-            state.heightFogFalloffEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "HeightFogFalloff")) {
-        if (TryParseFloat(value, floatValue)) data.heightFogFalloff = floatValue;
-    } else if (KeyEquals(key, "NoFog")) {
-        if (TryParseBool(value, boolValue)) data.noFog = boolValue;
-    } else if (KeyEquals(key, "Wind")) {
-        if (TryParseFloat(value, floatValue)) data.wind = floatValue;
-    } else if (KeyEquals(key, "NoWind")) {
-        if (TryParseBool(value, boolValue)) data.noWind = boolValue;
-    } else if (KeyEquals(key, "PuddleScaleEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.puddleScaleEnabled = boolValue;
-            state.puddleScaleEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "PuddleScale")) {
-        if (TryParseFloat(value, floatValue)) data.puddleScale = floatValue;
-    }
-}
-
-void NormalizeLoadedPreset(PresetParseState& state, const char* path) {
-    WeatherPresetData& data = state.data;
-
-    if (!state.cloudAmountEnabledSeen) data.cloudAmountEnabled = !FloatNearlyEqual(data.cloudAmount, 1.0f);
-    if (!state.cloudHeightEnabledSeen) data.cloudHeightEnabled = !FloatNearlyEqual(data.cloudHeight, 1.0f);
-    if (!state.cloudDensityEnabledSeen) data.cloudDensityEnabled = !FloatNearlyEqual(data.cloudDensity, 1.0f);
-    if (!state.midCloudsEnabledSeen) data.midCloudsEnabled = !FloatNearlyEqual(data.midClouds, 1.0f);
-    if (!state.highCloudsEnabledSeen) data.highCloudsEnabled = !FloatNearlyEqual(data.highClouds, 1.0f);
-    if (!state.cloudAlphaEnabledSeen) data.cloudAlphaEnabled = false;
-    if (!state.cloudFadeRangeEnabledSeen) data.cloudFadeRangeEnabled = false;
-    if (!state.cloudDetailRatioEnabledSeen) data.cloudDetailRatioEnabled = false;
-    if (!state.cloudPhaseFrontEnabledSeen) data.cloudPhaseFrontEnabled = false;
-    if (!state.cloudScatteringCoefficientEnabledSeen) data.cloudScatteringCoefficientEnabled = false;
-    if (!state.cloudFlowEnabledSeen) data.cloudFlowEnabled = false;
-    if (!state.cloudVisibleRangeEnabledSeen) data.cloudVisibleRangeEnabled = false;
-    if (!state.rayleighHeightEnabledSeen) data.rayleighHeightEnabled = false;
-    if (!state.ozoneRatioEnabledSeen) data.ozoneRatioEnabled = false;
-    if (!state.rayleighScatteringColorEnabledSeen) data.rayleighScatteringColorEnabled = false;
-    if (!state.exp2CEnabledSeen) data.exp2CEnabled = false;
-    if (!state.exp2DEnabledSeen) data.exp2DEnabled = false;
-    if (!state.cloudVariationEnabledSeen) data.cloudVariationEnabled = false;
-    if (!state.nightSkyRotationEnabledSeen) data.nightSkyRotationEnabled = false;
-    if (!state.nightSkyYawEnabledSeen) data.nightSkyYawEnabled = false;
-    if (!state.sunSizeEnabledSeen) data.sunSizeEnabled = false;
-    if (!state.sunLightIntensityEnabledSeen) data.sunLightIntensityEnabled = false;
-    if (!state.sunYawEnabledSeen) data.sunYawEnabled = false;
-    if (!state.sunPitchEnabledSeen) data.sunPitchEnabled = false;
-    if (!state.moonSizeEnabledSeen) data.moonSizeEnabled = false;
-    if (!state.moonLightIntensityEnabledSeen) data.moonLightIntensityEnabled = false;
-    if (!state.moonYawEnabledSeen) data.moonYawEnabled = false;
-    if (!state.moonPitchEnabledSeen) data.moonPitchEnabled = false;
-    if (!state.moonRollEnabledSeen) data.moonRollEnabled = false;
-    if (!state.moonTextureEnabledSeen) data.moonTextureEnabled = !data.moonTexture.empty();
-    if (EqualsNoCase(data.moonTexture, "Native")) {
-        data.moonTexture.clear();
-        data.moonTextureEnabled = false;
-    }
-    if (!data.moonTextureEnabled) {
-        data.moonTexture.clear();
-    }
-    if (!state.milkywayTextureEnabledSeen) data.milkywayTextureEnabled = !data.milkywayTexture.empty();
-    if (EqualsNoCase(data.milkywayTexture, "Native")) {
-        data.milkywayTexture.clear();
-        data.milkywayTextureEnabled = false;
-    }
-    if (!data.milkywayTextureEnabled) {
-        data.milkywayTexture.clear();
-    }
-    if (!state.fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
-    if (!state.volumeFogScatterColorEnabledSeen) data.volumeFogScatterColorEnabled = false;
-    if (!state.mieScatterColorEnabledSeen) data.mieScatterColorEnabled = false;
-    if (!state.mieScaleHeightEnabledSeen) data.mieScaleHeightEnabled = false;
-    if (!state.mieAerosolDensityEnabledSeen) data.mieAerosolDensityEnabled = false;
-    if (!state.mieAerosolAbsorptionEnabledSeen) data.mieAerosolAbsorptionEnabled = false;
-    if (!state.heightFogBaselineEnabledSeen) data.heightFogBaselineEnabled = false;
-    if (!state.heightFogFalloffEnabledSeen) data.heightFogFalloffEnabled = false;
-    if (!state.puddleScaleEnabledSeen) data.puddleScaleEnabled = !FloatNearlyEqual(data.puddleScale, 0.0f);
-
-    data.rain = ClampPresetRain(data.rain);
-    data.thunder = ClampPresetThunder(data.thunder);
-    data.dust = ClampPresetDust(data.dust);
-    data.snow = ClampPresetSnow(data.snow);
-    if (!state.snowAccumBoundaryAEnabledSeen) data.snowAccumBoundaryAEnabled = false;
-    if (!state.snowAccumBoundaryBEnabledSeen) data.snowAccumBoundaryBEnabled = false;
-    if (!state.snowCoverageThresholdEnabledSeen) data.snowCoverageThresholdEnabled = false;
-    data.snowAccumBoundaryA = ClampPresetSnowBoundary(data.snowAccumBoundaryA);
-    data.snowAccumBoundaryB = ClampPresetSnowBoundary(data.snowAccumBoundaryB);
-    data.snowCoverageThreshold = ClampPresetSnowBoundary(data.snowCoverageThreshold);
-    data.progressVisualTime = data.visualTimeOverride && data.progressVisualTime;
-    data.progressVisualTimeMatchGameTime = data.progressVisualTime && data.progressVisualTimeMatchGameTime;
-    data.progressVisualTimeIntervalMs = ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f);
-    data.timeHour = NormalizeHour24(data.timeHour);
-    data.nativeFog = ClampPresetNativeFog(data.nativeFog);
-    if (!state.nativeFogEnabledSeen) data.nativeFogEnabled = !FloatNearlyEqual(data.nativeFog, 1.0f);
-    data.cloudAlpha = ClampPresetCloudAlpha(data.cloudAlpha);
-    data.cloudFadeRange = ClampPresetCloudFadeRange(data.cloudFadeRange);
-    data.cloudDetailRatio = ClampPresetCloudDetailRatio(data.cloudDetailRatio);
-    data.cloudPhaseFront = ClampPresetCloudPhaseFront(data.cloudPhaseFront);
-    data.cloudScatteringCoefficient = ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient);
-    data.cloudFlow = ClampPresetCloudFlow(data.cloudFlow);
-    data.cloudVisibleRange = ClampPresetCloudVisibleRange(data.cloudVisibleRange);
-    data.rayleighHeight = ClampPresetRayleighHeight(data.rayleighHeight);
-    data.ozoneRatio = ClampPresetOzoneRatio(data.ozoneRatio);
-    data.rayleighScatteringColor = ClampPresetColor(data.rayleighScatteringColor, false);
-    data.sunLightIntensity = ClampPresetLightIntensity(data.sunLightIntensity);
-    data.moonLightIntensity = ClampPresetLightIntensity(data.moonLightIntensity);
-    data.volumeFogScatterColor = ClampPresetColor(data.volumeFogScatterColor, true);
-    data.mieScatterColor = ClampPresetColor(data.mieScatterColor, true);
-    data.mieScaleHeight = ClampPresetMieScaleHeight(data.mieScaleHeight);
-    data.mieAerosolDensity = ClampPresetMieDensity(data.mieAerosolDensity);
-    data.mieAerosolAbsorption = ClampPresetMieAbsorption(data.mieAerosolAbsorption);
-    data.heightFogBaseline = ClampPresetHeightFogBaseline(data.heightFogBaseline);
-    data.heightFogFalloff = ClampPresetHeightFogFalloff(data.heightFogFalloff);
-    data.exp2C = ClampPresetCloudWide(data.exp2C);
-    data.exp2D = ClampPresetCloudWide(data.exp2D);
-    data.cloudVariation = ClampPresetCloudWide(data.cloudVariation);
-    data.nightSkyRotation = ClampPresetPitch(data.nightSkyRotation);
-    data.nightSkyYaw = ClampPresetYaw(data.nightSkyYaw);
-    data.sunSize = ClampPresetSunSize(data.sunSize);
-    data.sunYaw = ClampPresetYaw(data.sunYaw);
-    data.sunPitch = ClampPresetPitch(data.sunPitch);
-    data.moonSize = ClampPresetMoonSize(data.moonSize);
-    data.moonYaw = ClampPresetYaw(data.moonYaw);
-    data.moonPitch = ClampPresetPitch(data.moonPitch);
-    data.moonRoll = ClampPresetYaw(data.moonRoll);
-    data.fogPercent = ClampPresetFogPercent(data.fogPercent);
-    data.wind = ClampPresetWind(data.wind);
-    data.puddleScale = ClampPresetPuddleScale(data.puddleScale);
-    data.cloudAmount = ClampPresetCloudAmount(data.cloudAmount);
-    data.cloudHeight = ClampPresetCloudHeight(data.cloudHeight);
-    data.cloudDensity = ClampPresetCloudDensity(data.cloudDensity);
-    data.midClouds = ClampPresetCloudWide(data.midClouds);
-    data.highClouds = ClampPresetCloudWide(data.highClouds);
-
-    if (state.sawLegacyAlias) {
-        Log("[preset] loaded legacy cloud aliases from %s\n", path);
-    }
 }
 
 float ActiveOverrideValue(const SliderOverride& overrideValue, float inactiveValue) {
@@ -2104,467 +360,8 @@ WeatherPresetColor RayleighColorFromBits(unsigned int bits) {
     };
 }
 
-std::string FormatPresetBool(bool value) {
-    return value ? "1" : "0";
-}
-
-std::string FormatPresetFloat(float value) {
-    char buf[64] = {};
-    sprintf_s(buf, "%.4f", value);
-    return buf;
-}
-
-std::string FormatPresetString(std::string value) {
-    value.erase(std::remove(value.begin(), value.end(), '\r'), value.end());
-    value.erase(std::remove(value.begin(), value.end(), '\n'), value.end());
-    return value;
-}
-
-std::string FormatCommunityMetadataString(const char* value, size_t maxLen = 160) {
-    std::string out = FormatPresetString(value ? value : "");
-    out.erase(std::remove_if(out.begin(), out.end(), [](unsigned char c) {
-        return c < 0x20 || c == 0x7F;
-    }), out.end());
-    if (out.size() > maxLen) {
-        out.resize(maxLen);
-    }
-    return out;
-}
-
-void AppendPresetLine(std::string& out, const char* text) {
-    out += text;
-    out += '\n';
-}
-
-void AppendPresetKeyValue(std::string& out, const char* key, const std::string& value) {
-    out += key;
-    out += '=';
-    out += value;
-    out += '\n';
-}
-
-std::string SerializeCanonicalPreset(const WeatherPresetData& data) {
-    std::string out;
-    out.reserve(768);
-
-    AppendPresetLine(out, kPresetHeader);
-    AppendPresetLine(out, "[Meta]");
-    AppendPresetKeyValue(out, "FormatVersion", std::to_string(kPresetFormatVersion));
-    out += '\n';
-
-    AppendPresetLine(out, "[Weather]");
-    AppendPresetKeyValue(out, "ForceClearSky", FormatPresetBool(data.forceClearSky));
-    AppendPresetKeyValue(out, "NoRain", FormatPresetBool(data.noRain));
-    AppendPresetKeyValue(out, "Rain", FormatPresetFloat(ClampPresetRain(data.rain)));
-    AppendPresetKeyValue(out, "Thunder", FormatPresetFloat(ClampPresetThunder(data.thunder)));
-    AppendPresetKeyValue(out, "NoDust", FormatPresetBool(data.noDust));
-    AppendPresetKeyValue(out, "Dust", FormatPresetFloat(ClampPresetDust(data.dust)));
-    AppendPresetKeyValue(out, "NoSnow", FormatPresetBool(data.noSnow));
-    AppendPresetKeyValue(out, "Snow", FormatPresetFloat(ClampPresetSnow(data.snow)));
-    AppendPresetKeyValue(out, "SnowAccumBoundaryAEnabled", FormatPresetBool(data.snowAccumBoundaryAEnabled));
-    AppendPresetKeyValue(out, "SnowAccumBoundaryA", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryA)));
-    AppendPresetKeyValue(out, "SnowAccumBoundaryBEnabled", FormatPresetBool(data.snowAccumBoundaryBEnabled));
-    AppendPresetKeyValue(out, "SnowAccumBoundaryB", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryB)));
-    AppendPresetKeyValue(out, "SnowCoverageThresholdEnabled", FormatPresetBool(data.snowCoverageThresholdEnabled));
-    AppendPresetKeyValue(out, "SnowCoverageThreshold", FormatPresetFloat(ClampPresetSnowBoundary(data.snowCoverageThreshold)));
-    out += '\n';
-
-    AppendPresetLine(out, "[Time]");
-    AppendPresetKeyValue(out, "VisualTimeOverride", FormatPresetBool(data.visualTimeOverride));
-    AppendPresetKeyValue(out, "ProgressVisualTime", FormatPresetBool(data.visualTimeOverride && data.progressVisualTime));
-    AppendPresetKeyValue(out, "ProgressVisualTimeMatchGameTime", FormatPresetBool(data.visualTimeOverride && data.progressVisualTime && data.progressVisualTimeMatchGameTime));
-    AppendPresetKeyValue(out, "ProgressVisualTimeIntervalMs", FormatPresetFloat(ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f)));
-    AppendPresetKeyValue(out, "TimeHour", FormatPresetFloat(NormalizeHour24(data.timeHour)));
-    out += '\n';
-
-    AppendPresetLine(out, "[Cloud]");
-    AppendPresetKeyValue(out, "CloudAmountEnabled", FormatPresetBool(data.cloudAmountEnabled));
-    AppendPresetKeyValue(out, "CloudAmount", FormatPresetFloat(ClampPresetCloudAmount(data.cloudAmount)));
-    AppendPresetKeyValue(out, "CloudHeightEnabled", FormatPresetBool(data.cloudHeightEnabled));
-    AppendPresetKeyValue(out, "CloudHeight", FormatPresetFloat(ClampPresetCloudHeight(data.cloudHeight)));
-    AppendPresetKeyValue(out, "CloudDensityEnabled", FormatPresetBool(data.cloudDensityEnabled));
-    AppendPresetKeyValue(out, "CloudDensity", FormatPresetFloat(ClampPresetCloudDensity(data.cloudDensity)));
-    AppendPresetKeyValue(out, "MidCloudsEnabled", FormatPresetBool(data.midCloudsEnabled));
-    AppendPresetKeyValue(out, "MidClouds", FormatPresetFloat(ClampPresetCloudWide(data.midClouds)));
-    AppendPresetKeyValue(out, "HighCloudLayerEnabled", FormatPresetBool(data.highCloudsEnabled));
-    AppendPresetKeyValue(out, "HighCloudLayer", FormatPresetFloat(ClampPresetCloudWide(data.highClouds)));
-    AppendPresetKeyValue(out, "CloudAlphaEnabled", FormatPresetBool(data.cloudAlphaEnabled));
-    AppendPresetKeyValue(out, "CloudAlpha", FormatPresetFloat(ClampPresetCloudAlpha(data.cloudAlpha)));
-    AppendPresetKeyValue(out, "CloudFadeRangeEnabled", FormatPresetBool(data.cloudFadeRangeEnabled));
-    AppendPresetKeyValue(out, "CloudFadeRange", FormatPresetFloat(ClampPresetCloudFadeRange(data.cloudFadeRange)));
-    AppendPresetKeyValue(out, "CloudDetailRatioEnabled", FormatPresetBool(data.cloudDetailRatioEnabled));
-    AppendPresetKeyValue(out, "CloudDetailRatio", FormatPresetFloat(ClampPresetCloudDetailRatio(data.cloudDetailRatio)));
-    AppendPresetKeyValue(out, "CloudPhaseFrontEnabled", FormatPresetBool(data.cloudPhaseFrontEnabled));
-    AppendPresetKeyValue(out, "CloudPhaseFront", FormatPresetFloat(ClampPresetCloudPhaseFront(data.cloudPhaseFront)));
-    AppendPresetKeyValue(out, "CloudScatteringCoefficientEnabled", FormatPresetBool(data.cloudScatteringCoefficientEnabled));
-    AppendPresetKeyValue(out, "CloudScatteringCoefficient", FormatPresetFloat(ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient)));
-    AppendPresetKeyValue(out, "CloudFlowEnabled", FormatPresetBool(data.cloudFlowEnabled));
-    AppendPresetKeyValue(out, "CloudFlow", FormatPresetFloat(ClampPresetCloudFlow(data.cloudFlow)));
-    AppendPresetKeyValue(out, "CloudVisibleRangeEnabled", FormatPresetBool(data.cloudVisibleRangeEnabled));
-    AppendPresetKeyValue(out, "CloudVisibleRange", FormatPresetFloat(ClampPresetCloudVisibleRange(data.cloudVisibleRange)));
-    AppendPresetKeyValue(out, "RayleighHeightEnabled", FormatPresetBool(data.rayleighHeightEnabled));
-    AppendPresetKeyValue(out, "RayleighHeight", FormatPresetFloat(ClampPresetRayleighHeight(data.rayleighHeight)));
-    AppendPresetKeyValue(out, "OzoneRatioEnabled", FormatPresetBool(data.ozoneRatioEnabled));
-    AppendPresetKeyValue(out, "OzoneRatio", FormatPresetFloat(ClampPresetOzoneRatio(data.ozoneRatio)));
-    AppendPresetKeyValue(out, "RayleighScatteringColorEnabled", FormatPresetBool(data.rayleighScatteringColorEnabled));
-    const WeatherPresetColor rayleigh = ClampPresetColor(data.rayleighScatteringColor, false);
-    AppendPresetKeyValue(out, "RayleighScatteringColorR", FormatPresetFloat(rayleigh.r));
-    AppendPresetKeyValue(out, "RayleighScatteringColorG", FormatPresetFloat(rayleigh.g));
-    AppendPresetKeyValue(out, "RayleighScatteringColorB", FormatPresetFloat(rayleigh.b));
-    out += '\n';
-
-    AppendPresetLine(out, "[Experiment]");
-    AppendPresetKeyValue(out, "2CEnabled", FormatPresetBool(data.exp2CEnabled));
-    AppendPresetKeyValue(out, "2C", FormatPresetFloat(ClampPresetCloudWide(data.exp2C)));
-    AppendPresetKeyValue(out, "2DEnabled", FormatPresetBool(data.exp2DEnabled));
-    AppendPresetKeyValue(out, "2D", FormatPresetFloat(ClampPresetCloudWide(data.exp2D)));
-    AppendPresetKeyValue(out, "CloudVariationEnabled", FormatPresetBool(data.cloudVariationEnabled));
-    AppendPresetKeyValue(out, "CloudVariation", FormatPresetFloat(ClampPresetCloudWide(data.cloudVariation)));
-    AppendPresetKeyValue(out, "PuddleScaleEnabled", FormatPresetBool(data.puddleScaleEnabled));
-    AppendPresetKeyValue(out, "PuddleScale", FormatPresetFloat(ClampPresetPuddleScale(data.puddleScale)));
-    out += '\n';
-
-    AppendPresetLine(out, "[Celestial]");
-    AppendPresetKeyValue(out, "NightSkyTiltEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
-    AppendPresetKeyValue(out, "NightSkyTilt", FormatPresetFloat(ClampPresetPitch(data.nightSkyRotation)));
-    AppendPresetKeyValue(out, "NightSkyPhaseEnabled", FormatPresetBool(data.nightSkyYawEnabled));
-    AppendPresetKeyValue(out, "NightSkyPhase", FormatPresetFloat(ClampPresetYaw(data.nightSkyYaw)));
-    AppendPresetKeyValue(out, "SunSizeEnabled", FormatPresetBool(data.sunSizeEnabled));
-    AppendPresetKeyValue(out, "SunSize", FormatPresetFloat(ClampPresetSunSize(data.sunSize)));
-    AppendPresetKeyValue(out, "SunLightIntensityEnabled", FormatPresetBool(data.sunLightIntensityEnabled));
-    AppendPresetKeyValue(out, "SunLightIntensity", FormatPresetFloat(ClampPresetLightIntensity(data.sunLightIntensity)));
-    AppendPresetKeyValue(out, "SunYawEnabled", FormatPresetBool(data.sunYawEnabled));
-    AppendPresetKeyValue(out, "SunYaw", FormatPresetFloat(ClampPresetYaw(data.sunYaw)));
-    AppendPresetKeyValue(out, "SunPitchEnabled", FormatPresetBool(data.sunPitchEnabled));
-    AppendPresetKeyValue(out, "SunPitch", FormatPresetFloat(ClampPresetPitch(data.sunPitch)));
-    AppendPresetKeyValue(out, "MoonSizeEnabled", FormatPresetBool(data.moonSizeEnabled));
-    AppendPresetKeyValue(out, "MoonSize", FormatPresetFloat(ClampPresetMoonSize(data.moonSize)));
-    AppendPresetKeyValue(out, "MoonLightIntensityEnabled", FormatPresetBool(data.moonLightIntensityEnabled));
-    AppendPresetKeyValue(out, "MoonLightIntensity", FormatPresetFloat(ClampPresetLightIntensity(data.moonLightIntensity)));
-    AppendPresetKeyValue(out, "MoonYawEnabled", FormatPresetBool(data.moonYawEnabled));
-    AppendPresetKeyValue(out, "MoonYaw", FormatPresetFloat(ClampPresetYaw(data.moonYaw)));
-    AppendPresetKeyValue(out, "MoonPitchEnabled", FormatPresetBool(data.moonPitchEnabled));
-    AppendPresetKeyValue(out, "MoonPitch", FormatPresetFloat(ClampPresetPitch(data.moonPitch)));
-    AppendPresetKeyValue(out, "MoonRollEnabled", FormatPresetBool(data.moonRollEnabled));
-    AppendPresetKeyValue(out, "MoonRoll", FormatPresetFloat(ClampPresetYaw(data.moonRoll)));
-    AppendPresetKeyValue(out, "MoonTextureEnabled", FormatPresetBool(data.moonTextureEnabled && !data.moonTexture.empty()));
-    AppendPresetKeyValue(out, "MoonTexture", data.moonTextureEnabled ? FormatPresetString(data.moonTexture) : "");
-    AppendPresetKeyValue(out, "MilkywayTextureEnabled", FormatPresetBool(data.milkywayTextureEnabled && !data.milkywayTexture.empty()));
-    AppendPresetKeyValue(out, "MilkywayTexture", data.milkywayTextureEnabled ? FormatPresetString(data.milkywayTexture) : "");
-    out += '\n';
-
-    AppendPresetLine(out, "[Atmosphere]");
-    AppendPresetKeyValue(out, "FogEnabled", FormatPresetBool(data.fogEnabled));
-    AppendPresetKeyValue(out, "Fog", FormatPresetFloat(ClampPresetFogPercent(data.fogPercent)));
-    AppendPresetKeyValue(out, "NativeFogEnabled", FormatPresetBool(data.nativeFogEnabled));
-    AppendPresetKeyValue(out, "NativeFog", FormatPresetFloat(ClampPresetNativeFog(data.nativeFog)));
-    AppendPresetKeyValue(out, "VolumeFogScatterColorEnabled", FormatPresetBool(data.volumeFogScatterColorEnabled));
-    const WeatherPresetColor volumeFog = ClampPresetColor(data.volumeFogScatterColor, true);
-    AppendPresetKeyValue(out, "VolumeFogScatterColorR", FormatPresetFloat(volumeFog.r));
-    AppendPresetKeyValue(out, "VolumeFogScatterColorG", FormatPresetFloat(volumeFog.g));
-    AppendPresetKeyValue(out, "VolumeFogScatterColorB", FormatPresetFloat(volumeFog.b));
-    AppendPresetKeyValue(out, "VolumeFogScatterColorA", FormatPresetFloat(volumeFog.a));
-    AppendPresetKeyValue(out, "MieScatterColorEnabled", FormatPresetBool(data.mieScatterColorEnabled));
-    const WeatherPresetColor mieScatter = ClampPresetColor(data.mieScatterColor, true);
-    AppendPresetKeyValue(out, "MieScatterColorR", FormatPresetFloat(mieScatter.r));
-    AppendPresetKeyValue(out, "MieScatterColorG", FormatPresetFloat(mieScatter.g));
-    AppendPresetKeyValue(out, "MieScatterColorB", FormatPresetFloat(mieScatter.b));
-    AppendPresetKeyValue(out, "MieScatterColorA", FormatPresetFloat(mieScatter.a));
-    AppendPresetKeyValue(out, "MieScaleHeightEnabled", FormatPresetBool(data.mieScaleHeightEnabled));
-    AppendPresetKeyValue(out, "MieScaleHeight", FormatPresetFloat(ClampPresetMieScaleHeight(data.mieScaleHeight)));
-    AppendPresetKeyValue(out, "MieAerosolDensityEnabled", FormatPresetBool(data.mieAerosolDensityEnabled));
-    AppendPresetKeyValue(out, "MieAerosolDensity", FormatPresetFloat(ClampPresetMieDensity(data.mieAerosolDensity)));
-    AppendPresetKeyValue(out, "MieAerosolAbsorptionEnabled", FormatPresetBool(data.mieAerosolAbsorptionEnabled));
-    AppendPresetKeyValue(out, "MieAerosolAbsorption", FormatPresetFloat(ClampPresetMieAbsorption(data.mieAerosolAbsorption)));
-    AppendPresetKeyValue(out, "HeightFogBaselineEnabled", FormatPresetBool(data.heightFogBaselineEnabled));
-    AppendPresetKeyValue(out, "HeightFogBaseline", FormatPresetFloat(ClampPresetHeightFogBaseline(data.heightFogBaseline)));
-    AppendPresetKeyValue(out, "HeightFogFalloffEnabled", FormatPresetBool(data.heightFogFalloffEnabled));
-    AppendPresetKeyValue(out, "HeightFogFalloff", FormatPresetFloat(ClampPresetHeightFogFalloff(data.heightFogFalloff)));
-    AppendPresetKeyValue(out, "NoFog", FormatPresetBool(data.noFog));
-    AppendPresetKeyValue(out, "Wind", FormatPresetFloat(ClampPresetWind(data.wind)));
-    AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
-
-    return out;
-}
-
-void AppendRegionSectionHeader(std::string& out, int regionId, const char* section) {
-    out += "[Region.";
-    out += RegionToken(regionId);
-    out += ".";
-    out += section;
-    out += "]\n";
-}
-
-void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherPresetData& data, const WeatherPresetMask& mask) {
-    if (mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow ||
-        mask.snowAccumBoundaryA || mask.snowAccumBoundaryB || mask.snowCoverageThreshold) {
-        AppendRegionSectionHeader(out, regionId, "Weather");
-        if (mask.forceClearSky) AppendPresetKeyValue(out, "ForceClearSky", FormatPresetBool(data.forceClearSky));
-        if (mask.noRain) AppendPresetKeyValue(out, "NoRain", FormatPresetBool(data.noRain));
-        if (mask.rain) AppendPresetKeyValue(out, "Rain", FormatPresetFloat(ClampPresetRain(data.rain)));
-        if (mask.thunder) AppendPresetKeyValue(out, "Thunder", FormatPresetFloat(ClampPresetThunder(data.thunder)));
-        if (mask.noDust) AppendPresetKeyValue(out, "NoDust", FormatPresetBool(data.noDust));
-        if (mask.dust) AppendPresetKeyValue(out, "Dust", FormatPresetFloat(ClampPresetDust(data.dust)));
-        if (mask.noSnow) AppendPresetKeyValue(out, "NoSnow", FormatPresetBool(data.noSnow));
-        if (mask.snow) AppendPresetKeyValue(out, "Snow", FormatPresetFloat(ClampPresetSnow(data.snow)));
-        if (mask.snowAccumBoundaryA) {
-            AppendPresetKeyValue(out, "SnowAccumBoundaryAEnabled", FormatPresetBool(data.snowAccumBoundaryAEnabled));
-            AppendPresetKeyValue(out, "SnowAccumBoundaryA", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryA)));
-        }
-        if (mask.snowAccumBoundaryB) {
-            AppendPresetKeyValue(out, "SnowAccumBoundaryBEnabled", FormatPresetBool(data.snowAccumBoundaryBEnabled));
-            AppendPresetKeyValue(out, "SnowAccumBoundaryB", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryB)));
-        }
-        if (mask.snowCoverageThreshold) {
-            AppendPresetKeyValue(out, "SnowCoverageThresholdEnabled", FormatPresetBool(data.snowCoverageThresholdEnabled));
-            AppendPresetKeyValue(out, "SnowCoverageThreshold", FormatPresetFloat(ClampPresetSnowBoundary(data.snowCoverageThreshold)));
-        }
-        out += '\n';
-    }
-
-    if (mask.time) {
-        AppendRegionSectionHeader(out, regionId, "Time");
-        AppendPresetKeyValue(out, "VisualTimeOverride", FormatPresetBool(data.visualTimeOverride));
-        AppendPresetKeyValue(out, "ProgressVisualTime", FormatPresetBool(data.visualTimeOverride && data.progressVisualTime));
-        AppendPresetKeyValue(out, "ProgressVisualTimeMatchGameTime", FormatPresetBool(data.visualTimeOverride && data.progressVisualTime && data.progressVisualTimeMatchGameTime));
-        AppendPresetKeyValue(out, "ProgressVisualTimeIntervalMs", FormatPresetFloat(ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f)));
-        AppendPresetKeyValue(out, "TimeHour", FormatPresetFloat(NormalizeHour24(data.timeHour)));
-        out += '\n';
-    }
-
-    if (mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds || mask.highClouds ||
-        mask.cloudAlpha || mask.cloudFadeRange || mask.cloudDetailRatio ||
-        mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.cloudFlow || mask.cloudVisibleRange ||
-        mask.rayleighHeight || mask.ozoneRatio || mask.rayleighScatteringColor) {
-        AppendRegionSectionHeader(out, regionId, "Cloud");
-        if (mask.cloudAmount) {
-            AppendPresetKeyValue(out, "CloudAmountEnabled", FormatPresetBool(data.cloudAmountEnabled));
-            AppendPresetKeyValue(out, "CloudAmount", FormatPresetFloat(ClampPresetCloudAmount(data.cloudAmount)));
-        }
-        if (mask.cloudHeight) {
-            AppendPresetKeyValue(out, "CloudHeightEnabled", FormatPresetBool(data.cloudHeightEnabled));
-            AppendPresetKeyValue(out, "CloudHeight", FormatPresetFloat(ClampPresetCloudHeight(data.cloudHeight)));
-        }
-        if (mask.cloudDensity) {
-            AppendPresetKeyValue(out, "CloudDensityEnabled", FormatPresetBool(data.cloudDensityEnabled));
-            AppendPresetKeyValue(out, "CloudDensity", FormatPresetFloat(ClampPresetCloudDensity(data.cloudDensity)));
-        }
-        if (mask.midClouds) {
-            AppendPresetKeyValue(out, "MidCloudsEnabled", FormatPresetBool(data.midCloudsEnabled));
-            AppendPresetKeyValue(out, "MidClouds", FormatPresetFloat(ClampPresetCloudWide(data.midClouds)));
-        }
-        if (mask.highClouds) {
-            AppendPresetKeyValue(out, "HighCloudLayerEnabled", FormatPresetBool(data.highCloudsEnabled));
-            AppendPresetKeyValue(out, "HighCloudLayer", FormatPresetFloat(ClampPresetCloudWide(data.highClouds)));
-        }
-        if (mask.cloudAlpha) {
-            AppendPresetKeyValue(out, "CloudAlphaEnabled", FormatPresetBool(data.cloudAlphaEnabled));
-            AppendPresetKeyValue(out, "CloudAlpha", FormatPresetFloat(ClampPresetCloudAlpha(data.cloudAlpha)));
-        }
-        if (mask.cloudFadeRange) {
-            AppendPresetKeyValue(out, "CloudFadeRangeEnabled", FormatPresetBool(data.cloudFadeRangeEnabled));
-            AppendPresetKeyValue(out, "CloudFadeRange", FormatPresetFloat(ClampPresetCloudFadeRange(data.cloudFadeRange)));
-        }
-        if (mask.cloudDetailRatio) {
-            AppendPresetKeyValue(out, "CloudDetailRatioEnabled", FormatPresetBool(data.cloudDetailRatioEnabled));
-            AppendPresetKeyValue(out, "CloudDetailRatio", FormatPresetFloat(ClampPresetCloudDetailRatio(data.cloudDetailRatio)));
-        }
-        if (mask.cloudPhaseFront) {
-            AppendPresetKeyValue(out, "CloudPhaseFrontEnabled", FormatPresetBool(data.cloudPhaseFrontEnabled));
-            AppendPresetKeyValue(out, "CloudPhaseFront", FormatPresetFloat(ClampPresetCloudPhaseFront(data.cloudPhaseFront)));
-        }
-        if (mask.cloudScatteringCoefficient) {
-            AppendPresetKeyValue(out, "CloudScatteringCoefficientEnabled", FormatPresetBool(data.cloudScatteringCoefficientEnabled));
-            AppendPresetKeyValue(out, "CloudScatteringCoefficient", FormatPresetFloat(ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient)));
-        }
-        if (mask.cloudFlow) {
-            AppendPresetKeyValue(out, "CloudFlowEnabled", FormatPresetBool(data.cloudFlowEnabled));
-            AppendPresetKeyValue(out, "CloudFlow", FormatPresetFloat(ClampPresetCloudFlow(data.cloudFlow)));
-        }
-        if (mask.cloudVisibleRange) {
-            AppendPresetKeyValue(out, "CloudVisibleRangeEnabled", FormatPresetBool(data.cloudVisibleRangeEnabled));
-            AppendPresetKeyValue(out, "CloudVisibleRange", FormatPresetFloat(ClampPresetCloudVisibleRange(data.cloudVisibleRange)));
-        }
-        if (mask.rayleighHeight) {
-            AppendPresetKeyValue(out, "RayleighHeightEnabled", FormatPresetBool(data.rayleighHeightEnabled));
-            AppendPresetKeyValue(out, "RayleighHeight", FormatPresetFloat(ClampPresetRayleighHeight(data.rayleighHeight)));
-        }
-        if (mask.ozoneRatio) {
-            AppendPresetKeyValue(out, "OzoneRatioEnabled", FormatPresetBool(data.ozoneRatioEnabled));
-            AppendPresetKeyValue(out, "OzoneRatio", FormatPresetFloat(ClampPresetOzoneRatio(data.ozoneRatio)));
-        }
-        if (mask.rayleighScatteringColor) {
-            const WeatherPresetColor rayleigh = ClampPresetColor(data.rayleighScatteringColor, false);
-            AppendPresetKeyValue(out, "RayleighScatteringColorEnabled", FormatPresetBool(data.rayleighScatteringColorEnabled));
-            AppendPresetKeyValue(out, "RayleighScatteringColorR", FormatPresetFloat(rayleigh.r));
-            AppendPresetKeyValue(out, "RayleighScatteringColorG", FormatPresetFloat(rayleigh.g));
-            AppendPresetKeyValue(out, "RayleighScatteringColorB", FormatPresetFloat(rayleigh.b));
-        }
-        out += '\n';
-    }
-
-    if (mask.exp2C || mask.exp2D || mask.cloudVariation || mask.puddleScale) {
-        AppendRegionSectionHeader(out, regionId, "Experiment");
-        if (mask.exp2C) {
-            AppendPresetKeyValue(out, "2CEnabled", FormatPresetBool(data.exp2CEnabled));
-            AppendPresetKeyValue(out, "2C", FormatPresetFloat(ClampPresetCloudWide(data.exp2C)));
-        }
-        if (mask.exp2D) {
-            AppendPresetKeyValue(out, "2DEnabled", FormatPresetBool(data.exp2DEnabled));
-            AppendPresetKeyValue(out, "2D", FormatPresetFloat(ClampPresetCloudWide(data.exp2D)));
-        }
-        if (mask.cloudVariation) {
-            AppendPresetKeyValue(out, "CloudVariationEnabled", FormatPresetBool(data.cloudVariationEnabled));
-            AppendPresetKeyValue(out, "CloudVariation", FormatPresetFloat(ClampPresetCloudWide(data.cloudVariation)));
-        }
-        if (mask.puddleScale) {
-            AppendPresetKeyValue(out, "PuddleScaleEnabled", FormatPresetBool(data.puddleScaleEnabled));
-            AppendPresetKeyValue(out, "PuddleScale", FormatPresetFloat(ClampPresetPuddleScale(data.puddleScale)));
-        }
-        out += '\n';
-    }
-
-    if (mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunLightIntensity || mask.sunYaw || mask.sunPitch ||
-        mask.moonSize || mask.moonLightIntensity || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture) {
-        AppendRegionSectionHeader(out, regionId, "Celestial");
-        if (mask.nightSkyRotation) {
-            AppendPresetKeyValue(out, "NightSkyTiltEnabled", FormatPresetBool(data.nightSkyRotationEnabled));
-            AppendPresetKeyValue(out, "NightSkyTilt", FormatPresetFloat(ClampPresetPitch(data.nightSkyRotation)));
-        }
-        if (mask.nightSkyYaw) {
-            AppendPresetKeyValue(out, "NightSkyPhaseEnabled", FormatPresetBool(data.nightSkyYawEnabled));
-            AppendPresetKeyValue(out, "NightSkyPhase", FormatPresetFloat(ClampPresetYaw(data.nightSkyYaw)));
-        }
-        if (mask.sunSize) {
-            AppendPresetKeyValue(out, "SunSizeEnabled", FormatPresetBool(data.sunSizeEnabled));
-            AppendPresetKeyValue(out, "SunSize", FormatPresetFloat(ClampPresetSunSize(data.sunSize)));
-        }
-        if (mask.sunLightIntensity) {
-            AppendPresetKeyValue(out, "SunLightIntensityEnabled", FormatPresetBool(data.sunLightIntensityEnabled));
-            AppendPresetKeyValue(out, "SunLightIntensity", FormatPresetFloat(ClampPresetLightIntensity(data.sunLightIntensity)));
-        }
-        if (mask.sunYaw) {
-            AppendPresetKeyValue(out, "SunYawEnabled", FormatPresetBool(data.sunYawEnabled));
-            AppendPresetKeyValue(out, "SunYaw", FormatPresetFloat(ClampPresetYaw(data.sunYaw)));
-        }
-        if (mask.sunPitch) {
-            AppendPresetKeyValue(out, "SunPitchEnabled", FormatPresetBool(data.sunPitchEnabled));
-            AppendPresetKeyValue(out, "SunPitch", FormatPresetFloat(ClampPresetPitch(data.sunPitch)));
-        }
-        if (mask.moonSize) {
-            AppendPresetKeyValue(out, "MoonSizeEnabled", FormatPresetBool(data.moonSizeEnabled));
-            AppendPresetKeyValue(out, "MoonSize", FormatPresetFloat(ClampPresetMoonSize(data.moonSize)));
-        }
-        if (mask.moonLightIntensity) {
-            AppendPresetKeyValue(out, "MoonLightIntensityEnabled", FormatPresetBool(data.moonLightIntensityEnabled));
-            AppendPresetKeyValue(out, "MoonLightIntensity", FormatPresetFloat(ClampPresetLightIntensity(data.moonLightIntensity)));
-        }
-        if (mask.moonYaw) {
-            AppendPresetKeyValue(out, "MoonYawEnabled", FormatPresetBool(data.moonYawEnabled));
-            AppendPresetKeyValue(out, "MoonYaw", FormatPresetFloat(ClampPresetYaw(data.moonYaw)));
-        }
-        if (mask.moonPitch) {
-            AppendPresetKeyValue(out, "MoonPitchEnabled", FormatPresetBool(data.moonPitchEnabled));
-            AppendPresetKeyValue(out, "MoonPitch", FormatPresetFloat(ClampPresetPitch(data.moonPitch)));
-        }
-        if (mask.moonRoll) {
-            AppendPresetKeyValue(out, "MoonRollEnabled", FormatPresetBool(data.moonRollEnabled));
-            AppendPresetKeyValue(out, "MoonRoll", FormatPresetFloat(ClampPresetYaw(data.moonRoll)));
-        }
-        if (mask.moonTexture) {
-            AppendPresetKeyValue(out, "MoonTextureEnabled", FormatPresetBool(data.moonTextureEnabled && !data.moonTexture.empty()));
-            AppendPresetKeyValue(out, "MoonTexture", data.moonTextureEnabled ? FormatPresetString(data.moonTexture) : "");
-        }
-        if (mask.milkywayTexture) {
-            AppendPresetKeyValue(out, "MilkywayTextureEnabled", FormatPresetBool(data.milkywayTextureEnabled && !data.milkywayTexture.empty()));
-            AppendPresetKeyValue(out, "MilkywayTexture", data.milkywayTextureEnabled ? FormatPresetString(data.milkywayTexture) : "");
-        }
-        out += '\n';
-    }
-
-    if (mask.fog || mask.nativeFog || mask.volumeFogScatterColor || mask.mieScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
-        mask.mieAerosolAbsorption || mask.heightFogBaseline || mask.heightFogFalloff || mask.noFog || mask.wind || mask.noWind) {
-        AppendRegionSectionHeader(out, regionId, "Atmosphere");
-        if (mask.fog) {
-            AppendPresetKeyValue(out, "FogEnabled", FormatPresetBool(data.fogEnabled));
-            AppendPresetKeyValue(out, "Fog", FormatPresetFloat(ClampPresetFogPercent(data.fogPercent)));
-        }
-        if (mask.nativeFog) {
-            AppendPresetKeyValue(out, "NativeFogEnabled", FormatPresetBool(data.nativeFogEnabled));
-            AppendPresetKeyValue(out, "NativeFog", FormatPresetFloat(ClampPresetNativeFog(data.nativeFog)));
-        }
-        if (mask.volumeFogScatterColor) {
-            const WeatherPresetColor volumeFog = ClampPresetColor(data.volumeFogScatterColor, true);
-            AppendPresetKeyValue(out, "VolumeFogScatterColorEnabled", FormatPresetBool(data.volumeFogScatterColorEnabled));
-            AppendPresetKeyValue(out, "VolumeFogScatterColorR", FormatPresetFloat(volumeFog.r));
-            AppendPresetKeyValue(out, "VolumeFogScatterColorG", FormatPresetFloat(volumeFog.g));
-            AppendPresetKeyValue(out, "VolumeFogScatterColorB", FormatPresetFloat(volumeFog.b));
-            AppendPresetKeyValue(out, "VolumeFogScatterColorA", FormatPresetFloat(volumeFog.a));
-        }
-        if (mask.mieScatterColor) {
-            const WeatherPresetColor mieScatter = ClampPresetColor(data.mieScatterColor, true);
-            AppendPresetKeyValue(out, "MieScatterColorEnabled", FormatPresetBool(data.mieScatterColorEnabled));
-            AppendPresetKeyValue(out, "MieScatterColorR", FormatPresetFloat(mieScatter.r));
-            AppendPresetKeyValue(out, "MieScatterColorG", FormatPresetFloat(mieScatter.g));
-            AppendPresetKeyValue(out, "MieScatterColorB", FormatPresetFloat(mieScatter.b));
-            AppendPresetKeyValue(out, "MieScatterColorA", FormatPresetFloat(mieScatter.a));
-        }
-        if (mask.mieScaleHeight) {
-            AppendPresetKeyValue(out, "MieScaleHeightEnabled", FormatPresetBool(data.mieScaleHeightEnabled));
-            AppendPresetKeyValue(out, "MieScaleHeight", FormatPresetFloat(ClampPresetMieScaleHeight(data.mieScaleHeight)));
-        }
-        if (mask.mieAerosolDensity) {
-            AppendPresetKeyValue(out, "MieAerosolDensityEnabled", FormatPresetBool(data.mieAerosolDensityEnabled));
-            AppendPresetKeyValue(out, "MieAerosolDensity", FormatPresetFloat(ClampPresetMieDensity(data.mieAerosolDensity)));
-        }
-        if (mask.mieAerosolAbsorption) {
-            AppendPresetKeyValue(out, "MieAerosolAbsorptionEnabled", FormatPresetBool(data.mieAerosolAbsorptionEnabled));
-            AppendPresetKeyValue(out, "MieAerosolAbsorption", FormatPresetFloat(ClampPresetMieAbsorption(data.mieAerosolAbsorption)));
-        }
-        if (mask.heightFogBaseline) {
-            AppendPresetKeyValue(out, "HeightFogBaselineEnabled", FormatPresetBool(data.heightFogBaselineEnabled));
-            AppendPresetKeyValue(out, "HeightFogBaseline", FormatPresetFloat(ClampPresetHeightFogBaseline(data.heightFogBaseline)));
-        }
-        if (mask.heightFogFalloff) {
-            AppendPresetKeyValue(out, "HeightFogFalloffEnabled", FormatPresetBool(data.heightFogFalloffEnabled));
-            AppendPresetKeyValue(out, "HeightFogFalloff", FormatPresetFloat(ClampPresetHeightFogFalloff(data.heightFogFalloff)));
-        }
-        if (mask.noFog) AppendPresetKeyValue(out, "NoFog", FormatPresetBool(data.noFog));
-        if (mask.wind) AppendPresetKeyValue(out, "Wind", FormatPresetFloat(ClampPresetWind(data.wind)));
-        if (mask.noWind) AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
-        out += '\n';
-    }
-}
-
-std::string SerializePresetPackage(const WeatherPresetPackage& package) {
-    std::string out = SerializeCanonicalPreset(package.global);
-    for (int regionId = 1; regionId < kPresetRegionCount; ++regionId) {
-        if (!package.regionEnabled[regionId]) continue;
-        out += "\n[Region.";
-        out += RegionToken(regionId);
-        out += "]\n";
-        AppendPresetKeyValue(out, "Enabled", "1");
-        out += '\n';
-        AppendMaskedRegionPresetData(out, regionId, package.region[regionId], package.regionMask[regionId]);
-    }
-    return out;
-}
-
-bool PresetPackageEquals(const WeatherPresetPackage& a, const WeatherPresetPackage& b) {
-    if (!PresetDataEquals(a.global, b.global)) return false;
-    for (int regionId = 1; regionId < kPresetRegionCount; ++regionId) {
-        if (a.regionEnabled[regionId] != b.regionEnabled[regionId]) return false;
-        if (!PresetMaskEquals(a.regionMask[regionId], b.regionMask[regionId])) return false;
-        if (!PresetDataEquals(
-                EffectivePresetDataForRegion(a, regionId),
-                EffectivePresetDataForRegion(b, regionId))) {
-            return false;
-        }
-    }
-    return true;
-}
-
 WeatherPresetData CaptureCurrentPresetData() {
+    const bool extendedSliderRange = g_extendedSliderRange.load();
     WeatherPresetData data{};
     data.forceClearSky = g_forceClear.load();
     data.noRain = g_noRain.load();
@@ -2655,12 +452,12 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.fogEnabled = g_oFog.active.load();
     if (data.fogEnabled) {
         const float fogN = sqrtf(max(0.0f, g_oFog.value.load() / 100.0f));
-        data.fogPercent = ClampPresetFogPercent(fogN * 100.0f);
+        data.fogPercent = ClampPresetFogPercent(extendedSliderRange, fogN * 100.0f);
     } else {
         data.fogPercent = 0.0f;
     }
     data.nativeFogEnabled = g_oNativeFog.active.load();
-    data.nativeFog = data.nativeFogEnabled ? ClampPresetNativeFog(g_oNativeFog.value.load()) : 1.0f;
+    data.nativeFog = data.nativeFogEnabled ? ClampPresetNativeFog(extendedSliderRange, g_oNativeFog.value.load()) : 1.0f;
     data.volumeFogScatterColorEnabled = g_oVolumeFogScatterColor.active.load();
     data.volumeFogScatterColor = ActiveColorOverrideValue(g_oVolumeFogScatterColor, {
         g_windPackBase34.load(),
@@ -2686,23 +483,24 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.heightFogFalloffEnabled = g_oHeightFogFalloff.active.load();
     data.heightFogFalloff = OverrideValueIf(data.heightFogFalloffEnabled, g_oHeightFogFalloff, g_windPackBase19.load());
     data.noFog = g_noFog.load();
-    data.wind = ClampPresetWind(g_windMul.load());
+    data.wind = ClampPresetWind(extendedSliderRange, g_windMul.load());
     data.noWind = g_noWind.load();
     data.puddleScaleEnabled = g_oCloudThk.active.load();
-    data.puddleScale = data.puddleScaleEnabled ? ClampPresetPuddleScale(g_oCloudThk.value.load()) : 0.0f;
+    data.puddleScale = data.puddleScaleEnabled ? ClampPresetPuddleScale(extendedSliderRange, g_oCloudThk.value.load()) : 0.0f;
     return data;
 }
 
 void ApplyPresetData(const WeatherPresetData& data) {
+    const bool extendedSliderRange = g_extendedSliderRange.load();
     g_forceClear.store(data.forceClearSky);
     g_noRain.store(data.noRain);
     g_noDust.store(data.noDust);
     g_noSnow.store(data.noSnow);
 
-    ApplyPositiveOverride(g_oRain, ClampPresetRain(data.rain), 0.0f, 5.0f);
-    ApplyPositiveOverride(g_oThunder, ClampPresetThunder(data.thunder), 0.0f, 5.0f);
-    ApplyPositiveOverride(g_oDust, ClampPresetDust(data.dust), 0.0f, 10.0f);
-    ApplyPositiveOverride(g_oSnow, ClampPresetSnow(data.snow), 0.0f, 5.0f);
+    ApplyPositiveOverride(g_oRain, ClampPresetRain(extendedSliderRange, data.rain), 0.0f, 5.0f);
+    ApplyPositiveOverride(g_oThunder, ClampPresetThunder(extendedSliderRange, data.thunder), 0.0f, 5.0f);
+    ApplyPositiveOverride(g_oDust, ClampPresetDust(extendedSliderRange, data.dust), 0.0f, 10.0f);
+    ApplyPositiveOverride(g_oSnow, ClampPresetSnow(extendedSliderRange, data.snow), 0.0f, 5.0f);
     ApplyEnabledOverride(g_oSnowAccumBoundaryA, data.snowAccumBoundaryAEnabled, ClampPresetSnowBoundary(data.snowAccumBoundaryA), -1000.0f, 1500.0f);
     ApplyEnabledOverride(g_oSnowAccumBoundaryB, data.snowAccumBoundaryBEnabled, ClampPresetSnowBoundary(data.snowAccumBoundaryB), -1000.0f, 1500.0f);
     ApplyEnabledOverride(g_oSnowCoverageThreshold, data.snowCoverageThresholdEnabled, ClampPresetSnowBoundary(data.snowCoverageThreshold), -1000.0f, 1500.0f);
@@ -2759,233 +557,62 @@ void ApplyPresetData(const WeatherPresetData& data) {
         Log("[W] preset visual time skipped: time layout unresolved\n");
     }
 
-    ApplyEnabledOverride(g_oCloudAmount, data.cloudAmountEnabled, ClampPresetCloudAmount(data.cloudAmount), 0.0f, 50.0f);
-    ApplyEnabledOverride(g_oCloudSpdX, data.cloudHeightEnabled, ClampPresetCloudHeight(data.cloudHeight), -50.0f, 50.0f);
-    ApplyEnabledOverride(g_oCloudSpdY, data.cloudDensityEnabled, ClampPresetCloudDensity(data.cloudDensity), 0.0f, 50.0f);
-    ApplyEnabledOverride(g_oHighClouds, data.midCloudsEnabled, ClampPresetCloudWide(data.midClouds), 0.0f, 50.0f);
-    ApplyEnabledOverride(g_oAtmoAlpha, data.highCloudsEnabled, ClampPresetCloudWide(data.highClouds), 0.0f, 50.0f);
-    ApplyEnabledOverride(g_oCloudAlpha, data.cloudAlphaEnabled, ClampPresetCloudAlpha(data.cloudAlpha), 0.0f, 100.0f);
-    ApplyEnabledOverride(g_oCloudFadeRange, data.cloudFadeRangeEnabled, ClampPresetCloudFadeRange(data.cloudFadeRange), 0.0f, 200000.0f);
+    ApplyEnabledOverride(g_oCloudAmount, data.cloudAmountEnabled, ClampPresetCloudAmount(extendedSliderRange, data.cloudAmount), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oCloudSpdX, data.cloudHeightEnabled, ClampPresetCloudHeight(extendedSliderRange, data.cloudHeight), -50.0f, 50.0f);
+    ApplyEnabledOverride(g_oCloudSpdY, data.cloudDensityEnabled, ClampPresetCloudDensity(extendedSliderRange, data.cloudDensity), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oHighClouds, data.midCloudsEnabled, ClampPresetCloudWide(extendedSliderRange, data.midClouds), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oAtmoAlpha, data.highCloudsEnabled, ClampPresetCloudWide(extendedSliderRange, data.highClouds), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oCloudAlpha, data.cloudAlphaEnabled, ClampPresetCloudAlpha(extendedSliderRange, data.cloudAlpha), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oCloudFadeRange, data.cloudFadeRangeEnabled, ClampPresetCloudFadeRange(extendedSliderRange, data.cloudFadeRange), 0.0f, 200000.0f);
     ApplyEnabledOverride(g_oCloudDetailRatio, data.cloudDetailRatioEnabled, ClampPresetCloudDetailRatio(data.cloudDetailRatio), 0.0f, 1.5f);
-    ApplyEnabledOverride(g_oCloudPhaseFront, data.cloudPhaseFrontEnabled, ClampPresetCloudPhaseFront(data.cloudPhaseFront), -1.0f, 1.0f);
-    ApplyEnabledOverride(g_oCloudScatteringCoefficient, data.cloudScatteringCoefficientEnabled, ClampPresetCloudScatteringCoefficient(data.cloudScatteringCoefficient), kCloudScatteringCoefficientMin, 100.0f);
-    ApplyEnabledOverride(g_oCloudFlow, data.cloudFlowEnabled, ClampPresetCloudFlow(data.cloudFlow), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oCloudPhaseFront, data.cloudPhaseFrontEnabled, ClampPresetCloudPhaseFront(extendedSliderRange, data.cloudPhaseFront), -1.0f, 1.0f);
+    ApplyEnabledOverride(g_oCloudScatteringCoefficient, data.cloudScatteringCoefficientEnabled, ClampPresetCloudScatteringCoefficient(extendedSliderRange, data.cloudScatteringCoefficient), kCloudScatteringCoefficientMin, 100.0f);
+    ApplyEnabledOverride(g_oCloudFlow, data.cloudFlowEnabled, ClampPresetCloudFlow(extendedSliderRange, data.cloudFlow), 0.0f, 50.0f);
     ApplyEnabledOverride(g_oCloudVisibleRange, data.cloudVisibleRangeEnabled, ClampPresetCloudVisibleRange(data.cloudVisibleRange), 0.0f, 10.0f);
-    ApplyEnabledOverride(g_oRayleighHeight, data.rayleighHeightEnabled, ClampPresetRayleighHeight(data.rayleighHeight), 1.0f, 200000.0f);
-    ApplyEnabledOverride(g_oOzoneRatio, data.ozoneRatioEnabled, ClampPresetOzoneRatio(data.ozoneRatio), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oRayleighHeight, data.rayleighHeightEnabled, ClampPresetRayleighHeight(extendedSliderRange, data.rayleighHeight), 1.0f, 200000.0f);
+    ApplyEnabledOverride(g_oOzoneRatio, data.ozoneRatioEnabled, ClampPresetOzoneRatio(extendedSliderRange, data.ozoneRatio), 0.0f, 100.0f);
     ApplyEnabledColorOverride(g_oRayleighScatteringColor, data.rayleighScatteringColorEnabled, data.rayleighScatteringColor, false);
-    ApplyEnabledOverride(g_oExpCloud2C, data.exp2CEnabled, ClampPresetCloudWide(data.exp2C), 0.0f, 50.0f);
-    ApplyEnabledOverride(g_oExpCloud2D, data.exp2DEnabled, ClampPresetCloudWide(data.exp2D), 0.0f, 50.0f);
-    ApplyEnabledOverride(g_oCloudVariation, data.cloudVariationEnabled, ClampPresetCloudWide(data.cloudVariation), 0.0f, 50.0f);
-    ApplyEnabledOverride(g_oExpNightSkyRot, data.nightSkyRotationEnabled, ClampPresetPitch(data.nightSkyRotation), -180.0f, 180.0f);
-    ApplyEnabledOverride(g_oNightSkyYaw, data.nightSkyYawEnabled, ClampPresetYaw(data.nightSkyYaw), -360.0f, 360.0f);
-    ApplyEnabledOverride(g_oSunSize, data.sunSizeEnabled, ClampPresetSunSize(data.sunSize), 0.001f, 100.0f);
-    ApplyEnabledOverride(g_oSunLightIntensity, data.sunLightIntensityEnabled, ClampPresetLightIntensity(data.sunLightIntensity), 0.0f, 100.0f);
-    ApplyEnabledOverride(g_oSunDirX, data.sunYawEnabled, ClampPresetYaw(data.sunYaw), -360.0f, 360.0f);
-    ApplyEnabledOverride(g_oSunDirY, data.sunPitchEnabled, ClampPresetPitch(data.sunPitch), -180.0f, 180.0f);
-    ApplyEnabledOverride(g_oMoonSize, data.moonSizeEnabled, ClampPresetMoonSize(data.moonSize), 0.001f, 100.0f);
-    ApplyEnabledOverride(g_oMoonLightIntensity, data.moonLightIntensityEnabled, ClampPresetLightIntensity(data.moonLightIntensity), 0.0f, 100.0f);
-    ApplyEnabledOverride(g_oMoonDirX, data.moonYawEnabled, ClampPresetYaw(data.moonYaw), -360.0f, 360.0f);
-    ApplyEnabledOverride(g_oMoonDirY, data.moonPitchEnabled, ClampPresetPitch(data.moonPitch), -180.0f, 180.0f);
-    ApplyEnabledOverride(g_oMoonRoll, data.moonRollEnabled, ClampPresetYaw(data.moonRoll), -360.0f, 360.0f);
+    ApplyEnabledOverride(g_oExpCloud2C, data.exp2CEnabled, ClampPresetCloudWide(extendedSliderRange, data.exp2C), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oExpCloud2D, data.exp2DEnabled, ClampPresetCloudWide(extendedSliderRange, data.exp2D), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oCloudVariation, data.cloudVariationEnabled, ClampPresetCloudWide(extendedSliderRange, data.cloudVariation), 0.0f, 50.0f);
+    ApplyEnabledOverride(g_oExpNightSkyRot, data.nightSkyRotationEnabled, ClampPresetPitch(extendedSliderRange, data.nightSkyRotation), -180.0f, 180.0f);
+    ApplyEnabledOverride(g_oNightSkyYaw, data.nightSkyYawEnabled, ClampPresetYaw(extendedSliderRange, data.nightSkyYaw), -360.0f, 360.0f);
+    ApplyEnabledOverride(g_oSunSize, data.sunSizeEnabled, ClampPresetSunSize(extendedSliderRange, data.sunSize), 0.001f, 100.0f);
+    ApplyEnabledOverride(g_oSunLightIntensity, data.sunLightIntensityEnabled, ClampPresetLightIntensity(extendedSliderRange, data.sunLightIntensity), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oSunDirX, data.sunYawEnabled, ClampPresetYaw(extendedSliderRange, data.sunYaw), -360.0f, 360.0f);
+    ApplyEnabledOverride(g_oSunDirY, data.sunPitchEnabled, ClampPresetPitch(extendedSliderRange, data.sunPitch), -180.0f, 180.0f);
+    ApplyEnabledOverride(g_oMoonSize, data.moonSizeEnabled, ClampPresetMoonSize(extendedSliderRange, data.moonSize), 0.001f, 100.0f);
+    ApplyEnabledOverride(g_oMoonLightIntensity, data.moonLightIntensityEnabled, ClampPresetLightIntensity(extendedSliderRange, data.moonLightIntensity), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oMoonDirX, data.moonYawEnabled, ClampPresetYaw(extendedSliderRange, data.moonYaw), -360.0f, 360.0f);
+    ApplyEnabledOverride(g_oMoonDirY, data.moonPitchEnabled, ClampPresetPitch(extendedSliderRange, data.moonPitch), -180.0f, 180.0f);
+    ApplyEnabledOverride(g_oMoonRoll, data.moonRollEnabled, ClampPresetYaw(extendedSliderRange, data.moonRoll), -360.0f, 360.0f);
     MoonTextureSelectByName(data.moonTextureEnabled ? data.moonTexture.c_str() : nullptr);
     MilkywayTextureSelectByName(data.milkywayTextureEnabled ? data.milkywayTexture.c_str() : nullptr);
 
-    const float fogPct = ClampPresetFogPercent(data.fogPercent);
+    const float fogPct = ClampPresetFogPercent(extendedSliderRange, data.fogPercent);
     if (data.fogEnabled) {
         const float t = fogPct * 0.01f;
         const float fogBoost = t * t * 100.0f;
         g_oFog.set(fogBoost);
     } else g_oFog.clear();
 
-    const float nativeFog = ClampPresetNativeFog(data.nativeFog);
+    const float nativeFog = ClampPresetNativeFog(extendedSliderRange, data.nativeFog);
     if (data.nativeFogEnabled && fabsf(nativeFog - 1.0f) > 0.001f) g_oNativeFog.set(nativeFog);
     else g_oNativeFog.clear();
 
     ApplyEnabledColorOverride(g_oVolumeFogScatterColor, data.volumeFogScatterColorEnabled, data.volumeFogScatterColor, true);
     ApplyEnabledColorOverride(g_oMieScatterColor, data.mieScatterColorEnabled, data.mieScatterColor, true);
-    ApplyEnabledOverride(g_oMieScaleHeight, data.mieScaleHeightEnabled, ClampPresetMieScaleHeight(data.mieScaleHeight), 1.0f, 200000.0f);
-    ApplyEnabledOverride(g_oMieAerosolDensity, data.mieAerosolDensityEnabled, ClampPresetMieDensity(data.mieAerosolDensity), 0.0f, 100.0f);
-    ApplyEnabledOverride(g_oMieAerosolAbsorption, data.mieAerosolAbsorptionEnabled, ClampPresetMieAbsorption(data.mieAerosolAbsorption), 0.0f, 100.0f);
-    ApplyEnabledOverride(g_oHeightFogBaseline, data.heightFogBaselineEnabled, ClampPresetHeightFogBaseline(data.heightFogBaseline), -50000.0f, 50000.0f);
-    ApplyEnabledOverride(g_oHeightFogFalloff, data.heightFogFalloffEnabled, ClampPresetHeightFogFalloff(data.heightFogFalloff), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oMieScaleHeight, data.mieScaleHeightEnabled, ClampPresetMieScaleHeight(extendedSliderRange, data.mieScaleHeight), 1.0f, 200000.0f);
+    ApplyEnabledOverride(g_oMieAerosolDensity, data.mieAerosolDensityEnabled, ClampPresetMieDensity(extendedSliderRange, data.mieAerosolDensity), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oMieAerosolAbsorption, data.mieAerosolAbsorptionEnabled, ClampPresetMieAbsorption(extendedSliderRange, data.mieAerosolAbsorption), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oHeightFogBaseline, data.heightFogBaselineEnabled, ClampPresetHeightFogBaseline(extendedSliderRange, data.heightFogBaseline), -50000.0f, 50000.0f);
+    ApplyEnabledOverride(g_oHeightFogFalloff, data.heightFogFalloffEnabled, ClampPresetHeightFogFalloff(extendedSliderRange, data.heightFogFalloff), 0.0f, 100.0f);
 
     g_noFog.store(data.noFog);
-    const float wind = ClampPresetWind(data.wind);
+    const float wind = ClampPresetWind(extendedSliderRange, data.wind);
     g_windMul.store(wind);
     g_noWind.store(data.noWind);
-    ApplyEnabledOverride(g_oCloudThk, data.puddleScaleEnabled, ClampPresetPuddleScale(data.puddleScale), 0.0f, 5.0f);
-}
-
-bool LoadPresetPackageInternal(const char* path, WeatherPresetPackage& outPackage) {
-    if (!IsValidPresetFile(path)) return false;
-    FILE* fp = nullptr;
-    if (fopen_s(&fp, path, "rb") != 0 || !fp) return false;
-
-    PresetParseState globalState{};
-    std::array<PresetParseState, kPresetRegionCount> regionStates{};
-    std::array<bool, kPresetRegionCount> regionSeen{};
-    std::array<bool, kPresetRegionCount> regionEnabled{};
-    int currentRegion = kPresetRegionGlobal;
-    char line[256] = {};
-    bool headerSeen = false;
-    bool formatVersionSeen = false;
-    int loadedFormatVersion = 0;
-    while (fgets(line, static_cast<int>(sizeof(line)), fp)) {
-        std::string text = TrimCopy(line);
-        StripUtf8Bom(text);
-        if (text.empty() || text[0] == ';' || text[0] == '#') continue;
-        if (text == kPresetHeader) {
-            headerSeen = true;
-            continue;
-        }
-        if (!headerSeen) continue;
-        if (!text.empty() && text.front() == '[' && text.back() == ']') {
-            currentRegion = kPresetRegionGlobal;
-            const std::string section = text.substr(1, text.size() - 2);
-            if (section.size() > 7 && _strnicmp(section.c_str(), "Region.", 7) == 0) {
-                const size_t tokenStart = 7;
-                const size_t tokenEnd = section.find('.', tokenStart);
-                const std::string token = tokenEnd == std::string::npos
-                    ? section.substr(tokenStart)
-                    : section.substr(tokenStart, tokenEnd - tokenStart);
-                const int regionId = RegionIdFromToken(token);
-                if (regionId > kPresetRegionGlobal && regionId < kPresetRegionCount) {
-                    currentRegion = regionId;
-                    regionSeen[regionId] = true;
-                    regionEnabled[regionId] = true;
-                }
-            }
-            continue;
-        }
-        if (!text.empty() && text.front() == '[') continue;
-
-        const size_t eq = text.find('=');
-        if (eq == std::string::npos) continue;
-
-        const std::string key = TrimCopy(text.substr(0, eq));
-        const std::string value = TrimCopy(text.substr(eq + 1));
-        if (currentRegion == kPresetRegionGlobal && KeyEquals(key, "FormatVersion")) {
-            formatVersionSeen = true;
-            loadedFormatVersion = atoi(value.c_str());
-            continue;
-        }
-        if (currentRegion > kPresetRegionGlobal && KeyEquals(key, "Enabled")) {
-            bool enabled = true;
-            if (TryParseBool(value, enabled)) {
-                regionEnabled[currentRegion] = enabled;
-            }
-            continue;
-        }
-
-        if (currentRegion > kPresetRegionGlobal) {
-            ParsePresetKeyValue(key, value, regionStates[currentRegion]);
-        } else {
-            ParsePresetKeyValue(key, value, globalState);
-        }
-    }
-
-    fclose(fp);
-    if (!headerSeen) return false;
-    if (!formatVersionSeen) {
-        Log("[preset] %s has no FormatVersion; loading as legacy format\n", path);
-    } else if (loadedFormatVersion > 0 && loadedFormatVersion < kPresetFormatVersion) {
-        Log("[preset] %s format %d loaded by current format %d\n", path, loadedFormatVersion, kPresetFormatVersion);
-    } else if (loadedFormatVersion > kPresetFormatVersion) {
-        Log("[W] %s format %d is newer than current format %d\n", path, loadedFormatVersion, kPresetFormatVersion);
-    }
-    WeatherPresetPackage package{};
-    NormalizeLoadedPreset(globalState, path);
-    package.global = globalState.data;
-    for (int regionId = 1; regionId < kPresetRegionCount; ++regionId) {
-        if (!regionSeen[regionId] || !regionEnabled[regionId]) continue;
-        NormalizeLoadedPreset(regionStates[regionId], path);
-        package.region[regionId] = regionStates[regionId].data;
-        package.regionMask[regionId] = regionStates[regionId].mask;
-        package.regionEnabled[regionId] = PresetMaskAny(package.regionMask[regionId]);
-    }
-    outPackage = package;
-    return true;
-}
-
-bool LoadPresetFileInternal(const char* path, WeatherPresetData& outData) {
-    WeatherPresetPackage package{};
-    if (!LoadPresetPackageInternal(path, package)) return false;
-    outData = package.global;
-    return true;
-}
-
-bool WritePresetFileInternal(const char* path, const WeatherPresetData& data) {
-    const std::string serialized = SerializeCanonicalPreset(data);
-
-    FILE* fp = nullptr;
-    if (fopen_s(&fp, path, "wb") != 0 || !fp) return false;
-    const size_t bytesWritten = fwrite(serialized.data(), 1, serialized.size(), fp);
-    const bool ok = bytesWritten == serialized.size() && ferror(fp) == 0;
-    fclose(fp);
-    return ok;
-}
-
-bool WritePresetPackageInternal(const char* path, const WeatherPresetPackage& package) {
-    const std::string serialized = SerializePresetPackage(package);
-
-    FILE* fp = nullptr;
-    if (fopen_s(&fp, path, "wb") != 0 || !fp) return false;
-    const size_t bytesWritten = fwrite(serialized.data(), 1, serialized.size(), fp);
-    const bool ok = bytesWritten == serialized.size() && ferror(fp) == 0;
-    fclose(fp);
-    return ok;
-}
-
-bool WritePresetPackageWithCommunityMetadata(
-    const char* path,
-    const WeatherPresetPackage& package,
-    const char* catalogId,
-    const char* sha256,
-    const char* updatedAt) {
-    std::string serialized = SerializePresetPackage(package);
-    serialized += "\n";
-    serialized += "; CrimsonWeatherCommunityId=" + FormatCommunityMetadataString(catalogId) + "\n";
-    serialized += "; CrimsonWeatherCommunitySha256=" + FormatCommunityMetadataString(sha256, 80) + "\n";
-    serialized += "; CrimsonWeatherCommunityUpdatedAt=" + FormatCommunityMetadataString(updatedAt, 80) + "\n";
-
-    FILE* fp = nullptr;
-    if (fopen_s(&fp, path, "wb") != 0 || !fp) return false;
-    const size_t bytesWritten = fwrite(serialized.data(), 1, serialized.size(), fp);
-    const bool ok = bytesWritten == serialized.size() && ferror(fp) == 0;
-    fclose(fp);
-    return ok;
-}
-
-bool ReadCommunityMetadataFromPresetFile(const char* path, CommunityPresetInstallInfo& outInfo) {
-    outInfo = CommunityPresetInstallInfo{};
-    if (!path || !path[0]) return false;
-
-    FILE* fp = nullptr;
-    if (fopen_s(&fp, path, "rb") != 0 || !fp) return false;
-
-    char line[256] = {};
-    while (fgets(line, static_cast<int>(sizeof(line)), fp)) {
-        std::string text = TrimCopy(line);
-        if (text.empty()) continue;
-        if (text[0] != ';' && text[0] != '#') continue;
-        text = TrimCopy(text.substr(1));
-        const size_t eq = text.find('=');
-        if (eq == std::string::npos) continue;
-        const std::string key = TrimCopy(text.substr(0, eq));
-        const std::string value = TrimCopy(text.substr(eq + 1));
-        if (KeyEquals(key, "CrimsonWeatherCommunityId")) {
-            outInfo.catalogId = value;
-        } else if (KeyEquals(key, "CrimsonWeatherCommunitySha256")) {
-            outInfo.sha256 = value;
-        } else if (KeyEquals(key, "CrimsonWeatherCommunityUpdatedAt")) {
-            outInfo.updatedAt = value;
-        }
-    }
-
-    fclose(fp);
-    outInfo.valid = !outInfo.catalogId.empty();
-    return outInfo.valid;
+    ApplyEnabledOverride(g_oCloudThk, data.puddleScaleEnabled, ClampPresetPuddleScale(extendedSliderRange, data.puddleScale), 0.0f, 5.0f);
 }
 
 bool SanitizeMissingMoonTexture(WeatherPresetData& data, const char* scopeLabel) {
@@ -3036,7 +663,7 @@ void SanitizeAndPersistPresetPackageIfNeeded(const PresetListItem& item, Weather
         return;
     }
 
-    if (WritePresetPackageInternal(item.fullPath.c_str(), package)) {
+    if (WritePresetPackageInternal(item.fullPath.c_str(), CurrentPresetFormatOptions(), package)) {
         Log("[preset] repaired missing moon texture entries in %s\n", item.fileName.c_str());
     } else {
         Log("[W] failed to repair missing moon texture entries in %s\n", item.fileName.c_str());
@@ -3111,119 +738,12 @@ void RefreshSelectedPresetBaselineFromDisk() {
         return;
     }
     WeatherPresetPackage package{};
-    if (!LoadPresetPackageInternal(g_presetItems[g_selectedPresetIndex].fullPath.c_str(), package)) {
+    if (!LoadPresetPackageInternal(g_presetItems[g_selectedPresetIndex].fullPath.c_str(), CurrentPresetFormatOptions(), package)) {
         ClearSelectedPresetBaseline();
         return;
     }
     SanitizeAndPersistPresetPackageIfNeeded(g_presetItems[g_selectedPresetIndex], package);
     SetSelectedPresetBaseline(package);
-}
-
-int NormalizeScheduleMinute(int minute) {
-    minute %= 24 * 60;
-    if (minute < 0) {
-        minute += 24 * 60;
-    }
-    return minute;
-}
-
-PresetScheduleEntry SanitizeScheduleEntry(PresetScheduleEntry entry) {
-    entry.startMinute = NormalizeScheduleMinute(entry.startMinute);
-    entry.endMinute = NormalizeScheduleMinute(entry.endMinute);
-    entry.presetFile = EnsureIniExtension(TrimCopy(entry.presetFile));
-    entry.blendSeconds = max(0, entry.blendSeconds);
-    return entry;
-}
-
-bool IsScheduleEntryUsable(const PresetScheduleEntry& entry) {
-    return entry.startMinute != entry.endMinute && !TrimCopy(entry.presetFile).empty();
-}
-
-struct ScheduleSegment {
-    int start = 0;
-    int end = 0;
-};
-
-std::vector<ScheduleSegment> ExpandScheduleRange(int startMinute, int endMinute) {
-    startMinute = NormalizeScheduleMinute(startMinute);
-    endMinute = NormalizeScheduleMinute(endMinute);
-    if (startMinute == endMinute) {
-        return {};
-    }
-    if (startMinute < endMinute) {
-        return { { startMinute, endMinute } };
-    }
-    return { { startMinute, 24 * 60 }, { 0, endMinute } };
-}
-
-std::vector<ScheduleSegment> SubtractScheduleSegment(ScheduleSegment source, ScheduleSegment cut) {
-    if (cut.end <= source.start || cut.start >= source.end) {
-        return { source };
-    }
-
-    std::vector<ScheduleSegment> out;
-    if (cut.start > source.start) {
-        out.push_back({ source.start, min(cut.start, source.end) });
-    }
-    if (cut.end < source.end) {
-        out.push_back({ max(cut.end, source.start), source.end });
-    }
-    return out;
-}
-
-std::vector<ScheduleSegment> SubtractScheduleSegments(std::vector<ScheduleSegment> source, const std::vector<ScheduleSegment>& cuts) {
-    for (const ScheduleSegment& cut : cuts) {
-        std::vector<ScheduleSegment> next;
-        for (const ScheduleSegment& segment : source) {
-            std::vector<ScheduleSegment> pieces = SubtractScheduleSegment(segment, cut);
-            next.insert(next.end(), pieces.begin(), pieces.end());
-        }
-        source.swap(next);
-        if (source.empty()) {
-            break;
-        }
-    }
-    return source;
-}
-
-void SortScheduleEntries(std::vector<PresetScheduleEntry>& entries) {
-    std::sort(entries.begin(), entries.end(), [](const PresetScheduleEntry& a, const PresetScheduleEntry& b) {
-        if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
-        return a.endMinute < b.endMinute;
-    });
-}
-
-int NormalizeScheduleTimeSource(int source) {
-    return source == kTimeScheduleSourceGameTime
-        ? kTimeScheduleSourceGameTime
-        : kTimeScheduleSourceVisualTimeOverride;
-}
-
-int ParseScheduleTimeSource(const char* raw) {
-    const std::string value = TrimCopy(raw ? raw : "");
-    if (value.empty()) {
-        return kTimeScheduleSourceVisualTimeOverride;
-    }
-
-    std::string normalized;
-    normalized.reserve(value.size());
-    for (char c : value) {
-        if (c == '-' || c == '_' || std::isspace(static_cast<unsigned char>(c))) {
-            continue;
-        }
-        normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-    }
-
-    if (normalized == "1" || normalized == "gametime" || normalized == "ingametime" || normalized == "native" || normalized == "nativetime") {
-        return kTimeScheduleSourceGameTime;
-    }
-    return kTimeScheduleSourceVisualTimeOverride;
-}
-
-const char* ScheduleTimeSourceConfigValue(int source) {
-    return NormalizeScheduleTimeSource(source) == kTimeScheduleSourceGameTime
-        ? "GameTime"
-        : "VisualTimeOverride";
 }
 
 int FindPresetIndexByFileName(const std::string& rawFileName) {
@@ -3239,524 +759,47 @@ int FindPresetIndexByFileName(const std::string& rawFileName) {
     return -1;
 }
 
-void SaveTimeScheduleConfig() {
-    char iniPath[MAX_PATH] = {};
-    BuildIniPath(iniPath, sizeof(iniPath));
 
-    const int oldCount = GetPrivateProfileIntA(kTimeScheduleConfigSection, "EntryCount", 0, iniPath);
-    WritePrivateProfileStringA(kTimeScheduleConfigSection, "Enabled", g_timeScheduleEnabled ? "1" : "0", iniPath);
-    WritePrivateProfileStringA(kTimeScheduleConfigSection, "TimeSource", ScheduleTimeSourceConfigValue(g_timeScheduleTimeSource), iniPath);
-
-    char value[64] = {};
-    sprintf_s(value, "%d", static_cast<int>(g_timeScheduleEntries.size()));
-    WritePrivateProfileStringA(kTimeScheduleConfigSection, "EntryCount", value, iniPath);
-
-    for (int i = 0; i < static_cast<int>(g_timeScheduleEntries.size()); ++i) {
-        const PresetScheduleEntry& entry = g_timeScheduleEntries[i];
-        char key[64] = {};
-        sprintf_s(key, "Entry%dStartMinute", i);
-        sprintf_s(value, "%d", entry.startMinute);
-        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, value, iniPath);
-
-        sprintf_s(key, "Entry%dEndMinute", i);
-        sprintf_s(value, "%d", entry.endMinute);
-        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, value, iniPath);
-
-        sprintf_s(key, "Entry%dPreset", i);
-        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, entry.presetFile.c_str(), iniPath);
-
-        sprintf_s(key, "Entry%dBlendSeconds", i);
-        sprintf_s(value, "%d", entry.blendSeconds);
-        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, value, iniPath);
-    }
-
-    for (int i = static_cast<int>(g_timeScheduleEntries.size()); i < oldCount; ++i) {
-        char key[64] = {};
-        sprintf_s(key, "Entry%dStartMinute", i);
-        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, nullptr, iniPath);
-        sprintf_s(key, "Entry%dEndMinute", i);
-        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, nullptr, iniPath);
-        sprintf_s(key, "Entry%dPreset", i);
-        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, nullptr, iniPath);
-        sprintf_s(key, "Entry%dBlendSeconds", i);
-        WritePrivateProfileStringA(kTimeScheduleConfigSection, key, nullptr, iniPath);
-    }
-}
-
-void EnsureTimeScheduleLoaded() {
-    if (g_timeScheduleLoaded) {
-        return;
-    }
-    g_timeScheduleLoaded = true;
-
-    char iniPath[MAX_PATH] = {};
-    BuildIniPath(iniPath, sizeof(iniPath));
-    g_timeScheduleEnabled = GetPrivateProfileIntA(kTimeScheduleConfigSection, "Enabled", 0, iniPath) != 0;
-    char sourceText[64] = {};
-    GetPrivateProfileStringA(kTimeScheduleConfigSection, "TimeSource", "VisualTimeOverride", sourceText, static_cast<DWORD>(sizeof(sourceText)), iniPath);
-    g_timeScheduleTimeSource = ParseScheduleTimeSource(sourceText);
-
-    int count = static_cast<int>(GetPrivateProfileIntA(kTimeScheduleConfigSection, "EntryCount", 0, iniPath));
-    count = max(0, min(64, count));
-    g_timeScheduleEntries.clear();
-    for (int i = 0; i < count; ++i) {
-        char key[64] = {};
-        char preset[MAX_PATH] = {};
-        sprintf_s(key, "Entry%dPreset", i);
-        GetPrivateProfileStringA(kTimeScheduleConfigSection, key, "", preset, static_cast<DWORD>(sizeof(preset)), iniPath);
-
-        sprintf_s(key, "Entry%dStartMinute", i);
-        const int startMinute = GetPrivateProfileIntA(kTimeScheduleConfigSection, key, -1, iniPath);
-        sprintf_s(key, "Entry%dEndMinute", i);
-        const int endMinute = GetPrivateProfileIntA(kTimeScheduleConfigSection, key, -1, iniPath);
-        sprintf_s(key, "Entry%dBlendSeconds", i);
-        const int blendSeconds = GetPrivateProfileIntA(kTimeScheduleConfigSection, key, kTimeScheduleDefaultBlendSeconds, iniPath);
-
-        PresetScheduleEntry entry{};
-        entry.startMinute = startMinute;
-        entry.endMinute = endMinute;
-        entry.presetFile = preset;
-        entry.blendSeconds = blendSeconds;
-        entry = SanitizeScheduleEntry(entry);
-        if (startMinute >= 0 && endMinute >= 0 && IsScheduleEntryUsable(entry)) {
-            g_timeScheduleEntries.push_back(entry);
-        }
-    }
-
-    SortScheduleEntries(g_timeScheduleEntries);
-    SaveTimeScheduleConfig();
-    Log("[preset-schedule] loaded enabled=%d source=%s entries=%d\n",
-        g_timeScheduleEnabled ? 1 : 0,
-        ScheduleTimeSourceConfigValue(g_timeScheduleTimeSource),
-        static_cast<int>(g_timeScheduleEntries.size()));
-}
-
-bool ReplaceTimeScheduleEntryWithNew(int editedIndex, PresetScheduleEntry newEntry) {
-    EnsureTimeScheduleLoaded();
-    newEntry = SanitizeScheduleEntry(newEntry);
-    if (!IsScheduleEntryUsable(newEntry) || FindPresetIndexByFileName(newEntry.presetFile) < 0) {
+bool ScheduleLoadPresetForRuntime(int index, WeatherPresetPackage& package) {
+    if (index < 0 || index >= static_cast<int>(g_presetItems.size())) {
         return false;
     }
-
-    std::vector<PresetScheduleEntry> next;
-    const std::vector<ScheduleSegment> newSegments = ExpandScheduleRange(newEntry.startMinute, newEntry.endMinute);
-    for (int i = 0; i < static_cast<int>(g_timeScheduleEntries.size()); ++i) {
-        if (i == editedIndex) {
-            continue;
-        }
-
-        const PresetScheduleEntry existing = g_timeScheduleEntries[i];
-        std::vector<ScheduleSegment> remaining = SubtractScheduleSegments(
-            ExpandScheduleRange(existing.startMinute, existing.endMinute),
-            newSegments);
-        for (const ScheduleSegment& segment : remaining) {
-            if (segment.start == segment.end) {
-                continue;
-            }
-            PresetScheduleEntry trimmed = existing;
-            trimmed.startMinute = NormalizeScheduleMinute(segment.start);
-            trimmed.endMinute = NormalizeScheduleMinute(segment.end);
-            if (IsScheduleEntryUsable(trimmed)) {
-                next.push_back(trimmed);
-            }
-        }
+    if (!LoadPresetPackageInternal(g_presetItems[index].fullPath.c_str(), CurrentPresetFormatOptions(), package)) {
+        return false;
     }
-
-    next.push_back(newEntry);
-    SortScheduleEntries(next);
-    g_timeScheduleEntries.swap(next);
-    SaveTimeScheduleConfig();
-    TimeScheduleClearUserEditPin();
-    TimeScheduleClearSelfVisualGuard();
-    g_timeScheduleBlendActive = false;
-    g_timeScheduleActivePresetFile.clear();
-    g_timeScheduleActiveEntryIndex = -1;
-    g_timeScheduleLastAppliedEntryIndex = -1;
-    g_timeScheduleLastMissingPresetFile.clear();
+    SanitizeAndPersistPresetPackageIfNeeded(g_presetItems[index], package);
     return true;
 }
 
-int ActiveScheduleEntryIndexForMinute(int minuteOfDay) {
-    minuteOfDay = NormalizeScheduleMinute(minuteOfDay);
-    for (int i = 0; i < static_cast<int>(g_timeScheduleEntries.size()); ++i) {
-        const PresetScheduleEntry& entry = g_timeScheduleEntries[i];
-        const int start = NormalizeScheduleMinute(entry.startMinute);
-        const int end = NormalizeScheduleMinute(entry.endMinute);
-        if (start == end) {
-            continue;
-        }
-        if (start < end) {
-            if (minuteOfDay >= start && minuteOfDay < end) {
-                return i;
-            }
-        } else if (minuteOfDay >= start || minuteOfDay < end) {
-            return i;
-        }
+void ScheduleEnsureInitialized() {
+    if (g_presetsInitialized) {
+        return;
     }
-    return -1;
+    LoadRememberedPresetNameOnce();
+    RefreshPresetListInternal();
+    RefreshSelectedPresetBaselineFromDisk();
+    g_presetsInitialized = true;
+    Log("[preset-schedule] initialized preset list for runtime schedule (%d preset(s))\n",
+        static_cast<int>(g_presetItems.size()));
 }
 
-void TimeScheduleClearUserEditPin() {
-    g_timeScheduleUserEditPinned = false;
-    g_timeScheduleUserEditPinnedEntryIndex = -1;
-    g_timeScheduleUserEditPinnedPresetFile.clear();
-}
-
-void TimeScheduleClearSelfVisualGuard() {
-    g_timeScheduleSelfVisualGuard = false;
-    g_timeScheduleSelfVisualGuardHour = -1.0f;
-    g_timeScheduleSelfVisualGuardPresetFile.clear();
-    g_timeScheduleSelfVisualGuardSkipLogged = false;
-}
-
-float ScheduleHourDelta(float a, float b) {
-    float delta = std::fabs(NormalizeHour24(a) - NormalizeHour24(b));
-    if (delta > 12.0f) {
-        delta = 24.0f - delta;
-    }
-    return delta;
-}
-
-void TimeScheduleMarkSelfVisualGuard(const WeatherPresetData& data, const char* presetFile) {
-    if (!data.visualTimeOverride) {
-        TimeScheduleClearSelfVisualGuard();
-        return;
-    }
-
-    g_timeScheduleSelfVisualGuard = true;
-    g_timeScheduleSelfVisualGuardHour = NormalizeHour24(data.timeHour);
-    g_timeScheduleSelfVisualGuardPresetFile = presetFile ? presetFile : "";
-    g_timeScheduleSelfVisualGuardSkipLogged = false;
-    Log("[preset-schedule-diag] reason=self-visual-guard preset=%s hour=%.4f\n",
-        g_timeScheduleSelfVisualGuardPresetFile.empty() ? "<none>" : g_timeScheduleSelfVisualGuardPresetFile.c_str(),
-        g_timeScheduleSelfVisualGuardHour);
-}
-
-void LogTimeScheduleDecision(const char* reason, int minuteOfDay, int entryIndex) {
-    const char* entryPreset = "<gap>";
-    if (entryIndex >= 0 && entryIndex < static_cast<int>(g_timeScheduleEntries.size())) {
-        entryPreset = g_timeScheduleEntries[entryIndex].presetFile.c_str();
-    }
-    const char* selectedPreset = HasSelectedPresetIndexInternal()
-        ? g_presetItems[g_selectedPresetIndex].fileName.c_str()
-        : "<none>";
-    float scheduleClockHour = 0.0f;
-    const bool scheduleClockValid = TryGetTimeScheduleClockHour(scheduleClockHour);
-    Log("[preset-schedule-diag] reason=%s minute=%d entry=%d entryPreset=%s "
-        "activeEntry=%d lastApplied=%d activeFile=%s selected=%s blend=%u pinned=%u pinnedEntry=%d pinnedPreset=%s "
-        "selfGuard=%u selfHour=%.4f editDraft=%u lastRegion=%d time{source=%s ctrl=%u freeze=%u progress=%u target=%.4f current=%.4f hud=%02d:%02d schedule=%.4f valid=%u}\n",
-        reason ? reason : "unknown",
-        minuteOfDay,
-        entryIndex,
-        entryPreset,
-        g_timeScheduleActiveEntryIndex,
-        g_timeScheduleLastAppliedEntryIndex,
-        g_timeScheduleActivePresetFile.empty() ? "<none>" : g_timeScheduleActivePresetFile.c_str(),
-        selectedPreset,
-        g_timeScheduleBlendActive ? 1u : 0u,
-        g_timeScheduleUserEditPinned ? 1u : 0u,
-        g_timeScheduleUserEditPinnedEntryIndex,
-        g_timeScheduleUserEditPinnedPresetFile.empty() ? "<none>" : g_timeScheduleUserEditPinnedPresetFile.c_str(),
-        g_timeScheduleSelfVisualGuard ? 1u : 0u,
-        g_timeScheduleSelfVisualGuardHour,
-        g_editDraftValid ? 1u : 0u,
-        g_lastAppliedRegion,
-        ScheduleTimeSourceConfigValue(g_timeScheduleTimeSource),
-        g_timeCtrlActive.load() ? 1u : 0u,
-        g_timeFreeze.load() ? 1u : 0u,
-        g_timeProgressVisualTime.load() ? 1u : 0u,
-        g_timeTargetHour.load(),
-        g_timeCurrentHour.load(),
-        g_timeUiClockHour24.load(),
-        g_timeUiClockMinute.load(),
-        scheduleClockHour,
-        scheduleClockValid ? 1u : 0u);
-}
-
-bool TryGetTimeScheduleClockHour(float& outHour) {
-    if (g_timeScheduleTimeSource == kTimeScheduleSourceGameTime) {
-        if (!g_timeUiClockSourceValid.load() || !g_timeUiClockValid.load()) {
-            return false;
-        }
-
-        const int hour = g_timeUiClockHour24.load();
-        const int minute = g_timeUiClockMinute.load();
-        if (hour < 0 || hour >= 24 || minute < 0 || minute >= 60) {
-            return false;
-        }
-
-        outHour = NormalizeHour24(static_cast<float>(hour) + static_cast<float>(minute) / 60.0f);
-        return true;
-    }
-
-    if (!g_timeCurrentHourValid.load()) {
-        return false;
-    }
-
-    if (g_timeCtrlActive.load() && g_timeFreeze.load()) {
-        outHour = g_timeTargetHour.load();
-    } else {
-        outHour = g_timeCurrentHour.load();
-    }
-    outHour = NormalizeHour24(outHour);
-    return true;
-}
-
-void ApplyScheduledPresetInstantOrStartBlend(int index) {
-    if (index < 0 || index >= static_cast<int>(g_timeScheduleEntries.size())) {
-        return;
-    }
-
-    const PresetScheduleEntry& entry = g_timeScheduleEntries[index];
-    const int presetIndex = FindPresetIndexByFileName(entry.presetFile);
-    if (presetIndex < 0) {
-        g_timeScheduleActiveEntryIndex = index;
-        if (!EqualsNoCase(g_timeScheduleLastMissingPresetFile, entry.presetFile)) {
-            g_timeScheduleLastMissingPresetFile = entry.presetFile;
-            Log("[W] scheduled preset missing: %s\n", entry.presetFile.c_str());
-            GUI_SetStatus(("Scheduled preset missing: " + entry.presetFile).c_str());
-        }
-        return;
-    }
-
-    if (EqualsNoCase(g_timeScheduleActivePresetFile, g_presetItems[presetIndex].fileName)) {
-        g_timeScheduleActiveEntryIndex = index;
-        g_timeScheduleLastAppliedEntryIndex = index;
-        return;
-    }
-
-    WeatherPresetPackage package{};
-    if (!LoadPresetPackageInternal(g_presetItems[presetIndex].fullPath.c_str(), package)) {
-        Log("[W] failed to load scheduled preset: %s\n", g_presetItems[presetIndex].fileName.c_str());
-        GUI_SetStatus("Scheduled preset load failed");
-        return;
-    }
-
-    SanitizeAndPersistPresetPackageIfNeeded(g_presetItems[presetIndex], package);
-    g_timeScheduleLastMissingPresetFile.clear();
-
-    if (entry.blendSeconds <= 0) {
-        g_timeScheduleBlendActive = false;
-        LogTimeScheduleDecision("apply-instant", -1, index);
-        const WeatherPresetData appliedData = EffectivePresetDataForRegion(package, CurrentMajorRegionForPreset());
-        if (SelectPresetIndexInternal(presetIndex, true, "Scheduled preset applied: ", nullptr, "scheduled")) {
-            g_timeScheduleActivePresetFile = g_presetItems[presetIndex].fileName;
-            g_timeScheduleActiveEntryIndex = index;
-            g_timeScheduleLastAppliedEntryIndex = index;
-            TimeScheduleMarkSelfVisualGuard(appliedData, g_timeScheduleActivePresetFile.c_str());
-        }
-        return;
-    }
-
-    std::string blendFromPresetFile = g_timeScheduleActivePresetFile;
-    if (blendFromPresetFile.empty() && HasSelectedPresetIndexInternal()) {
-        blendFromPresetFile = g_presetItems[g_selectedPresetIndex].fileName;
-    }
-    if (EqualsNoCase(blendFromPresetFile, g_presetItems[presetIndex].fileName)) {
-        g_timeScheduleBlendActive = false;
-        LogTimeScheduleDecision("same-preset-instant", -1, index);
-        const WeatherPresetData appliedData = EffectivePresetDataForRegion(package, CurrentMajorRegionForPreset());
-        if (SelectPresetIndexInternal(presetIndex, true, "Scheduled preset applied: ", nullptr, "scheduled")) {
-            g_timeScheduleActivePresetFile = g_presetItems[presetIndex].fileName;
-            g_timeScheduleActiveEntryIndex = index;
-            g_timeScheduleLastAppliedEntryIndex = index;
-            TimeScheduleMarkSelfVisualGuard(appliedData, g_timeScheduleActivePresetFile.c_str());
-        }
-        return;
-    }
-
-    // Capture the live evaluated state first. This includes active region overrides
-    // and any in-progress blend that already touched the sliders this frame.
-    const WeatherPresetData blendFrom = CaptureCurrentPresetData();
-    LogTimeScheduleDecision("start-blend", -1, index);
-    if (!SelectPresetIndexInternal(presetIndex, false, "Scheduled preset blending: ", nullptr, "scheduled")) {
-        return;
-    }
-
-    g_timeScheduleBlendFrom = blendFrom;
-    g_timeScheduleBlendTargetPackage = package;
-    g_timeScheduleBlendPresetFile = g_presetItems[presetIndex].fileName;
-    g_timeScheduleBlendFromPresetFile = blendFromPresetFile;
-    g_timeScheduleBlendStartTick = GetTickCount64();
-    g_timeScheduleBlendSeconds = entry.blendSeconds;
-    g_timeScheduleBlendLogBucket = -1;
-    g_timeScheduleBlendActive = true;
-    g_timeScheduleActivePresetFile = g_presetItems[presetIndex].fileName;
-    g_timeScheduleActiveEntryIndex = index;
-    g_timeScheduleLastAppliedEntryIndex = index;
-
-    Log("[preset-schedule] blending to %s over %ds\n",
-        g_timeScheduleBlendPresetFile.c_str(),
-        g_timeScheduleBlendSeconds);
-}
-
-void TickScheduledPresetBlend() {
-    if (!g_timeScheduleBlendActive) {
-        return;
-    }
-
-    const ULONGLONG now = GetTickCount64();
-    const float durationMs = static_cast<float>(max(1, g_timeScheduleBlendSeconds)) * 1000.0f;
-    const float progress = ClampPresetFloat(static_cast<float>(now - g_timeScheduleBlendStartTick) / durationMs, 0.0f, 1.0f);
-    const int regionId = CurrentMajorRegionForPreset();
-    const WeatherPresetData target = EffectivePresetDataForRegion(g_timeScheduleBlendTargetPackage, regionId);
-    const WeatherPresetData blended = BlendPresetData(g_timeScheduleBlendFrom, target, progress);
-    ApplyPresetData(blended);
-    g_lastRuntimeAppliedData = blended;
+void ScheduleApplyData(const WeatherPresetData& data, int regionId) {
+    ApplyPresetData(data);
+    g_lastRuntimeAppliedData = data;
     g_lastRuntimeAppliedDataValid = true;
     g_lastAppliedRegion = regionId;
     g_regionBlendFrom = -1;
     g_regionBlendTo = -1;
     g_regionBlendLogBucket = -1;
-
-    const int progressBucket = min(4, max(0, static_cast<int>(progress * 4.0f)));
-    if (kPresetVerboseTestLog && progressBucket != g_timeScheduleBlendLogBucket) {
-        g_timeScheduleBlendLogBucket = progressBucket;
-        Log("[preset-schedule-test] blend-progress preset=%s progress=%d%%\n",
-            g_timeScheduleBlendPresetFile.c_str(),
-            progressBucket * 25);
-    }
-
-    if (progress >= 0.999f) {
-        ApplyPresetData(target);
-        g_lastRuntimeAppliedData = target;
-        g_lastRuntimeAppliedDataValid = true;
-        g_lastAppliedRegion = regionId;
-        g_timeScheduleBlendActive = false;
-        TimeScheduleMarkSelfVisualGuard(target, g_timeScheduleBlendPresetFile.c_str());
-        Log("[preset-schedule] blend finished: %s\n", g_timeScheduleBlendPresetFile.c_str());
-        GUI_SetStatus(("Scheduled preset active: " + GetPresetDisplayNameFromFileName(g_timeScheduleBlendPresetFile)).c_str());
-    }
 }
 
-bool TimeScheduleRuntimeTick(bool worldReady) {
-    EnsureTimeScheduleLoaded();
-    if ((g_timeScheduleEnabled || g_timeScheduleBlendActive) && !g_presetsInitialized) {
-        LoadRememberedPresetNameOnce();
-        RefreshPresetListInternal();
-        RefreshSelectedPresetBaselineFromDisk();
-        g_presetsInitialized = true;
-        Log("[preset-schedule] initialized preset list for runtime schedule (%d preset(s))\n",
-            static_cast<int>(g_presetItems.size()));
-    }
-
-    if (g_timeScheduleBlendActive) {
-        TickScheduledPresetBlend();
-        if (g_timeScheduleBlendActive) {
-            return true;
-        }
-    }
-
-    float scheduleClockHour = 0.0f;
-    const bool scheduleClockValid = TryGetTimeScheduleClockHour(scheduleClockHour);
-    if (!g_timeScheduleEnabled || !worldReady || !scheduleClockValid) {
-        return g_timeScheduleBlendActive;
-    }
-
-    scheduleClockHour = NormalizeHour24(scheduleClockHour);
-    if (g_timeScheduleSelfVisualGuard && g_timeScheduleTimeSource == kTimeScheduleSourceVisualTimeOverride) {
-        if (!(g_timeCtrlActive.load() && g_timeFreeze.load())) {
-            TimeScheduleClearSelfVisualGuard();
-        } else if (ScheduleHourDelta(scheduleClockHour, g_timeScheduleSelfVisualGuardHour) <= (1.0f / 60.0f)) {
-            if (!g_timeScheduleSelfVisualGuardSkipLogged) {
-                LogTimeScheduleDecision("self-visual-guard-skip", -1, g_timeScheduleActiveEntryIndex);
-                g_timeScheduleSelfVisualGuardSkipLogged = true;
-            }
-            return g_timeScheduleBlendActive;
-        } else {
-            LogTimeScheduleDecision("self-visual-guard-cleared", -1, g_timeScheduleActiveEntryIndex);
-            TimeScheduleClearSelfVisualGuard();
-        }
-    } else if (g_timeScheduleSelfVisualGuard) {
-        TimeScheduleClearSelfVisualGuard();
-    }
-
-    const int minuteOfDay = NormalizeScheduleMinute(static_cast<int>(std::floor(scheduleClockHour * 60.0f + 0.0001f)));
-    const int entryIndex = ActiveScheduleEntryIndexForMinute(minuteOfDay);
-    const bool diagChanged =
-        minuteOfDay != g_timeScheduleLastDiagMinute ||
-        entryIndex != g_timeScheduleLastDiagEntryIndex ||
-        g_timeScheduleUserEditPinned != g_timeScheduleLastDiagPinned;
-    if (diagChanged) {
-        LogTimeScheduleDecision("tick", minuteOfDay, entryIndex);
-        g_timeScheduleLastDiagMinute = minuteOfDay;
-        g_timeScheduleLastDiagEntryIndex = entryIndex;
-        g_timeScheduleLastDiagPinned = g_timeScheduleUserEditPinned;
-    }
-    if (entryIndex < 0) {
-        g_timeScheduleActiveEntryIndex = -1;
-        TimeScheduleClearUserEditPin();
-        return g_timeScheduleBlendActive;
-    }
-
-    if (g_timeScheduleUserEditPinned) {
-        const PresetScheduleEntry& entry = g_timeScheduleEntries[entryIndex];
-        if (EqualsNoCase(entry.presetFile, g_timeScheduleUserEditPinnedPresetFile)) {
-            g_timeScheduleActiveEntryIndex = entryIndex;
-            g_timeScheduleLastAppliedEntryIndex = entryIndex;
-            g_timeScheduleActivePresetFile = entry.presetFile;
-            if (diagChanged) {
-                LogTimeScheduleDecision("pinned-user-edit-skip", minuteOfDay, entryIndex);
-            }
-            return g_timeScheduleBlendActive;
-        }
-        LogTimeScheduleDecision("clear-user-edit-pin-new-entry", minuteOfDay, entryIndex);
-        TimeScheduleClearUserEditPin();
-    }
-
-    ApplyScheduledPresetInstantOrStartBlend(entryIndex);
-    return g_timeScheduleBlendActive;
+bool ScheduleEditDraftValid() {
+    return g_editDraftValid;
 }
 
-void TimeScheduleDisableForManualSelection() {
-    EnsureTimeScheduleLoaded();
-    if (!g_timeScheduleEnabled && !g_timeScheduleBlendActive) {
-        return;
-    }
-    g_timeScheduleEnabled = false;
-    g_timeScheduleBlendActive = false;
-    g_timeScheduleActivePresetFile.clear();
-    g_timeScheduleActiveEntryIndex = -1;
-    g_timeScheduleLastAppliedEntryIndex = -1;
-    g_timeScheduleBlendPresetFile.clear();
-    g_timeScheduleBlendFromPresetFile.clear();
-    TimeScheduleClearUserEditPin();
-    TimeScheduleClearSelfVisualGuard();
-    SaveTimeScheduleConfig();
-    Log("[preset-schedule] disabled by manual preset selection\n");
+int ScheduleLastAppliedRegion() {
+    return g_lastAppliedRegion;
 }
-
-void TimeScheduleCancelBlendForUserEdit() {
-    if (!g_timeScheduleBlendActive) {
-        return;
-    }
-    g_timeScheduleBlendActive = false;
-    g_timeScheduleBlendPresetFile.clear();
-    g_timeScheduleBlendFromPresetFile.clear();
-    g_timeScheduleBlendLogBucket = -1;
-    Log("[preset-schedule] blend cancelled by preset edit\n");
-}
-
-void TimeSchedulePinCurrentEntryForUserEdit() {
-    EnsureTimeScheduleLoaded();
-    TimeScheduleCancelBlendForUserEdit();
-    TimeScheduleClearSelfVisualGuard();
-    if (!g_timeScheduleEnabled ||
-        g_timeScheduleActiveEntryIndex < 0 ||
-        g_timeScheduleActiveEntryIndex >= static_cast<int>(g_timeScheduleEntries.size())) {
-        return;
-    }
-
-    const PresetScheduleEntry& entry = g_timeScheduleEntries[g_timeScheduleActiveEntryIndex];
-    g_timeScheduleUserEditPinned = true;
-    g_timeScheduleUserEditPinnedEntryIndex = g_timeScheduleActiveEntryIndex;
-    g_timeScheduleUserEditPinnedPresetFile = entry.presetFile;
-    g_timeScheduleActivePresetFile = entry.presetFile;
-    g_timeScheduleLastAppliedEntryIndex = g_timeScheduleActiveEntryIndex;
-    LogTimeScheduleDecision("pin-user-edit", -1, g_timeScheduleActiveEntryIndex);
-    Log("[preset-schedule] pinned current entry for user edit: %s\n", entry.presetFile.c_str());
-}
-
 void MarkAutoSavePending() {
     if (!g_cfg.autoSaved) {
         g_autoSavePending = false;
@@ -3773,7 +816,7 @@ bool SaveSelectedDraftInternal(const char* statusPrefix, const char* logVerb, bo
     if (!Preset_HasSelection()) return false;
     WeatherPresetPackage package = BuildEditDraftPreview();
     const PresetListItem item = g_presetItems[g_selectedPresetIndex];
-    if (!WritePresetPackageInternal(item.fullPath.c_str(), package)) {
+    if (!WritePresetPackageInternal(item.fullPath.c_str(), CurrentPresetFormatOptions(), package)) {
         GUI_SetStatus("Preset save failed");
         Log("[preset] failed to save %s\n", item.fileName.c_str());
         return false;
@@ -3790,6 +833,28 @@ bool SaveSelectedDraftInternal(const char* statusPrefix, const char* logVerb, bo
 }
 } // namespace
 
+namespace preset_internal {
+
+const PresetScheduleHost& GetPresetScheduleHost() {
+    static const PresetScheduleHost host = {
+        &FindPresetIndexByFileName,
+        &HasSelectedPresetIndexInternal,
+        []() { return g_selectedPresetIndex; },
+        []() { return static_cast<int>(g_presetItems.size()); },
+        [](int index) -> const PresetListItem& { return g_presetItems[index]; },
+        &ScheduleEnsureInitialized,
+        &ScheduleLoadPresetForRuntime,
+        &SelectPresetIndexInternal,
+        &CaptureCurrentPresetData,
+        &CurrentMajorRegionForPreset,
+        &ScheduleApplyData,
+        &ScheduleEditDraftValid,
+        &ScheduleLastAppliedRegion
+    };
+    return host;
+}
+
+} // namespace preset_internal
 void Preset_EnsureInitialized() {
     if (g_presetsInitialized) return;
     LoadRememberedPresetNameOnce();
@@ -4042,7 +1107,7 @@ bool Preset_CurrentSlidersMatchAppliedRegion() {
 bool SelectPresetIndexInternal(int index, bool applyImmediately, const char* statusPrefix, const char* toastPrefix, const char* logVerb) {
     if (index < 0 || index >= static_cast<int>(g_presetItems.size())) return false;
     WeatherPresetPackage package{};
-    if (!LoadPresetPackageInternal(g_presetItems[index].fullPath.c_str(), package)) {
+    if (!LoadPresetPackageInternal(g_presetItems[index].fullPath.c_str(), CurrentPresetFormatOptions(), package)) {
         GUI_SetStatus("Preset load failed");
         Log("[preset] failed to load %s\n", g_presetItems[index].fileName.c_str());
         return false;
@@ -4088,7 +1153,7 @@ bool Preset_SaveAs(const char* fileName) {
 
     WeatherPresetPackage package = BuildEditDraftPreview();
     const std::string fullPath = JoinPath(GetPresetDirectory(), normalizedName);
-    if (!WritePresetPackageInternal(fullPath.c_str(), package)) {
+    if (!WritePresetPackageInternal(fullPath.c_str(), CurrentPresetFormatOptions(), package)) {
         GUI_SetStatus("Preset save failed");
         Log("[preset] failed to save %s\n", normalizedName.c_str());
         return false;
@@ -4117,7 +1182,7 @@ bool Preset_ExportCurrentCanonical(std::string& outIni, std::string& outError) {
     outError.clear();
     EnsureEditDraft();
     WeatherPresetPackage package = BuildEditDraftPreview();
-    outIni = SerializePresetPackage(package);
+    outIni = SerializePresetPackage(package, CurrentPresetFormatOptions());
     if (outIni.empty()) {
         outError = "Current preset could not be serialized";
         return false;
@@ -4134,11 +1199,11 @@ bool Preset_ExportPresetCanonicalByIndex(int index, std::string& outIni, std::st
         return false;
     }
     WeatherPresetPackage package{};
-    if (!LoadPresetPackageInternal(g_presetItems[index].fullPath.c_str(), package)) {
+    if (!LoadPresetPackageInternal(g_presetItems[index].fullPath.c_str(), CurrentPresetFormatOptions(), package)) {
         outError = "Selected preset failed validation";
         return false;
     }
-    outIni = SerializePresetPackage(package);
+    outIni = SerializePresetPackage(package, CurrentPresetFormatOptions());
     if (outIni.empty()) {
         outError = "Selected preset could not be serialized";
         return false;
@@ -4237,30 +1302,6 @@ bool WriteCommunityTempPreset(const char* iniText, std::string& outPath, std::st
     return true;
 }
 
-bool Preset_ValidatePresetText(const char* iniText, std::string& outError) {
-    outError.clear();
-    if (!iniText || !iniText[0]) {
-        outError = "Preset text is empty";
-        return false;
-    }
-    if (strlen(iniText) > 65536) {
-        outError = "Preset is larger than 64 KiB";
-        return false;
-    }
-    std::string tempPath;
-    if (!WriteCommunityTempPreset(iniText, tempPath, outError)) {
-        return false;
-    }
-    WeatherPresetPackage package{};
-    const bool ok = LoadPresetPackageInternal(tempPath.c_str(), package);
-    DeleteFileA(tempPath.c_str());
-    if (!ok) {
-        outError = "Preset parser rejected the file";
-        return false;
-    }
-    return true;
-}
-
 bool Preset_ImportCommunityPresetText(
     const char* title,
     const char* author,
@@ -4287,7 +1328,7 @@ bool Preset_ImportCommunityPresetText(
     }
 
     WeatherPresetPackage package{};
-    if (!LoadPresetPackageInternal(tempPath.c_str(), package)) {
+    if (!LoadPresetPackageInternal(tempPath.c_str(), CurrentPresetFormatOptions(), package)) {
         DeleteFileA(tempPath.c_str());
         outError = "Preset parser rejected the file";
         return false;
@@ -4303,7 +1344,7 @@ bool Preset_ImportCommunityPresetText(
     EnsureDirectoryChain(communityPresetDir);
     normalizedName = EnsureUniquePresetFileNameInDirectory(communityPresetDir, normalizedName);
     const std::string fullPath = JoinPath(communityPresetDir, normalizedName);
-    if (!WritePresetPackageWithCommunityMetadata(fullPath.c_str(), package, catalogId, sha256, updatedAt)) {
+    if (!WritePresetPackageWithCommunityMetadata(fullPath.c_str(), CurrentPresetFormatOptions(), package, catalogId, sha256, updatedAt)) {
         outError = "Could not save imported preset";
         return false;
     }
@@ -4345,7 +1386,7 @@ bool Preset_UpdateCommunityPresetText(
     }
 
     WeatherPresetPackage package{};
-    if (!LoadPresetPackageInternal(tempPath.c_str(), package)) {
+    if (!LoadPresetPackageInternal(tempPath.c_str(), CurrentPresetFormatOptions(), package)) {
         DeleteFileA(tempPath.c_str());
         outError = "Preset parser rejected the file";
         return false;
@@ -4353,7 +1394,7 @@ bool Preset_UpdateCommunityPresetText(
     DeleteFileA(tempPath.c_str());
 
     const std::string fullPath = g_presetItems[presetIndex].fullPath;
-    if (!WritePresetPackageWithCommunityMetadata(fullPath.c_str(), package, catalogId, sha256, updatedAt)) {
+    if (!WritePresetPackageWithCommunityMetadata(fullPath.c_str(), CurrentPresetFormatOptions(), package, catalogId, sha256, updatedAt)) {
         outError = "Could not update installed preset";
         return false;
     }
@@ -4376,306 +1417,52 @@ bool Preset_UpdateCommunityPresetText(
 }
 
 bool PresetSchedule_IsEnabled() {
-    EnsureTimeScheduleLoaded();
-    return g_timeScheduleEnabled;
+    return ScheduleIsEnabled();
 }
 
 void PresetSchedule_SetEnabled(bool enabled) {
-    EnsureTimeScheduleLoaded();
-    if (g_timeScheduleEnabled == enabled) {
-        return;
-    }
-    g_timeScheduleEnabled = enabled;
-    if (!enabled) {
-        g_timeScheduleBlendActive = false;
-        g_timeScheduleActivePresetFile.clear();
-    }
-    TimeScheduleClearUserEditPin();
-    TimeScheduleClearSelfVisualGuard();
-    SaveTimeScheduleConfig();
-    GUI_SetStatus(enabled ? "Time schedule enabled" : "Time schedule disabled");
-    Log("[preset-schedule] %s\n", enabled ? "enabled" : "disabled");
+    ScheduleSetEnabled(enabled);
 }
 
 int PresetSchedule_GetTimeSource() {
-    EnsureTimeScheduleLoaded();
-    return NormalizeScheduleTimeSource(g_timeScheduleTimeSource);
+    return ScheduleGetTimeSource();
 }
 
 void PresetSchedule_SetTimeSource(int source) {
-    EnsureTimeScheduleLoaded();
-    source = NormalizeScheduleTimeSource(source);
-    if (g_timeScheduleTimeSource == source) {
-        return;
-    }
-
-    g_timeScheduleTimeSource = source;
-    g_timeScheduleBlendActive = false;
-    g_timeScheduleActivePresetFile.clear();
-    g_timeScheduleActiveEntryIndex = -1;
-    g_timeScheduleLastAppliedEntryIndex = -1;
-    g_timeScheduleLastDiagMinute = -1;
-    g_timeScheduleLastDiagEntryIndex = -9999;
-    TimeScheduleClearUserEditPin();
-    TimeScheduleClearSelfVisualGuard();
-    SaveTimeScheduleConfig();
-    GUI_SetStatus(source == kTimeScheduleSourceGameTime
-        ? "Time schedule source: in-game time"
-        : "Time schedule source: visual time override");
-    Log("[preset-schedule] time source=%s\n", ScheduleTimeSourceConfigValue(source));
-}
-
-std::vector<PresetScheduleEntry> PresetSchedule_GetEntries() {
-    EnsureTimeScheduleLoaded();
-    return g_timeScheduleEntries;
+    ScheduleSetTimeSource(source);
 }
 
 std::vector<PresetScheduleRow> PresetSchedule_BuildRows() {
-    EnsureTimeScheduleLoaded();
-
-    std::vector<PresetScheduleRow> rows;
-    std::vector<ScheduleSegment> explicitSegments;
-    for (int i = 0; i < static_cast<int>(g_timeScheduleEntries.size()); ++i) {
-        const PresetScheduleEntry& entry = g_timeScheduleEntries[i];
-        const int presetIndex = FindPresetIndexByFileName(entry.presetFile);
-
-        PresetScheduleRow row{};
-        row.gap = false;
-        row.startMinute = entry.startMinute;
-        row.endMinute = entry.endMinute;
-        row.entryIndex = i;
-        row.presetFile = entry.presetFile;
-        row.displayName = presetIndex >= 0 ? g_presetItems[presetIndex].displayName : GetPresetDisplayNameFromFileName(entry.presetFile);
-        row.presetMissing = presetIndex < 0;
-        row.blendSeconds = entry.blendSeconds;
-        rows.push_back(row);
-
-        std::vector<ScheduleSegment> segments = ExpandScheduleRange(entry.startMinute, entry.endMinute);
-        explicitSegments.insert(explicitSegments.end(), segments.begin(), segments.end());
-    }
-
-    std::sort(explicitSegments.begin(), explicitSegments.end(), [](const ScheduleSegment& a, const ScheduleSegment& b) {
-        if (a.start != b.start) return a.start < b.start;
-        return a.end < b.end;
-    });
-
-    std::vector<ScheduleSegment> merged;
-    for (const ScheduleSegment& segment : explicitSegments) {
-        if (segment.start == segment.end) {
-            continue;
-        }
-        if (!merged.empty() && segment.start <= merged.back().end) {
-            merged.back().end = max(merged.back().end, segment.end);
-        } else {
-            merged.push_back(segment);
-        }
-    }
-
-    if (merged.empty()) {
-        rows.push_back({ true, 0, 0, -1, "", "gap - no preset", false, 0 });
-    } else {
-        for (size_t i = 0; i < merged.size(); ++i) {
-            const int gapStart = merged[i].end % (24 * 60);
-            const int gapEnd = merged[(i + 1) % merged.size()].start;
-            const bool lastWrapGap = i + 1 == merged.size();
-            if (!lastWrapGap && gapStart < gapEnd) {
-                rows.push_back({ true, gapStart, gapEnd, -1, "", "gap - no preset", false, 0 });
-            } else if (lastWrapGap && gapStart != gapEnd) {
-                rows.push_back({ true, gapStart, gapEnd, -1, "", "gap - no preset", false, 0 });
-            }
-        }
-    }
-
-    std::sort(rows.begin(), rows.end(), [](const PresetScheduleRow& a, const PresetScheduleRow& b) {
-        if (a.startMinute != b.startMinute) return a.startMinute < b.startMinute;
-        if (a.gap != b.gap) return !a.gap;
-        return a.endMinute < b.endMinute;
-    });
-
-    return rows;
+    return ScheduleBuildRows();
 }
 
 PresetScheduleStatus PresetSchedule_GetStatus() {
-    EnsureTimeScheduleLoaded();
-    PresetScheduleStatus status{};
-    status.enabled = g_timeScheduleEnabled;
-    status.timeSource = NormalizeScheduleTimeSource(g_timeScheduleTimeSource);
-    float scheduleClockHour = 0.0f;
-    status.timeSourceValid = TryGetTimeScheduleClockHour(scheduleClockHour);
-    status.currentMinute = status.timeSourceValid
-        ? NormalizeScheduleMinute(static_cast<int>(std::floor(NormalizeHour24(scheduleClockHour) * 60.0f + 0.0001f)))
-        : -1;
-    status.activeEntryIndex = g_timeScheduleActiveEntryIndex;
-    status.blending = g_timeScheduleBlendActive;
-
-    if (g_timeScheduleActiveEntryIndex >= 0 &&
-        g_timeScheduleActiveEntryIndex < static_cast<int>(g_timeScheduleEntries.size())) {
-        const PresetScheduleEntry& entry = g_timeScheduleEntries[g_timeScheduleActiveEntryIndex];
-        status.active = true;
-        status.activePresetFile = entry.presetFile;
-        const int presetIndex = FindPresetIndexByFileName(entry.presetFile);
-        status.activeDisplayName = presetIndex >= 0
-            ? g_presetItems[presetIndex].displayName
-            : GetPresetDisplayNameFromFileName(entry.presetFile);
-    }
-
-    if (g_timeScheduleBlendActive) {
-        status.blendToDisplayName = GetPresetDisplayNameFromFileName(g_timeScheduleBlendPresetFile);
-        status.blendFromDisplayName = g_timeScheduleBlendFromPresetFile.empty()
-            ? "Current"
-            : GetPresetDisplayNameFromFileName(g_timeScheduleBlendFromPresetFile);
-        const ULONGLONG now = GetTickCount64();
-        const ULONGLONG elapsedMs = now - g_timeScheduleBlendStartTick;
-        const int totalMs = max(1, g_timeScheduleBlendSeconds) * 1000;
-        const ULONGLONG cappedElapsedMs = elapsedMs > static_cast<ULONGLONG>(totalMs)
-            ? static_cast<ULONGLONG>(totalMs)
-            : elapsedMs;
-        const int remainingMs = max(0, totalMs - static_cast<int>(cappedElapsedMs));
-        status.blendRemainingSeconds = (remainingMs + 999) / 1000;
-    }
-
-    return status;
+    return ScheduleGetStatus();
 }
 
 bool PresetSchedule_AddEntry(const PresetScheduleEntry& entry) {
-    return ReplaceTimeScheduleEntryWithNew(-1, entry);
+    return ScheduleAddEntry(entry);
 }
 
 bool PresetSchedule_UpdateEntry(int index, const PresetScheduleEntry& entry) {
-    EnsureTimeScheduleLoaded();
-    if (index < 0 || index >= static_cast<int>(g_timeScheduleEntries.size())) {
-        return false;
-    }
-    return ReplaceTimeScheduleEntryWithNew(index, entry);
+    return ScheduleUpdateEntry(index, entry);
 }
 
 bool PresetSchedule_DeleteEntry(int index) {
-    EnsureTimeScheduleLoaded();
-    if (index < 0 || index >= static_cast<int>(g_timeScheduleEntries.size())) {
-        return false;
-    }
-    g_timeScheduleEntries.erase(g_timeScheduleEntries.begin() + index);
-    g_timeScheduleBlendActive = false;
-    g_timeScheduleActiveEntryIndex = -1;
-    g_timeScheduleLastAppliedEntryIndex = -1;
-    g_timeScheduleActivePresetFile.clear();
-    TimeScheduleClearUserEditPin();
-    TimeScheduleClearSelfVisualGuard();
-    SaveTimeScheduleConfig();
-    GUI_SetStatus("Time schedule entry deleted");
-    Log("[preset-schedule] deleted entry %d\n", index);
-    return true;
+    return ScheduleDeleteEntry(index);
 }
 
 bool PresetSchedule_ParseAmPm(const char* text, int& outMinute) {
-    outMinute = 0;
-    std::string value = TrimCopy(text ? text : "");
-    if (value.empty()) {
-        return false;
-    }
-
-    std::string upper;
-    upper.reserve(value.size());
-    for (size_t i = 0; i < value.size(); ++i) {
-        const char c = value[i];
-        if (std::isspace(static_cast<unsigned char>(c))) {
-            continue;
-        }
-        if (c == '.') {
-            upper.push_back(':');
-        } else {
-            upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
-        }
-    }
-
-    bool hasMarker = false;
-    bool pm = false;
-    if (upper.size() >= 2 && upper.compare(upper.size() - 2, 2, "AM") == 0) {
-        hasMarker = true;
-        pm = false;
-        upper.resize(upper.size() - 2);
-    } else if (upper.size() >= 2 && upper.compare(upper.size() - 2, 2, "PM") == 0) {
-        hasMarker = true;
-        pm = true;
-        upper.resize(upper.size() - 2);
-    }
-
-    if (upper.empty()) {
-        return false;
-    }
-
-    int hour = 0;
-    int minute = 0;
-    const size_t colon = upper.find(':');
-    if (colon == std::string::npos) {
-        for (char c : upper) {
-            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
-        }
-        if (!hasMarker && upper.size() == 4) {
-            hour = atoi(upper.substr(0, 2).c_str());
-            minute = atoi(upper.substr(2, 2).c_str());
-        } else if (!hasMarker && upper.size() == 3) {
-            hour = atoi(upper.substr(0, 1).c_str());
-            minute = atoi(upper.substr(1, 2).c_str());
-        } else {
-            hour = atoi(upper.c_str());
-        }
-    } else {
-        const std::string hourText = upper.substr(0, colon);
-        const std::string minuteText = upper.substr(colon + 1);
-        if (hourText.empty() || minuteText.empty() || minuteText.size() > 2) {
-            return false;
-        }
-        for (char c : hourText) {
-            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
-        }
-        for (char c : minuteText) {
-            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
-        }
-        hour = atoi(hourText.c_str());
-        minute = atoi(minuteText.c_str());
-    }
-
-    if (minute < 0 || minute > 59) {
-        return false;
-    }
-
-    if (hasMarker) {
-        if (hour < 1 || hour > 12) {
-            return false;
-        }
-        int hour24 = hour % 12;
-        if (pm) {
-            hour24 += 12;
-        }
-        outMinute = hour24 * 60 + minute;
-        return true;
-    }
-
-    if (hour < 0 || hour > 23) {
-        return false;
-    }
-    outMinute = hour * 60 + minute;
-    return true;
+    return ScheduleParseAmPm(text, outMinute);
 }
 
 std::string PresetSchedule_FormatAmPm(int minute) {
-    minute = NormalizeScheduleMinute(minute);
-    const int hour24 = minute / 60;
-    const int minutePart = minute % 60;
-    int hour12 = hour24 % 12;
-    if (hour12 == 0) {
-        hour12 = 12;
-    }
-    char out[32] = {};
-    sprintf_s(out, "%d:%02d %s", hour12, minutePart, hour24 >= 12 ? "PM" : "AM");
-    return out;
+    return ScheduleFormatAmPm(minute);
 }
 
 int PresetSchedule_DefaultBlendSeconds() {
-    return kTimeScheduleDefaultBlendSeconds;
+    return ScheduleDefaultBlendSeconds();
 }
-
 void Preset_TryAutoApplyRemembered() {
     if (g_autoApplyRememberedTried) return;
     g_autoApplyRememberedTried = true;
@@ -4720,7 +1507,7 @@ void Preset_ArmAutoApplyRemembered() {
 
 bool Preset_NeedsWorldTick() {
     EnsureTimeScheduleLoaded();
-    if (g_timeScheduleEnabled || g_timeScheduleBlendActive) {
+    if (ScheduleNeedsWorldTick()) {
         return true;
     }
 

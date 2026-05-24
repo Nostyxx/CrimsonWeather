@@ -109,6 +109,7 @@ void WriteDefaultConfig(const char* path) {
     WritePrivateProfileStringA("TimeSchedule", "EntryCount", "0", path);
     WritePrivateProfileStringA("Community", "Enabled", "1", path);
     WritePrivateProfileStringA("Updater", "Enabled", "1", path);
+    WritePrivateProfileStringA("Updater", "AutoDownload", "0", path);
     WritePrivateProfileStringA("TextureSwitcher", "Enabled", "1", path);
 #else
     WritePrivateProfileStringA("Wind", "Multiplier", "1.0000", path);
@@ -120,8 +121,6 @@ void WriteDefaultConfig(const char* path) {
         "_LaunchOptionValues",
         "full, none, texturehook, weathertickhook, intensityhooks, windhooks, framehooks, foghooks, regionhook",
         path);
-    WritePrivateProfileStringA("Dev", "PerfLog", "0", path);
-    WritePrivateProfileStringA("Dev", "PerfLogIntervalSec", "10", path);
 #endif
 }
 
@@ -187,6 +186,9 @@ void PatchMissingConfigKeys(const char* path) {
     if (GetPrivateProfileStringA("Updater", "Enabled", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("Updater", "Enabled", "1", path);
     }
+    if (GetPrivateProfileStringA("Updater", "AutoDownload", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("Updater", "AutoDownload", "0", path);
+    }
     if (GetPrivateProfileStringA("TextureSwitcher", "Enabled", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("TextureSwitcher", "Enabled", "1", path);
     }
@@ -201,12 +203,6 @@ void PatchMissingConfigKeys(const char* path) {
             "_LaunchOptionValues",
             "full, none, texturehook, weathertickhook, intensityhooks, windhooks, framehooks, foghooks, regionhook",
             path);
-    }
-    if (GetPrivateProfileStringA("Dev", "PerfLog", "", buf, sizeof(buf), path) == 0) {
-        WritePrivateProfileStringA("Dev", "PerfLog", "0", path);
-    }
-    if (GetPrivateProfileStringA("Dev", "PerfLogIntervalSec", "", buf, sizeof(buf), path) == 0) {
-        WritePrivateProfileStringA("Dev", "PerfLogIntervalSec", "10", path);
     }
 #endif
 
@@ -387,42 +383,6 @@ bool DevLaunchOptionBypassesStartupHealth(DevLaunchOption option) {
     return option != DevLaunchOption::Full;
 }
 
-const char* DevPerfHookLabel(DevPerfHookId id) {
-    switch (id) {
-    case DevPerfHookId::WeatherTick:
-        return "WeatherTick";
-    case DevPerfHookId::RainIntensity:
-        return "RainIntensity";
-    case DevPerfHookId::SnowIntensity:
-        return "SnowIntensity";
-    case DevPerfHookId::DustIntensity:
-        return "DustIntensity";
-    case DevPerfHookId::AtmosFogBlend:
-        return "AtmosFogBlend";
-    case DevPerfHookId::WeatherFrameUpdate:
-        return "WeatherFrameUpdate";
-    case DevPerfHookId::ProcessWindState:
-        return "ProcessWindState";
-    case DevPerfHookId::WindPack:
-        return "WindPack";
-    case DevPerfHookId::SceneFrameUpdate:
-        return "SceneFrameUpdate";
-    case DevPerfHookId::MinimapRegionLabels:
-        return "MinimapRegionLabels";
-    case DevPerfHookId::MinimapGameTimeUpdate:
-        return "MinimapGameTimeUpdate";
-    case DevPerfHookId::D3D12CreateDevice:
-        return "D3D12CreateDevice";
-    case DevPerfHookId::D3D12CreateShaderResourceView:
-        return "D3D12CreateShaderResourceView";
-    case DevPerfHookId::D3D12CopyDescriptors:
-        return "D3D12CopyDescriptors";
-    case DevPerfHookId::D3D12CopyDescriptorsSimple:
-        return "D3D12CopyDescriptorsSimple";
-    default:
-        return "UnknownHook";
-    }
-}
 #endif
 
 const char* RuntimeHealthStateLabel(RuntimeHealthState state) {
@@ -570,10 +530,6 @@ RuntimeHealthState GetRuntimeFeatureState(RuntimeFeatureId id) {
 
 bool RuntimeFeatureAvailable(RuntimeFeatureId id) {
     return GetRuntimeFeatureState(id) != RuntimeHealthState::Disabled;
-}
-
-bool RuntimeFeatureDegraded(RuntimeFeatureId id) {
-    return GetRuntimeFeatureState(id) == RuntimeHealthState::Degraded;
 }
 
 const char* RuntimeFeatureNote(RuntimeFeatureId id) {
@@ -740,6 +696,8 @@ void LoadConfig(const char* dir) {
     g_cfg.communityEnabled = atoi(buf) != 0;
     GetPrivateProfileStringA("Updater", "Enabled", "1", buf, sizeof(buf), path);
     g_cfg.updaterEnabled = atoi(buf) != 0;
+    GetPrivateProfileStringA("Updater", "AutoDownload", "0", buf, sizeof(buf), path);
+    g_cfg.updaterAutoDownload = atoi(buf) != 0;
     GetPrivateProfileStringA("TextureSwitcher", "Enabled", "1", buf, sizeof(buf), path);
     g_cfg.textureSwitcherEnabled = atoi(buf) != 0;
 #endif
@@ -752,13 +710,6 @@ void LoadConfig(const char* dir) {
         DevLaunchOptionName(launchOption),
         DevLaunchOptionDescription(launchOption));
 
-    GetPrivateProfileStringA("Dev", "PerfLog", "0", buf, sizeof(buf), path);
-    g_cfg.devPerfLog = atoi(buf) != 0;
-    GetPrivateProfileStringA("Dev", "PerfLogIntervalSec", "10", buf, sizeof(buf), path);
-    g_cfg.devPerfLogIntervalSec = min(120, max(1, atoi(buf)));
-    Log("[dev-perf] enabled=%u interval=%ds\n",
-        g_cfg.devPerfLog ? 1u : 0u,
-        g_cfg.devPerfLogIntervalSec);
 #endif
 #if defined(CW_WIND_ONLY)
     GetPrivateProfileStringA("Wind", "Multiplier", "1.0000", buf, sizeof(buf), path);
@@ -772,15 +723,8 @@ void SaveGeneralConfig() {
     WritePrivateProfileStringA("General", "AutoSaved", g_cfg.autoSaved ? "1" : "0", path);
     WritePrivateProfileStringA("General", "ToastNotification", g_cfg.toastNotification ? "1" : "0", path);
     WritePrivateProfileStringA("General", "ExtendedSliderRange", g_extendedSliderRange.load() ? "1" : "0", path);
-}
-
-void SaveCommunityConfig() {
 #if !defined(CW_WIND_ONLY)
-    char path[MAX_PATH] = {};
-    BuildIniPath(path, sizeof(path));
-    WritePrivateProfileStringA("Community", "Enabled", g_cfg.communityEnabled ? "1" : "0", path);
-    WritePrivateProfileStringA("Updater", "Enabled", g_cfg.updaterEnabled ? "1" : "0", path);
-    WritePrivateProfileStringA("TextureSwitcher", "Enabled", g_cfg.textureSwitcherEnabled ? "1" : "0", path);
+    WritePrivateProfileStringA("Updater", "AutoDownload", g_cfg.updaterAutoDownload ? "1" : "0", path);
 #endif
 }
 
@@ -977,33 +921,6 @@ void ResetAllSliders() {
     g_resetStopRequested.store(true);
 }
 
-bool AnySliderActive() {
-    return g_forceClear.load() ||
-           g_oRain.active.load() || g_oThunder.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
-           g_oSnowAccumBoundaryA.active.load() || g_oSnowAccumBoundaryB.active.load() ||
-           g_oSnowCoverageThreshold.active.load() ||
-           g_oCloudAmount.active.load() ||
-           g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
-           g_oAtmoAlpha.active.load() || g_oExpCloud2C.active.load() || g_oExpCloud2D.active.load() ||
-           g_oCloudVariation.active.load() || g_oExpNightSkyRot.active.load() || g_oNightSkyYaw.active.load() ||
-           g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
-           g_oSunLightIntensity.active.load() || g_oMoonLightIntensity.active.load() ||
-           g_oMieScaleHeight.active.load() || g_oMieAerosolDensity.active.load() || g_oMieAerosolAbsorption.active.load() ||
-           g_oHeightFogBaseline.active.load() || g_oHeightFogFalloff.active.load() ||
-           g_oCloudAlpha.active.load() || g_oCloudFadeRange.active.load() || g_oCloudDetailRatio.active.load() ||
-           g_oCloudPhaseFront.active.load() || g_oCloudScatteringCoefficient.active.load() || g_oCloudFlow.active.load() ||
-           g_oCloudVisibleRange.active.load() ||
-           g_oRayleighHeight.active.load() || g_oOzoneRatio.active.load() ||
-           g_oRayleighScatteringColor.active.load() || g_oVolumeFogScatterColor.active.load() || g_oMieScatterColor.active.load() ||
-           g_noRain.load() || g_noDust.load() || g_noSnow.load() ||
-           g_noFog.load() || g_noWind.load() ||
-           fabsf(g_windMul.load() - 1.0f) > 0.001f ||
-           g_oWind.active.load() || g_oWindActual.active.load() ||
-           g_oSunDirX.active.load() || g_oSunDirY.active.load() ||
-           g_oMoonDirX.active.load() || g_oMoonDirY.active.load() || g_oMoonRoll.active.load() ||
-           g_oSunSize.active.load() || g_oMoonSize.active.load();
-}
-
 bool AnyCustomWeatherSliderActive() {
     return g_forceClear.load() ||
            g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
@@ -1052,52 +969,6 @@ bool IsReadablePointer(uintptr_t addr, size_t bytes) {
     const auto base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
     const auto end = base + mbi.RegionSize;
     return addr >= base && (addr + bytes) <= end;
-}
-
-bool InRange(float value, float lo, float hi) {
-    return std::isfinite(value) && value >= lo && value <= hi;
-}
-
-bool LooksLikeAtmosphereConst0(long long candidate) {
-    if (candidate <= 0 || candidate < 0x100000000LL ||
-        !IsReadablePointer(static_cast<uintptr_t>(candidate), AC0::CHECK_MOON_DIR_Y + 1)) {
-        return false;
-    }
-
-    __try {
-        const float sunIntensity = At<float>(candidate, AC0::SUN_LIGHT_INTENSITY);
-        const float moonIntensity = At<float>(candidate, AC0::MOON_LIGHT_INTENSITY);
-        const float sunSize = At<float>(candidate, AC0::SUN_SIZE_ANGLE);
-        const float sunDirX = At<float>(candidate, AC0::SUN_DIR_X);
-        const float sunDirY = At<float>(candidate, AC0::SUN_DIR_Y);
-        const float moonSize = At<float>(candidate, AC0::MOON_SIZE_ANGLE);
-        const float moonDirX = At<float>(candidate, AC0::MOON_DIR_X);
-        const float moonDirY = At<float>(candidate, AC0::MOON_DIR_Y);
-        const uint8_t checkSunSize = At<uint8_t>(candidate, AC0::CHECK_SUN_SIZE_ANGLE);
-        const uint8_t checkSunX = At<uint8_t>(candidate, AC0::CHECK_SUN_DIR_X);
-        const uint8_t checkSunY = At<uint8_t>(candidate, AC0::CHECK_SUN_DIR_Y);
-        const uint8_t checkMoonSize = At<uint8_t>(candidate, AC0::CHECK_MOON_SIZE_ANGLE);
-        const uint8_t checkMoonX = At<uint8_t>(candidate, AC0::CHECK_MOON_DIR_X);
-        const uint8_t checkMoonY = At<uint8_t>(candidate, AC0::CHECK_MOON_DIR_Y);
-
-        if (!InRange(sunIntensity, -200.0f, 200.0f) || !InRange(moonIntensity, -200.0f, 200.0f)) {
-            return false;
-        }
-        if (!InRange(sunSize, 0.0f, 20.0f) || !InRange(moonSize, 0.0f, 20.0f)) {
-            return false;
-        }
-        if (!InRange(sunDirX, -180.0f, 180.0f) || !InRange(sunDirY, -180.0f, 180.0f) ||
-            !InRange(moonDirX, -180.0f, 180.0f) || !InRange(moonDirY, -180.0f, 180.0f)) {
-            return false;
-        }
-        if (checkSunSize > 1 || checkSunX > 1 || checkSunY > 1 ||
-            checkMoonSize > 1 || checkMoonX > 1 || checkMoonY > 1) {
-            return false;
-        }
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
 }
 
 } // namespace

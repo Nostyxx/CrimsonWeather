@@ -60,6 +60,7 @@ bool MyUploadMatchesFilter(const CommunityMyUpload& item) {
     if (ContainsNoCase(item.author, g_myUploadsFilter)) return true;
     if (ContainsNoCase(item.description, g_myUploadsFilter)) return true;
     if (ContainsNoCase(item.status, g_myUploadsFilter)) return true;
+    if (ContainsNoCase(item.pendingUpdateTitle, g_myUploadsFilter)) return true;
     return false;
 }
 
@@ -241,14 +242,21 @@ void DrawMyUploadsSection() {
             ImGui::Text("%s by %s", item.title.c_str(), author);
             ImGui::SameLine();
             ImGui::TextDisabled("[%s]", item.status.empty() ? "unknown" : item.status.c_str());
+            if (!item.pendingUpdateId.empty()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("[Update pending]");
+            }
             if (!item.updateOf.empty()) {
                 ImGui::TextDisabled("Update for %s", item.updateOf.c_str());
+            }
+            if (!item.pendingUpdateId.empty()) {
+                ImGui::TextDisabled("Pending update: %s", item.pendingUpdateTitle.empty() ? item.pendingUpdateId.c_str() : item.pendingUpdateTitle.c_str());
             }
             if (!item.description.empty()) {
                 ImGui::TextWrapped("%s", item.description.c_str());
             }
             if (Community_IsBusy()) ImGui::BeginDisabled();
-            const bool canUpdate = _stricmp(item.status.c_str(), "pending") != 0;
+            const bool canUpdate = _stricmp(item.status.c_str(), "pending") != 0 && item.pendingUpdateId.empty();
             if (!canUpdate) ImGui::BeginDisabled();
             if (ImGui::Button("Update")) {
                 OpenUpdatePopup(item);
@@ -257,6 +265,12 @@ void DrawMyUploadsSection() {
                 ImGui::EndDisabled();
             }
             ImGui::SameLine();
+            if (!item.pendingUpdateId.empty()) {
+                if (ImGui::Button("Cancel Update")) {
+                    Community_RequestCancelMyUploadUpdate(item.id.c_str());
+                }
+                ImGui::SameLine();
+            }
             if (ImGui::Button("Delete")) {
                 OpenDeletePopup(item);
             }

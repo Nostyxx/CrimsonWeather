@@ -24,6 +24,9 @@ struct CommunityMyUpload {
     std::string description;
     std::string status;
     std::string updateOf;
+    std::string pendingUpdateId;
+    std::string pendingUpdateTitle;
+    std::string pendingUpdateAt;
     std::string updatedAt;
     int downloads = 0;
     int likes = 0;

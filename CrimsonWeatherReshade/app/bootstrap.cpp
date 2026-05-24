@@ -4,6 +4,7 @@
 #include "overlay_bridge.h"
 #include "preset_service.h"
 #include "runtime_shared.h"
+#include "update_service.h"
 #if defined(CW_DEV_BUILD)
 #include "dev_mcp_server.h"
 #endif
@@ -172,6 +173,7 @@ DWORD WINAPI BootstrapThread(void* param) {
     }
 
     OpenStartupLog(module);
+    UpdateService_CleanupStaleFiles();
 #if defined(CW_DEV_BUILD)
     if (StartDevMcpServer(module)) {
         Log("[mcp] DEV pipe server start requested\n");

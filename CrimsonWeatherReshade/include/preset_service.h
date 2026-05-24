@@ -272,7 +272,6 @@ bool Preset_SaveSelected();
 bool Preset_SaveAs(const char* fileName);
 bool Preset_ExportCurrentCanonical(std::string& outIni, std::string& outError);
 bool Preset_ExportPresetCanonicalByIndex(int index, std::string& outIni, std::string& outError);
-bool Preset_ValidatePresetText(const char* iniText, std::string& outError);
 bool Preset_ImportCommunityPresetText(
     const char* title,
     const char* author,
@@ -296,7 +295,6 @@ bool PresetSchedule_IsEnabled();
 void PresetSchedule_SetEnabled(bool enabled);
 int PresetSchedule_GetTimeSource();
 void PresetSchedule_SetTimeSource(int source);
-std::vector<PresetScheduleEntry> PresetSchedule_GetEntries();
 std::vector<PresetScheduleRow> PresetSchedule_BuildRows();
 PresetScheduleStatus PresetSchedule_GetStatus();
 bool PresetSchedule_AddEntry(const PresetScheduleEntry& entry);

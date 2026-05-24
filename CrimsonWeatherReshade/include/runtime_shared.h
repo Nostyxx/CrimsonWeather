@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_BASE_VERSION "0.6.6"
+#define MOD_BASE_VERSION "0.6.7"
 #if defined(CW_DEV_BUILD)
 #define MOD_VERSION MOD_BASE_VERSION " DEV"
 #else
@@ -42,14 +42,11 @@ struct Config {
     bool toastNotification = true;
     bool communityEnabled = true;
     bool updaterEnabled = true;
+    bool updaterAutoDownload = false;
     bool textureSwitcherEnabled = true;
     int effectToggleVK = VK_F10;
     WORD controllerEffectToggleMask = 0;
     bool reshadeDiagnostics = false;
-#if defined(CW_DEV_BUILD)
-    bool devPerfLog = false;
-    int devPerfLogIntervalSec = 10;
-#endif
 };
 
 #if defined(CW_DEV_BUILD)
@@ -76,35 +73,6 @@ bool DevLaunchOptionBypassesStartupHealth(DevLaunchOption option);
 inline Config g_cfg{};
 #if defined(CW_DEV_BUILD)
 inline std::atomic<DevLaunchOption> g_devLaunchOption{ DevLaunchOption::Full };
-
-enum class DevPerfHookId : uint8_t {
-    WeatherTick = 0,
-    RainIntensity,
-    SnowIntensity,
-    DustIntensity,
-    AtmosFogBlend,
-    WeatherFrameUpdate,
-    ProcessWindState,
-    WindPack,
-    SceneFrameUpdate,
-    MinimapRegionLabels,
-    MinimapGameTimeUpdate,
-    D3D12CreateDevice,
-    D3D12CreateShaderResourceView,
-    D3D12CopyDescriptors,
-    D3D12CopyDescriptorsSimple,
-    Count
-};
-
-inline std::array<std::atomic<unsigned long long>, static_cast<size_t>(DevPerfHookId::Count)> g_devPerfHookCounts{};
-
-const char* DevPerfHookLabel(DevPerfHookId id);
-inline void DevPerf_CountHook(DevPerfHookId id) {
-    if (!g_cfg.devPerfLog) {
-        return;
-    }
-    g_devPerfHookCounts[static_cast<size_t>(id)].fetch_add(1, std::memory_order_relaxed);
-}
 #endif
 inline FILE* g_logFile = nullptr;
 #if defined(CW_DEV_BUILD)
@@ -121,21 +89,11 @@ WORD ParseControllerCombo(const char* text, WORD fallback);
 bool IsControllerComboPressed(WORD buttons, WORD comboMask);
 void LoadConfig(const char* dir);
 void SaveGeneralConfig();
-void SaveCommunityConfig();
 void SaveWindOnlyConfig();
 void OpenLogFile(const char* dir);
 void GUI_SetStatus(const char* msg);
 void ResetAllSliders();
-bool AnySliderActive();
 bool AnyCustomWeatherSliderActive();
-
-constexpr bool IsWindOnlyBuild() {
-#if defined(CW_WIND_ONLY)
-    return true;
-#else
-    return false;
-#endif
-}
 
 namespace WCO {
     constexpr ptrdiff_t WIND_EVENT_A = 0xD0;
@@ -247,7 +205,6 @@ typedef uint32_t(__fastcall* AkPostEventById_fn)(
     uint32_t externalSourceCount,
     void* externalSources,
     uint32_t playingId);
-typedef long long(__fastcall* SpawnGameGlobalEffect_fn)(long long manager, unsigned short* effectId);
 typedef long long(__fastcall* MinimapRegionLabels_fn)(long long self, unsigned short areaId, unsigned short subAreaId);
 typedef void(__fastcall* MinimapGameTimeUpdate_fn)(long long self, long long eventContext);
 typedef long long*(__fastcall* FogReceiverGetter_fn)(long long provider);
@@ -274,7 +231,6 @@ inline PlayWeatherSoundEvent_fn g_pPlayWeatherSoundEvent = nullptr;
 inline LoadSoundBank_fn g_pLoadSoundBank = nullptr;
 inline AkLoadBankById_fn g_pAkLoadBankById = nullptr;
 inline AkPostEventById_fn g_pAkPostEventById = nullptr;
-inline SpawnGameGlobalEffect_fn g_pSpawnGameGlobalEffect = nullptr;
 inline MinimapRegionLabels_fn g_pOrigMinimapRegionLabels = nullptr;
 inline MinimapGameTimeUpdate_fn g_pOrigMinimapGameTimeUpdate = nullptr;
 inline uintptr_t* g_pEnvManager = nullptr;
@@ -445,7 +401,6 @@ void SetRuntimeGroupHealth(RuntimeHealthGroup id, RuntimeHealthState state, cons
 void SetRuntimeFeatureHealth(RuntimeFeatureId id, RuntimeHealthState state, const std::string& note);
 RuntimeHealthState GetRuntimeFeatureState(RuntimeFeatureId id);
 bool RuntimeFeatureAvailable(RuntimeFeatureId id);
-bool RuntimeFeatureDegraded(RuntimeFeatureId id);
 const char* RuntimeFeatureNote(RuntimeFeatureId id);
 bool RuntimeStartupHealthy(char* outReason, size_t outReasonSize);
 const char* RuntimeHookLabel(RuntimeHookId id);
@@ -454,7 +409,6 @@ void ResetRuntimeHookControls();
 void RegisterRuntimeMinHook(RuntimeHookId id, void* target, void* detour);
 void RegisterRuntimePointerHook(RuntimeHookId id, void* target, void* detour, void** slot, void* original);
 size_t GetRuntimeHookStatusEntries(RuntimeHookStatusEntry* outEntries, size_t maxEntries);
-bool RuntimeHookInstalled(RuntimeHookId id);
 bool RuntimeHookEnabled(RuntimeHookId id);
 bool SetRuntimeHookEnabled(RuntimeHookId id, bool enabled, char* outMessage, size_t outMessageSize);
 
@@ -550,7 +504,6 @@ inline ColorOverride g_oRayleighScatteringColor;
 inline ColorOverride g_oVolumeFogScatterColor;
 inline ColorOverride g_oMieScatterColor;
 inline std::atomic<float> g_thunderSchedulerRainBias{ 0.0f };
-inline std::atomic<uintptr_t> g_lastGameGlobalEffectManager{ 0 };
 inline std::atomic<bool> g_forceClear{ false };
 inline std::atomic<bool> g_noRain{ false };
 inline std::atomic<bool> g_noDust{ false };
@@ -612,14 +565,6 @@ inline std::atomic<bool> g_timeUiClockValid{ false };
 inline std::atomic<unsigned long long> g_timeUiClockTick{ 0 };
 inline std::atomic<int> g_timeUiClockHour24{ -1 };
 inline std::atomic<int> g_timeUiClockMinute{ -1 };
-#if defined(CW_DEV_BUILD)
-inline std::atomic<unsigned long long> g_timeFieldClockRaw{ 0 };
-inline std::atomic<float> g_timeFieldClockSecondsHour{ NAN };
-inline std::atomic<float> g_timeFieldClockMillisHour{ NAN };
-inline std::atomic<float> g_timeFieldClockMinutesHour{ NAN };
-inline std::atomic<bool> g_timeFieldClockValid{ false };
-inline std::atomic<unsigned long long> g_timeFieldClockTick{ 0 };
-#endif
 inline std::atomic<float> g_timeOriginalHour{ 12.0f };
 inline std::atomic<bool> g_timeOriginalHourValid{ false };
 inline std::atomic<bool> g_timeDomainKnown{ false };

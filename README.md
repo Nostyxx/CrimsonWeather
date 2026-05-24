@@ -2,7 +2,7 @@
 
 ReShade `.addon64` weather-control mod for `CrimsonDesert.exe`.
 
-Current stable release: `0.6.6`.
+Current stable release: `0.6.7`.
 
 The current main branch is the ReShade addon rewrite. The older DXGI/ImGui build is kept on the `legacy` branch.
 
@@ -24,6 +24,7 @@ Main build:
 - Downloaded community preset `.ini` files in `CrimsonWeather/community/preset`
 - Community catalog cache in `CrimsonWeather/community/catalog.v1.json`
 - Community identity and local like state in `CrimsonWeather/community/state.v1`
+- Direct update install staging files may temporarily appear as `CrimsonWeather.addon64.new` and `CrimsonWeather.addon64.old`
 - Optional moon textures in `CrimsonWeather/moon/{Pack Name}/{Moon Name}/moon.dds` or `moon.png`
 - Optional animated moon texture packs in `CrimsonWeather/moon/{Pack Name}/{Moon Name}/manifest.json`
 - Optional Milky Way textures in `CrimsonWeather/milkyway/{Pack Name}/{Sky Name}/milkyway.dds` or `milkyway.png`
@@ -55,12 +56,13 @@ The edit scope selector is always visible at the top of the overlay. Use it to e
 Tabs and controls:
 - **Presets**: load/save local and downloaded community presets, save-as, reset sliders, edit global or per-region preset scopes, and configure the optional Time Schedule
 - **Community**: browse, search, sort, download, like/unlike, submit, update, and delete community preset uploads
+- **Favorites**: build custom sections that reuse live controls from the other tabs, with editor-driven add/remove and ordering
 - **General**: visual time override, progress visual time, Match In-Game Clock, advance interval, wind, and no wind
 - **Weather**: force clear sky, rain, dust, snow, thunder, no rain, no dust, no snow, snow accumulation boundaries, and snow coverage threshold
 - **Atmosphere**: Rayleigh scattering color, Rayleigh height, ozone ratio, cloud amount, cloud height, cloud density, mid clouds, high clouds, cloud alpha, cloud fade range, cloud detail ratio, cloud phase, cloud scattering, cloud flow, cloud visible range, fog, no fog, volume fog scatter color, Mie scatter color, aerosol height, aerosol density, aerosol absorption, fog height baseline, and fog height falloff
 - **Celestial**: static/animated moon texture, Milky Way texture, no-moon/no-Milky-Way options, night sky tilt, night sky phase, sun light intensity, sun size, sun yaw/pitch lock, moon light intensity, moon size, moon yaw/pitch lock, and moon rotation
 - **Experiment**: 2C, 2D, cloud variation, legacy fog, and puddle scale
-- **Status**: current effective values, active hook state, startup health, and whether each value comes from global preset or a region override
+- **Status**: current effective values, active hook state, startup and update health, AutoDownload Updates, and whether each value comes from global preset or a region override
 
 ## Presets
 
@@ -147,6 +149,7 @@ Enabled=1
 
 [Updater]
 Enabled=1
+AutoDownload=0
 
 [TextureSwitcher]
 Enabled=1
@@ -154,7 +157,7 @@ Enabled=1
 
 `AutoSaved=1` automatically saves edits to the currently selected preset shortly after the active UI interaction ends. It does not create new preset files; use `Create Preset` or `Save As` first.
 
-`ToastNotification=0` disables the in-game toast messages shown by Crimson Weather. `TextureSwitcher` and `Updater` can also be disabled independently by setting their `Enabled` value to `0`.
+`ToastNotification=0` disables the in-game toast messages shown by Crimson Weather. `TextureSwitcher` and `Updater` can also be disabled independently by setting their `Enabled` value to `0`. `Updater AutoDownload=1` changes the update button from opening Nexus Mods to installing the downloaded `.addon64` directly into the game `bin64` folder; the new add-on is used after restarting Crimson Desert.
 
 WindOnly uses `CrimsonWeather.WindOnly.ini` and stores its wind multiplier under `[Wind]`. DEV uses `CrimsonWeather.DEV.ini`.
 

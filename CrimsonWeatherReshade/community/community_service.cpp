@@ -35,7 +35,6 @@ std::atomic<unsigned long long> g_lastCatalogRefresh{ 0 };
 bool g_initialized = false;
 std::once_flag g_stateLoadOnce;
 int g_busyCount = 0;
-std::atomic<bool> g_shutdownRequested{ false };
 std::atomic<unsigned long long> g_lastManualRefreshTick{ 0 };
 
 std::string TrimCopy(const std::string& value) {
@@ -262,8 +261,8 @@ std::string ExtractJsonString(const std::string& object, const char* key) {
     if (pos == std::string::npos) return {};
     pos = object.find(':', pos + marker.size());
     if (pos == std::string::npos) return {};
-    pos = object.find('"', pos + 1);
-    if (pos == std::string::npos) return {};
+    while (++pos < object.size() && std::isspace(static_cast<unsigned char>(object[pos]))) {}
+    if (pos >= object.size() || object[pos] != '"') return {};
     std::string out;
     bool escape = false;
     for (++pos; pos < object.size(); ++pos) {
@@ -444,6 +443,9 @@ bool ParseMyUploads(const std::string& json, std::vector<CommunityMyUpload>& out
         item.description = ExtractJsonString(object, "description");
         item.status = ExtractJsonString(object, "status");
         item.updateOf = ExtractJsonString(object, "update_of");
+        item.pendingUpdateId = ExtractJsonString(object, "pending_update_id");
+        item.pendingUpdateTitle = ExtractJsonString(object, "pending_update_title");
+        item.pendingUpdateAt = ExtractJsonString(object, "pending_update_at");
         item.updatedAt = ExtractJsonString(object, "updated_at");
         item.downloads = ExtractJsonInt(object, "downloads");
         item.likes = ExtractJsonInt(object, "likes");
@@ -551,14 +553,11 @@ void FinishAsyncWork() {
 bool RunAsync(const std::function<void()>& work, bool allowParallel = false) {
     {
         std::lock_guard<std::mutex> lock(g_communityMutex);
-        if (g_shutdownRequested.load()) return false;
         if (!allowParallel && g_busyCount > 0) return false;
         ++g_busyCount;
     }
     std::thread([work]() {
-        if (!g_shutdownRequested.load()) {
-            work();
-        }
+        work();
         FinishAsyncWork();
     }).detach();
     return true;
@@ -649,23 +648,12 @@ void Community_EnsureInitialized() {
     }
 }
 
-void Community_Shutdown() {
-    g_shutdownRequested.store(true);
-    std::lock_guard<std::mutex> lock(g_communityMutex);
-    g_busyCount = 0;
-}
-
 void Community_Tick() {
     Community_EnsureInitialized();
 }
 
 bool Community_IsEnabled() {
     return g_cfg.communityEnabled;
-}
-
-void Community_SetEnabled(bool enabled) {
-    g_cfg.communityEnabled = enabled;
-    SaveCommunityConfig();
 }
 
 bool Community_IsBusy() {
@@ -702,21 +690,6 @@ void Community_SetEndpoint(const char* endpoint) {
     (void)endpoint;
     SetStatus("Community endpoint is configured at build time");
 #endif
-}
-
-const char* Community_GetClientId() {
-    static thread_local std::string clientIdText;
-    LoadCommunityState();
-    {
-        std::lock_guard<std::mutex> lock(g_communityMutex);
-        clientIdText = g_clientId;
-    }
-    return clientIdText.c_str();
-}
-
-unsigned long long Community_GetLastRefresh() {
-    LoadCommunityState();
-    return g_lastCatalogRefresh.load();
 }
 
 int Community_GetCatalogCount() {
@@ -984,6 +957,30 @@ void Community_RequestDeleteMyUpload(const char* presetId) {
             return;
         }
         SetStatus("Community upload deleted");
+        MyUploadsWorker(false);
+        RefreshWorker(false);
+    });
+}
+
+void Community_RequestCancelMyUploadUpdate(const char* presetId) {
+    const std::string id = TrimCopy(presetId ? presetId : "");
+    if (id.empty()) return;
+    if (Endpoint().empty()) {
+        SetStatus("Community endpoint is not configured");
+        return;
+    }
+    RunAsync([id]() {
+        SetStatus("Cancelling community update...");
+        CommunityHttpResponse response;
+        if (!CommunityHttp_Request("DELETE", UrlFor("/api/v1/me/presets/" + id + "/update"), JsonHeaders(), "", response)) {
+            SetStatus("Cancel update failed: " + response.error);
+            return;
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+            SetStatus(StatusHttpError("Cancel update failed", response));
+            return;
+        }
+        SetStatus("Community update cancelled");
         MyUploadsWorker(false);
         RefreshWorker(false);
     });

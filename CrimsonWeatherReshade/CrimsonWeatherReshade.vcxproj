@@ -95,7 +95,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalDependencies>d3d12.lib;dxgi.lib;windowscodecs.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;windowscodecs.lib;winhttp.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
@@ -124,18 +124,32 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
+    <ClInclude Include="include\community_http.h" />
+    <ClInclude Include="include\community_models.h" />
+    <ClInclude Include="include\community_service.h" />
+    <ClInclude Include="include\community_ui.h" />
+    <ClInclude Include="include\dev_mcp_server.h" />
+    <ClInclude Include="include\update_service.h" />
     <ClInclude Include="include\sky_image_loader.h" />
     <ClInclude Include="include\sky_texture_override.h" />
     <ClInclude Include="include\overlay_bridge.h" />
     <ClInclude Include="include\preset_service.h" />
     <ClInclude Include="include\runtime_shared.h" />
+    <ClInclude Include="preset\preset_format.h" />
+    <ClInclude Include="preset\preset_model.h" />
+    <ClInclude Include="preset\preset_schedule.h" />
+    <ClInclude Include="ui\overlay_internal.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="third_party\minhook\include\MinHook.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="app\bootstrap.cpp" />
+    <ClCompile Include="community\community_http.cpp" />
+    <ClCompile Include="community\community_service.cpp" />
+    <ClCompile Include="community\update_service.cpp" />
     <ClCompile Include="core\hotkey_service.cpp" />
     <ClCompile Include="core\runtime_state.cpp" />
+    <ClCompile Include="dev\dev_mcp_server.cpp" Condition="'$(CWBuildFlavor)'=='Dev'" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="game\aob_scan.cpp" />
     <ClCompile Include="game\sky_image_loader.cpp" />
@@ -147,7 +161,21 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="preset\preset_format.cpp" />
+    <ClCompile Include="preset\preset_model.cpp" />
+    <ClCompile Include="preset\preset_schedule.cpp" />
     <ClCompile Include="preset\preset_service.cpp" />
+    <ClCompile Include="ui\community_ui.cpp" />
+    <ClCompile Include="ui\overlay_atmosphere.cpp" />
+    <ClCompile Include="ui\overlay_celestial.cpp" />
+    <ClCompile Include="ui\overlay_dev.cpp" Condition="'$(CWBuildFlavor)'=='Dev'" />
+    <ClCompile Include="ui\overlay_experiment.cpp" />
+    <ClCompile Include="ui\overlay_favorites.cpp" />
+    <ClCompile Include="ui\overlay_general.cpp" />
+    <ClCompile Include="ui\overlay_presets.cpp" />
+    <ClCompile Include="ui\overlay_status.cpp" />
+    <ClCompile Include="ui\overlay_weather.cpp" />
+    <ClCompile Include="ui\overlay_widgets.cpp" />
     <ClCompile Include="ui\overlay.cpp" />
     <ClCompile Include="third_party\minhook\src\buffer.c">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>

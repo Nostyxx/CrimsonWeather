@@ -400,9 +400,6 @@ static void UpdateRegionState(const ResolvedEnv& env, float dt) {
 
 // Intensity hooks feed slider overrides into the engine weather blend inputs.
 __m128 __fastcall Hooked_GetRainIntensity(long long ws) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::RainIntensity);
-#endif
     if (!g_modEnabled.load()) {
         return g_pOrigGetRainIntensity ? g_pOrigGetRainIntensity(ws) : PackScalar(0.0f);
     }
@@ -428,9 +425,6 @@ __m128 __fastcall Hooked_GetRainIntensity(long long ws) {
 }
 
 __m128 __fastcall Hooked_GetSnowIntensity(long long ws) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::SnowIntensity);
-#endif
     if (!g_modEnabled.load()) {
         return g_pOrigGetSnowIntensity ? g_pOrigGetSnowIntensity(ws) : PackScalar(0.0f);
     }
@@ -441,9 +435,6 @@ __m128 __fastcall Hooked_GetSnowIntensity(long long ws) {
 }
 
 __m128 __fastcall Hooked_GetDustIntensity(long long ws) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::DustIntensity);
-#endif
     if (!g_modEnabled.load()) {
         return g_pOrigGetDustIntensity ? g_pOrigGetDustIntensity(ws) : PackScalar(0.0f);
     }
@@ -521,9 +512,6 @@ static bool FogProfileNearlyEqual(const FogProfile& a, const FogProfile& b) {
 }
 
 void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::AtmosFogBlend);
-#endif
     if (g_pOrigAtmosFogBlend) g_pOrigAtmosFogBlend(ctx, outParams);
     if (!g_modEnabled.load()) return;
     if (!outParams) return;
@@ -695,30 +683,8 @@ static void ForceApplyFogFromFrame(long long* self) {
     }
 }
 
-static void RememberGameGlobalEffectManager(long long* self) {
-    if (!self || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(self), 9 * sizeof(long long))) {
-        return;
-    }
-
-    __try {
-        const uintptr_t manager = static_cast<uintptr_t>(self[8]);
-        if (manager && IsReadableTickPtr(manager, 0x100)) {
-            g_lastGameGlobalEffectManager.store(manager);
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
 static bool WeatherFrameFogWorkNeeded() {
     return g_forceClear.load() || g_noFog.load() || g_oFog.active.load();
-}
-
-static bool WeatherFrameThunderWorkNeeded() {
-    if (!g_oThunder.active.load()) {
-        return false;
-    }
-    const float thunder = g_oThunder.value.load();
-    return std::isfinite(thunder) && thunder > 0.0001f;
 }
 
 static void ResetFogBlendWeightsForNativeRefresh(long long* self) {
@@ -735,80 +701,9 @@ static void ResetFogBlendWeightsForNativeRefresh(long long* self) {
     }
 }
 
-static unsigned short SelectThunderGlobalEffectId(float rainHint) {
-    constexpr unsigned short kRainLightning = 0x4244;
-    constexpr unsigned short kHeavyRainLightning = 0x42DC;
-    constexpr unsigned short kLightningDryWeather = 0x428E;
-
-    if (rainHint >= 0.75f) {
-        return kHeavyRainLightning;
-    }
-    if (rainHint >= 0.10f) {
-        return kRainLightning;
-    }
-    return kLightningDryWeather;
-}
-
-static const char* ThunderGlobalEffectName(unsigned short id) {
-    switch (id) {
-    case 0x4244: return "RainLightning";
-    case 0x42DC: return "HeavyRainLightning";
-    case 0x428E: return "LightningDryWeather";
-    default: return "Unknown";
-    }
-}
-
 static float ThunderRateCurve(float thunder) {
     thunder = min(1.0f, max(0.0f, thunder));
     return powf(thunder, 0.55f);
-}
-
-static int ThunderVisualClusterCount(float thunder) {
-    if (thunder >= 0.98f) return 4;
-    if (thunder >= 0.90f) return 3;
-    if (thunder >= 0.75f) return 2;
-    return 1;
-}
-
-static void TriggerThunderGlobalEffect(float rainHint, float thunder) {
-    if (!g_pSpawnGameGlobalEffect) {
-        return;
-    }
-
-    const uintptr_t manager = g_lastGameGlobalEffectManager.load();
-    if (!manager || !IsReadableTickPtr(manager, 0x100)) {
-        return;
-    }
-
-    static DWORD64 s_lastNativeGlobalEffectMs = 0;
-    const DWORD64 now = GetTickCount64();
-    const float rate = ThunderRateCurve(thunder);
-    const DWORD64 minGapMs = static_cast<DWORD64>((0.25f + (1.0f - rate) * 6.0f) * 1000.0f);
-    if (now - s_lastNativeGlobalEffectMs < minGapMs) {
-        return;
-    }
-    s_lastNativeGlobalEffectMs = now;
-
-    unsigned short effectId = SelectThunderGlobalEffectId(rainHint);
-    const int clusterCount = ThunderVisualClusterCount(thunder);
-    long long lastResult = 0;
-    int spawned = 0;
-    for (int i = 0; i < clusterCount; ++i) {
-        unsigned short spawnId = effectId;
-        __try {
-            lastResult = g_pSpawnGameGlobalEffect(static_cast<long long>(manager), &spawnId);
-            ++spawned;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            Log("[thunder-native] exception manager=%p effect=%s id=0x%04X cluster=%d/%d\n",
-                reinterpret_cast<void*>(manager), ThunderGlobalEffectName(spawnId), spawnId, i + 1, clusterCount);
-            break;
-        }
-    }
-
-    Log("[thunder-native] spawn manager=%p effect=%s id=0x%04X result=%lld rain=%.3f amount=%.3f cluster=%d/%d gap=%llu\n",
-        reinterpret_cast<void*>(manager), ThunderGlobalEffectName(effectId), effectId,
-        lastResult, rainHint, thunder, spawned, clusterCount,
-        static_cast<unsigned long long>(minGapMs));
 }
 
 static constexpr float kCloudGeometryMax = 64.0f;
@@ -1231,9 +1126,6 @@ static bool ApplySceneCelestialOverrides(float* scene) {
 }
 
 void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::SceneFrameUpdate);
-#endif
     void* result = g_pOrigSceneFrameUpdate ? g_pOrigSceneFrameUpdate(self, context) : nullptr;
     if (!g_modEnabled.load() || !self) return result;
 
@@ -1259,9 +1151,6 @@ void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context) {
 }
 
 void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::WindPack);
-#endif
     const bool modEnabled = g_modEnabled.load();
     if (g_pOrigWindPack) g_pOrigWindPack(windNodePtr, packedOut);
     if (!packedOut) return;
@@ -1517,16 +1406,12 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
 }
 
 void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::WeatherFrameUpdate);
-#endif
     static bool s_fogOverrideWasActive = false;
     const bool modEnabled = g_modEnabled.load();
     const bool fogWorkNeeded = modEnabled && WeatherFrameFogWorkNeeded();
-    const bool thunderWorkNeeded = modEnabled && WeatherFrameThunderWorkNeeded();
     const bool restoreNativeFog = s_fogOverrideWasActive && !fogWorkNeeded;
 
-    if (!fogWorkNeeded && !thunderWorkNeeded && !restoreNativeFog) {
+    if (!fogWorkNeeded && !restoreNativeFog) {
         if (g_pOrigWeatherFrameUpdate) g_pOrigWeatherFrameUpdate(self, dt);
         return;
     }
@@ -1537,9 +1422,6 @@ void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
 
     if (g_pOrigWeatherFrameUpdate) g_pOrigWeatherFrameUpdate(self, dt);
 
-    if (thunderWorkNeeded) {
-        RememberGameGlobalEffectManager(self);
-    }
     if (fogWorkNeeded) {
         ForceApplyFogFromFrame(self);
         s_fogOverrideWasActive = true;
@@ -1777,9 +1659,6 @@ static void ApplyDustWindPolicy(long long self, const ResolvedEnv& env) {
 
 // Process wind state hook.
 void __fastcall Hooked_ProcessWindState(long long self) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::ProcessWindState);
-#endif
     if (g_pOrigProcessWindState) g_pOrigProcessWindState(self);
     if (!g_modEnabled.load()) return;
     const ResolvedEnv env = ResolveEnv();
@@ -1899,9 +1778,6 @@ static MinimapRegionCallerKind ClassifyMinimapRegionCaller(uintptr_t callerOffse
 }
 
 long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short areaId, unsigned short subAreaId) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::MinimapRegionLabels);
-#endif
     const auto caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
     long long result = 0;
     if (g_pOrigMinimapRegionLabels) {
@@ -1925,9 +1801,6 @@ long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short a
 }
 
 void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventContext) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::MinimapGameTimeUpdate);
-#endif
     CaptureMinimapGameTime(eventContext);
 
     if (g_pOrigMinimapGameTimeUpdate) {
@@ -2320,9 +2193,6 @@ static bool WeatherTickShouldRunService(float dt, bool forceNow, float& outServi
 
 // Hooked weather tick.
 void __fastcall Hooked_WeatherTick(long long self, float dt) {
-#if defined(CW_DEV_BUILD)
-    DevPerf_CountHook(DevPerfHookId::WeatherTick);
-#endif
     const bool resetStopNow = g_resetStopRequested.exchange(false);
     const bool modSuspendNow = g_modSuspendRequested.exchange(false);
     const bool modEnabled = g_modEnabled.load();

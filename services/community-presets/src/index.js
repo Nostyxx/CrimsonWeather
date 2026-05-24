@@ -3,8 +3,13 @@ const CURRENT_FORMAT_VERSION = 6;
 const CATALOG_KEY = "catalog/catalog.v1.json";
 const UPDATE_DOWNLOAD_PAGE_URL = "https://www.nexusmods.com/crimsondesert/mods/632?tab=files";
 const UPDATE_CHANNEL = "stable";
-const UPDATE_LATEST_VERSION = "0.6.5";
-const UPDATE_CHANGELOG = `Update 0.6.5
+const UPDATE_LATEST_VERSION = "0.6.6";
+const UPDATE_ARTIFACT_MAX_BYTES = 128 * 1024 * 1024;
+const UPDATE_CHANGELOG = `Update 0.6.6
+- Added toast notification configuration
+- Expanded community preset controls and update handling
+- Added texture browser and Time Schedule improvements
+Update 0.6.5
 - Updated for the latest game patch
 - Added a TextureSwitcher config flag
 - Fixed region detection after the latest game patch
@@ -233,6 +238,9 @@ function defaultUpdateSettings(env) {
     channel: UPDATE_CHANNEL,
     latestVersion: normalizeVersion(env.UPDATE_LATEST_VERSION || UPDATE_LATEST_VERSION),
     downloadPageUrl: sanitizeText(env.UPDATE_DOWNLOAD_PAGE_URL || UPDATE_DOWNLOAD_PAGE_URL, 300),
+    addonR2Key: sanitizeText(env.UPDATE_ADDON_R2_KEY || "", 300),
+    addonSha256: sanitizeText(env.UPDATE_ADDON_SHA256 || "", 80).toLowerCase(),
+    addonSizeBytes: Number(env.UPDATE_ADDON_SIZE_BYTES || 0) || 0,
     changelog: String(env.UPDATE_CHANGELOG || UPDATE_CHANGELOG),
     publishedAt: String(env.UPDATE_PUBLISHED_AT || ""),
     critical: String(env.UPDATE_CRITICAL || "0") === "1",
@@ -262,7 +270,10 @@ async function getUpdateSettings(env) {
     getAppSetting(env, "update.downloadPageUrl"),
     getAppSetting(env, "update.changelog"),
     getAppSetting(env, "update.publishedAt"),
-    getAppSetting(env, "update.critical")
+    getAppSetting(env, "update.critical"),
+    getAppSetting(env, "update.addonR2Key"),
+    getAppSetting(env, "update.addonSha256"),
+    getAppSetting(env, "update.addonSizeBytes")
   ]);
   if (rows.some((value) => value !== "")) settings.source = "database";
   if (rows[0]) settings.latestVersion = normalizeVersion(rows[0]);
@@ -270,6 +281,9 @@ async function getUpdateSettings(env) {
   if (rows[2]) settings.changelog = String(rows[2]);
   if (rows[3]) settings.publishedAt = String(rows[3]).slice(0, 80);
   if (rows[4]) settings.critical = rows[4] === "1" || rows[4] === "true";
+  if (rows[5]) settings.addonR2Key = sanitizeText(rows[5], 300);
+  if (rows[6]) settings.addonSha256 = sanitizeText(rows[6], 80).toLowerCase();
+  if (rows[7]) settings.addonSizeBytes = Number(rows[7]) || 0;
   return settings;
 }
 
@@ -280,6 +294,7 @@ async function updateInfo(request, env) {
   const settings = await getUpdateSettings(env);
   const latestVersion = settings.latestVersion;
   const updateAvailable = currentVersion ? compareVersions(latestVersion, currentVersion) > 0 : true;
+  const hasAddonArtifact = !!(settings.addonR2Key && /^[a-f0-9]{64}$/i.test(settings.addonSha256) && settings.addonSizeBytes > 0);
   return json({
     ok: true,
     channel,
@@ -289,10 +304,37 @@ async function updateInfo(request, env) {
     title: `Crimson Weather ${latestVersion}`,
     changelog: settings.changelog,
     downloadPageUrl: settings.downloadPageUrl,
+    addonDownloadUrl: hasAddonArtifact ? `${url.origin}/api/v1/update/artifact?version=${encodeURIComponent(latestVersion)}` : "",
+    addonSha256: hasAddonArtifact ? settings.addonSha256 : "",
+    addonSizeBytes: hasAddonArtifact ? settings.addonSizeBytes : 0,
     publishedAt: settings.publishedAt,
     critical: settings.critical
   }, 200, {
     "cache-control": "public, max-age=300"
+  });
+}
+
+async function updateArtifact(request, env) {
+  const url = new URL(request.url);
+  const settings = await getUpdateSettings(env);
+  const requestedVersion = normalizeVersion(url.searchParams.get("version") || "");
+  if (requestedVersion && requestedVersion !== settings.latestVersion) {
+    return bad("Requested update artifact version is not available.", 404);
+  }
+  if (!settings.addonR2Key || !/^[a-f0-9]{64}$/i.test(settings.addonSha256)) {
+    return bad("Update artifact is not configured.", 404);
+  }
+  const object = await env.PRESETS.get(settings.addonR2Key);
+  if (!object) return bad("Update artifact was not found.", 404);
+  return new Response(object.body, {
+    status: 200,
+    headers: {
+      "content-type": "application/octet-stream",
+      "content-disposition": `attachment; filename="CrimsonWeather-${settings.latestVersion}.addon64"`,
+      "x-cw-addon-sha256": settings.addonSha256,
+      "x-cw-addon-size-bytes": String(settings.addonSizeBytes || ""),
+      "cache-control": "no-store"
+    }
   });
 }
 
@@ -649,6 +691,21 @@ async function listSubmissions(env, status) {
   return listAdminPresets(env, new URLSearchParams({ status: status || "pending" }), "submissions");
 }
 
+function newestPendingUpdateFilter(tableName = "presets") {
+  return `NOT (
+    ${tableName}.update_of<>'' AND EXISTS (
+      SELECT 1 FROM presets newer
+      WHERE newer.update_of=${tableName}.update_of
+        AND newer.status='pending'
+        AND newer.deleted_at IS NULL
+        AND (
+          newer.created_at > ${tableName}.created_at
+          OR (newer.created_at = ${tableName}.created_at AND newer.id > ${tableName}.id)
+        )
+    )
+  )`;
+}
+
 function adminPresetWhere(searchParams, options = {}) {
   const where = [];
   const params = [];
@@ -663,6 +720,9 @@ function adminPresetWhere(searchParams, options = {}) {
   if (["pending", "approved", "rejected"].includes(status)) {
     where.push("status=?");
     params.push(status);
+    if (status === "pending") {
+      where.push(newestPendingUpdateFilter("presets"));
+    }
   }
 
   const rootOnly = searchParams.get("rootOnly") || options.rootOnly || "";
@@ -713,6 +773,11 @@ async function audit(env, request, action, id, note = "") {
     .bind(action, id || "", adminIdentity(request, env), note, nowIso()).run();
 }
 
+async function systemAudit(env, action, id, note = "") {
+  await env.DB.prepare("INSERT INTO admin_audit (action,preset_id,admin_email_or_token,note,created_at) VALUES (?,?,?,?,?)")
+    .bind(action, id || "", "system", note, nowIso()).run();
+}
+
 async function scalarCount(env, sql, ...params) {
   const row = await env.DB.prepare(sql).bind(...params).first();
   return Number(row?.count || 0);
@@ -736,7 +801,7 @@ async function adminOverview(env) {
     scalarCount(env, "SELECT COUNT(DISTINCT submitter_hash) AS count FROM presets WHERE submitter_hash<>''"),
     env.DB.prepare("SELECT COALESCE(SUM(downloads),0) AS downloads, COALESCE(SUM(likes),0) AS likes, COUNT(*) AS presets FROM presets WHERE deleted_at IS NULL").first(),
     env.DB.prepare("SELECT id,title,author_name,downloads,likes,status,updated_at FROM presets WHERE update_of='' AND deleted_at IS NULL ORDER BY downloads DESC, likes DESC, updated_at DESC LIMIT 8").all(),
-    env.DB.prepare("SELECT id,title,author_name,created_at,updated_at,submitter_hash,update_of FROM presets WHERE status='pending' AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 8").all()
+    env.DB.prepare(`SELECT id,title,author_name,created_at,updated_at,submitter_hash,update_of FROM presets WHERE status='pending' AND deleted_at IS NULL AND ${newestPendingUpdateFilter("presets")} ORDER BY created_at ASC LIMIT 8`).all()
   ]);
   return json({
     ok: true,
@@ -763,7 +828,7 @@ async function adminSaveUpdateSettings(request, env) {
   const body = await readJson(request);
   if (!body) return bad("Invalid JSON.");
   const latestVersion = normalizeVersion(body.latestVersion || body.version || "");
-  if (!/^\d+(?:\.\d+){1,3}$/.test(latestVersion)) return bad("Version must look like 0.6.5.");
+  if (!/^\d+(?:\.\d+){1,3}$/.test(latestVersion)) return bad("Version must look like 0.6.6.");
   const downloadPageUrl = String(body.downloadPageUrl || "").trim();
   if (!/^https:\/\/[^\s]+$/i.test(downloadPageUrl) || downloadPageUrl.length > 300) return bad("Download URL must be an https URL.");
   const changelog = String(body.changelog || "")
@@ -774,13 +839,49 @@ async function adminSaveUpdateSettings(request, env) {
   if (changelog.length > 50000) return bad("Changelog is too long.");
   const publishedAt = String(body.publishedAt || "").trim().slice(0, 80);
   const critical = body.critical ? "1" : "0";
+  const current = await getUpdateSettings(env);
+  const versionChanged = current.latestVersion !== latestVersion;
   await setAppSetting(env, request, "update.latestVersion", latestVersion);
   await setAppSetting(env, request, "update.downloadPageUrl", downloadPageUrl);
   await setAppSetting(env, request, "update.changelog", changelog);
   await setAppSetting(env, request, "update.publishedAt", publishedAt);
   await setAppSetting(env, request, "update.critical", critical);
+  if (versionChanged) {
+    await setAppSetting(env, request, "update.addonR2Key", "");
+    await setAppSetting(env, request, "update.addonSha256", "");
+    await setAppSetting(env, request, "update.addonSizeBytes", "0");
+  }
   await audit(env, request, "update-settings", "", `latest=${latestVersion}`);
   return adminGetUpdateSettings(env);
+}
+
+async function adminUploadUpdateArtifact(request, env) {
+  const url = new URL(request.url);
+  const version = normalizeVersion(url.searchParams.get("version") || request.headers.get("x-cw-update-version") || "");
+  if (!/^\d+(?:\.\d+){1,3}$/.test(version)) return bad("Version must look like 0.6.6.");
+  const contentLength = Number(request.headers.get("content-length") || 0);
+  if (contentLength > UPDATE_ARTIFACT_MAX_BYTES) return bad("Addon file is too large.");
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (!bytes.byteLength) return bad("Addon file is empty.");
+  if (bytes.byteLength > UPDATE_ARTIFACT_MAX_BYTES) return bad("Addon file is too large.");
+
+  const sha256 = await sha256Hex(bytes);
+  const r2Key = `updates/${version}/CrimsonWeather.addon64`;
+  await env.PRESETS.put(r2Key, bytes, {
+    httpMetadata: { contentType: "application/octet-stream" }
+  });
+  await setAppSetting(env, request, "update.latestVersion", version);
+  await setAppSetting(env, request, "update.addonR2Key", r2Key);
+  await setAppSetting(env, request, "update.addonSha256", sha256);
+  await setAppSetting(env, request, "update.addonSizeBytes", String(bytes.byteLength));
+  await audit(env, request, "update-artifact", "", `version=${version} sha256=${sha256}`);
+  return json({
+    ok: true,
+    version,
+    addonR2Key: r2Key,
+    addonSha256: sha256,
+    addonSizeBytes: bytes.byteLength
+  }, 200, { "cache-control": "no-store" });
 }
 
 async function listAdminClients(env, searchParams) {
@@ -835,22 +936,36 @@ async function approveSubmission(request, env, id) {
   const object = await env.PRESETS.get(row.r2_key);
   if (!object) return bad("Pending preset file missing.", 404);
   if (row.update_of) {
+    const newer = await env.DB.prepare(
+      `SELECT id FROM presets
+       WHERE update_of=? AND status='pending' AND deleted_at IS NULL
+         AND (created_at > ? OR (created_at = ? AND id > ?))
+       ORDER BY created_at DESC, id DESC LIMIT 1`
+    ).bind(row.update_of, row.created_at || "", row.created_at || "", row.id).first();
+    if (newer) return bad(`A newer pending update exists for this preset: ${newer.id}`, 409);
     const target = await env.DB.prepare("SELECT * FROM presets WHERE id=? AND update_of='' AND deleted_at IS NULL").bind(row.update_of).first();
     if (!target) return bad("Target preset for update was not found.", 404);
     const approvedKey = `approved/${target.id}/preset.ini`;
-    await env.PRESETS.put(approvedKey, object.body, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
+    const historyKey = `history/${target.id}/${id}/preset.ini`;
+    const bytes = await object.arrayBuffer();
+    await env.PRESETS.put(approvedKey, bytes, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
+    await env.PRESETS.put(historyKey, bytes, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
     const approvedAt = target.approved_at || nowIso();
+    const reviewedAt = nowIso();
+    const retainUntil = addDaysIso(7);
     await env.DB.prepare(
       "UPDATE presets SET title=?,author_name=?,description=?,tags_json=?,status='approved',r2_key=?,sha256=?,size_bytes=?,format_version=?,min_addon_version=?,safety_status=?,safety_summary=?,updated_at=?,approved_at=? WHERE id=?"
     ).bind(
       row.title, row.author_name, row.description, row.tags_json, approvedKey, row.sha256, row.size_bytes,
-      row.format_version, row.min_addon_version, row.safety_status, row.safety_summary, nowIso(), approvedAt, target.id
+      row.format_version, row.min_addon_version, row.safety_status, row.safety_summary, reviewedAt, approvedAt, target.id
     ).run();
-    await env.DB.prepare("DELETE FROM presets WHERE id=?").bind(id).run();
-    if (row.r2_key) await env.PRESETS.delete(row.r2_key);
+    await env.DB.prepare(
+      "UPDATE presets SET status='approved',r2_key=?,approved_at=?,updated_at=?,deleted_at=?,delete_after=?,deleted_by=?,delete_reason=? WHERE id=?"
+    ).bind(historyKey, reviewedAt, reviewedAt, reviewedAt, retainUntil, adminIdentity(request, env), `applied to ${target.id}`, id).run();
+    if (row.r2_key && row.r2_key !== historyKey) await env.PRESETS.delete(row.r2_key);
     await audit(env, request, "approve-update", target.id, id);
     await rebuildCatalog(env);
-    return json({ ok: true, id: target.id, updateId: id, status: "approved" });
+    return json({ ok: true, id: target.id, updateId: id, status: "approved", retainedUntil: retainUntil });
   }
   const approvedKey = `approved/${id}/preset.ini`;
   await env.PRESETS.put(approvedKey, object.body, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
@@ -1006,7 +1121,25 @@ async function listMyPresets(request, env) {
   const submitterHash = await submitterHashFromRequest(request, env);
   if (!submitterHash) return bad("Missing anonymous client id.", 400);
   const { results } = await env.DB.prepare(
-    "SELECT id,title,author_name,description,tags_json,status,update_of,downloads,likes,created_at,updated_at,approved_at,rejected_at FROM presets WHERE submitter_hash=? AND update_of='' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 100"
+    `SELECT
+       p.id,p.title,p.author_name,p.description,p.tags_json,p.status,p.update_of,p.downloads,p.likes,p.created_at,p.updated_at,p.approved_at,p.rejected_at,
+       u.id AS pending_update_id,
+       u.title AS pending_update_title,
+       u.updated_at AS pending_update_at
+     FROM presets p
+     LEFT JOIN presets u ON u.update_of=p.id AND u.status='pending' AND u.deleted_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM presets newer
+         WHERE newer.update_of=p.id
+           AND newer.status='pending'
+           AND newer.deleted_at IS NULL
+           AND (
+             newer.created_at > u.created_at
+             OR (newer.created_at = u.created_at AND newer.id > u.id)
+           )
+       )
+     WHERE p.submitter_hash=? AND p.update_of='' AND p.deleted_at IS NULL
+     ORDER BY p.updated_at DESC LIMIT 100`
   ).bind(submitterHash).all();
   return json({ ok: true, clientFingerprint: clientFingerprint(submitterHash), presets: results || [] });
 }
@@ -1022,6 +1155,26 @@ async function deleteMyPreset(request, env, id) {
   ).bind(deletedAt, addDaysIso(7), `client:${clientFingerprint(submitterHash)}`, "client delete", deletedAt, id).run();
   if (row.status === "approved" && !row.update_of) await rebuildCatalog(env);
   return json({ ok: true, id, deleted: true });
+}
+
+async function cancelMyPresetUpdate(request, env, id) {
+  const submitterHash = await submitterHashFromRequest(request, env);
+  if (!submitterHash) return bad("Missing anonymous client id.", 400);
+  const target = await env.DB.prepare("SELECT id FROM presets WHERE id=? AND submitter_hash=? AND update_of='' AND deleted_at IS NULL").bind(id, submitterHash).first();
+  if (!target) return bad("Preset not found for this client.", 404);
+  const row = await env.DB.prepare(
+    `SELECT * FROM presets
+     WHERE update_of=? AND submitter_hash=? AND status='pending' AND deleted_at IS NULL
+     ORDER BY created_at DESC, id DESC LIMIT 1`
+  ).bind(id, submitterHash).first();
+  if (!row) return bad("Pending update not found for this preset.", 404);
+  const cancelledAt = nowIso();
+  const retainUntil = addDaysIso(7);
+  await env.DB.prepare(
+    "UPDATE presets SET status='rejected',rejected_at=?,deleted_at=?,delete_after=?,deleted_by=?,delete_reason=?,updated_at=? WHERE id=?"
+  ).bind(cancelledAt, cancelledAt, retainUntil, `client:${clientFingerprint(submitterHash)}`, "client cancelled update", cancelledAt, row.id).run();
+  await systemAudit(env, "client-cancel-update", row.id, `target=${id}`);
+  return json({ ok: true, id, updateId: row.id, cancelled: true, retainedUntil: retainUntil });
 }
 
 async function updateMyPreset(request, env, id) {
@@ -1070,7 +1223,25 @@ async function updateMyPreset(request, env, id) {
     scan.formatVersion || 0, body.clientVersion || env.MIN_ADDON_VERSION || "0.6.3",
     submitterHash, "passed", scan.warnings.join("; "), updated, updated, id
   ).run();
+  await supersedeOlderPendingUpdates(env, id, updateId);
   return json({ ok: true, id, updateId, status: "pending", autoApproved: false, scan });
+}
+
+async function supersedeOlderPendingUpdates(env, targetId, keepId) {
+  const { results } = await env.DB.prepare(
+    "SELECT id FROM presets WHERE update_of=? AND status='pending' AND deleted_at IS NULL AND id<>?"
+  ).bind(targetId, keepId || "").all();
+  const rows = results || [];
+  if (rows.length) {
+    const supersededAt = nowIso();
+    const retainUntil = addDaysIso(7);
+    await env.DB.prepare(
+      "UPDATE presets SET status='rejected',rejected_at=?,deleted_at=?,delete_after=?,deleted_by=?,delete_reason=?,updated_at=? WHERE update_of=? AND status='pending' AND deleted_at IS NULL AND id<>?"
+    ).bind(supersededAt, supersededAt, retainUntil, "system", `superseded by ${keepId}`, supersededAt, targetId, keepId || "").run();
+    for (const row of rows) {
+      await systemAudit(env, "supersede-update", row.id, `replaced by ${keepId}`);
+    }
+  }
 }
 
 async function listWhitelist(env) {
@@ -1160,7 +1331,7 @@ function zipStore(files) {
 }
 
 async function exportPending(env) {
-  const { results } = await env.DB.prepare("SELECT * FROM presets WHERE status='pending' AND deleted_at IS NULL ORDER BY created_at ASC").all();
+  const { results } = await env.DB.prepare(`SELECT * FROM presets WHERE status='pending' AND deleted_at IS NULL AND ${newestPendingUpdateFilter("presets")} ORDER BY created_at ASC`).all();
   const rows = results || [];
   const files = [{ name: "manifest.json", data: JSON.stringify({ exportedAt: nowIso(), submissions: rows }, null, 2) }];
   for (const row of rows) {
@@ -1258,13 +1429,18 @@ const ADMIN_HTML = `<!doctype html>
     <h2>Addon Update Notice</h2>
     <p class="muted">This controls what the addon sees in the overlay header. Saving here updates /api/v1/update without changing addon code.</p>
     <div class="toolbar">
-      <label>Latest Version <input id="updateVersion" placeholder="0.6.5"></label>
+      <label>Latest Version <input id="updateVersion" placeholder="0.6.6"></label>
       <label>Published <input id="updatePublished" placeholder="2026-05-22"></label>
       <label><input id="updateCritical" type="checkbox"> Critical</label>
     </div>
     <div class="toolbar">
       <label style="flex:1">Download URL <input id="updateUrl" style="width:100%" placeholder="https://www.nexusmods.com/crimsondesert/mods/632?tab=files"></label>
     </div>
+    <div class="toolbar">
+      <label style="flex:1">Direct .addon64 <input id="updateArtifact" type="file" accept=".addon64,application/octet-stream" style="width:100%"></label>
+      <button class="secondary" data-action="uploadUpdateArtifact">Upload .addon64</button>
+    </div>
+    <div id="updateArtifactInfo" class="muted"></div>
     <textarea id="updateChangelog" spellcheck="false" style="width:100%;min-height:520px;font-family:Consolas,monospace"></textarea>
     <div class="toolbar">
       <button class="good" data-action="saveUpdate">Save Update Notice</button>
@@ -1311,8 +1487,9 @@ async function loadPresets(){const q=encodeURIComponent(qs('#presetSearch').valu
 async function loadTrash(){const q=encodeURIComponent(qs('#trashSearch').value);const d=await api('/api/v1/admin/presets?q='+q+'&deleted=trash&sort=delete_after&limit=300');qs('#trashTable').innerHTML=presetTable(d.presets||[],true);}
 function presetTable(rows,checks){return table([(checks?'<input type="checkbox" data-action="toggleAll">':''),'Preset','Client','Stats','Dates','Actions'],rows.map(function(r){const actions=[actionButton('view',r.id,'View'),r.status==='pending'&&!r.deleted_at?actionButton('approve',r.id,'Approve','good'):'',r.status==='pending'&&!r.deleted_at?actionButton('reject',r.id,'Reject'):'',!r.deleted_at?actionButton('whitelistPreset',r.id,'Whitelist'):'',!r.deleted_at?actionButton('delete',r.id,'Delete','danger'):'',r.deleted_at?actionButton('restore',r.id,'Restore','good'):'',r.deleted_at?actionButton('purge',r.id,'Purge','danger'):''].filter(Boolean).join(' ');return '<tr><td>'+(checks?selectCell(r):'')+'</td><td><b>'+esc(r.title)+'</b> '+pill(r)+(r.update_of?'<div class="muted">Update for '+esc(r.update_of)+'</div>':'')+'<div class="muted">'+esc(r.id)+' by '+esc(r.author_name||'')+'</div><div>'+esc(r.description||'')+'</div></td><td>'+client(r)+'</td><td class="nowrap">'+Number(r.downloads||0)+' downloads<br>'+Number(r.likes||0)+' likes</td><td class="muted">Created '+esc(r.created_at||'')+'<br>Updated '+esc(r.updated_at||'')+(r.deleted_at?'<br><span class="dangerText">Purge after '+esc(r.delete_after||'')+'</span>':'')+'</td><td class="nowrap">'+actions+'</td></tr>'; }),'No presets found.');}
 async function loadClients(){const q=encodeURIComponent(qs('#clientSearch').value);const sort=encodeURIComponent(qs('#clientSort').value);const d=await api('/api/v1/admin/clients?q='+q+'&sort='+sort+'&limit=300');qs('#clientTable').innerHTML=table(['Client','Whitelist','Uploads','Stats','Actions'],(d.clients||[]).map(function(c){return '<tr><td><div class="clientHash">'+esc(c.client_fingerprint)+'</div><div class="muted">'+esc(c.submitter_hash)+'</div></td><td><b>'+esc(c.label||'(unlabeled)')+'</b><div class="muted">'+(Number(c.auto_approve||0)?'Auto approve':'Not trusted')+'</div><div>'+esc(c.note||'')+'</div></td><td>Approved '+Number(c.approved_count||0)+'<br>Pending '+Number(c.pending_count||0)+'<br>Rejected '+Number(c.rejected_count||0)+'<br>Deleted '+Number(c.deleted_count||0)+'</td><td>'+Number(c.total_downloads||0)+' downloads<br>'+Number(c.total_likes||0)+' likes<br><span class="muted">'+esc(c.last_upload||'')+'</span></td><td>'+actionButton('clientUploads',c.submitter_hash,'View Uploads')+' '+actionButton('removeWhitelist',c.submitter_hash,'Remove Trust','danger')+'</td></tr>'; }),'No clients found.');}
-async function loadUpdate(){const d=await api('/api/v1/admin/update');const u=d.update||{};qs('#updateVersion').value=u.latestVersion||'';qs('#updateUrl').value=u.downloadPageUrl||'';qs('#updatePublished').value=u.publishedAt||'';qs('#updateCritical').checked=!!u.critical;qs('#updateChangelog').value=u.changelog||'';qs('#updateSource').textContent='Source: '+(u.source||'default');}
+async function loadUpdate(){const d=await api('/api/v1/admin/update');const u=d.update||{};qs('#updateVersion').value=u.latestVersion||'';qs('#updateUrl').value=u.downloadPageUrl||'';qs('#updatePublished').value=u.publishedAt||'';qs('#updateCritical').checked=!!u.critical;qs('#updateChangelog').value=u.changelog||'';qs('#updateArtifactInfo').textContent=u.addonSha256?('Direct artifact: '+Number(u.addonSizeBytes||0)+' bytes | sha256 '+u.addonSha256+' | '+(u.addonR2Key||'')):'Direct artifact: not uploaded';qs('#updateSource').textContent='Source: '+(u.source||'default');}
 async function saveUpdate(){const body={latestVersion:qs('#updateVersion').value,downloadPageUrl:qs('#updateUrl').value,publishedAt:qs('#updatePublished').value,critical:qs('#updateCritical').checked,changelog:qs('#updateChangelog').value};await api('/api/v1/admin/update',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});msg('Update notice saved');await loadUpdate();}
+async function uploadUpdateArtifact(){const file=qs('#updateArtifact').files[0];if(!file){msg('Choose a .addon64 file first.');return;}const version=qs('#updateVersion').value;if(!version){msg('Set Latest Version before uploading.');return;}const r=await fetch('/api/v1/admin/update/artifact?version='+encodeURIComponent(version),{method:'PUT',headers:{'content-type':'application/octet-stream'},body:file});if(!r.ok)throw new Error(await r.text());const d=await r.json();msg('Uploaded .addon64 '+d.version+' sha256 '+d.addonSha256);qs('#updateArtifact').value='';await loadUpdate();}
 async function loadAudit(){const d=await api('/api/v1/admin/audit?limit=200');qs('#auditTable').innerHTML=table(['Time','Action','Preset','Admin','Note'],(d.audit||[]).map(function(a){return '<tr><td>'+esc(a.created_at)+'</td><td>'+esc(a.action)+'</td><td>'+esc(a.preset_id||'')+'</td><td>'+esc(a.admin_email_or_token||'')+'</td><td>'+esc(a.note||'')+'</td></tr>'; }),'No audit entries.');}
 async function viewPreset(id){const d=await api('/api/v1/admin/presets/'+encodeURIComponent(id));qs('#detailTitle').textContent=d.preset.title+' by '+d.preset.author_name;qs('#detailMeta').textContent=d.preset.id+' | '+d.preset.status+' | '+(d.preset.client_fingerprint||'no client')+' | '+d.preset.r2_key;qs('#detailJson').textContent=JSON.stringify(d.preset,null,2);qs('#detailIni').textContent=d.iniText||'(missing file)';qs('#detailScan').textContent=JSON.stringify(d.scan,null,2);qs('#detail').hidden=false;}
 function closeDetail(){qs('#detail').hidden=true;}
@@ -1327,7 +1504,7 @@ async function removeWhitelist(hash){if(!confirm('Remove trusted client?'))retur
 async function bulk(action){const ids=selectedIds();if(!ids.length){msg('Select at least one row.');return;}if(action==='delete'&&!confirm('Move '+ids.length+' preset(s) to Trash for 7 days?'))return;if(action==='purge'&&!confirm('Permanently purge '+ids.length+' preset(s)?'))return;const body={};body[action]=ids;await api('/api/v1/admin/submissions/batch',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});msg('Batch '+action+' complete');await loadActive();}
 async function rebuild(){await api('/api/v1/admin/catalog/rebuild',{method:'POST'});msg('Catalog rebuilt');await loadDashboard();}
 async function logout(){await api('/api/v1/admin/logout',{method:'POST'});location.reload();}
-document.addEventListener('click',function(e){const el=e.target.closest('button,input[type=checkbox]');if(!el)return;const a=el.dataset.action;if(el.dataset.tab){setTab(el.dataset.tab).catch(function(err){msg(err.message);});return;}if(el.dataset.bulk){bulk(el.dataset.bulk).catch(function(err){msg(err.message);});return;}if(a==='toggleAll'){qsa('.rowcheck').forEach(function(c){c.checked=el.checked;});return;}const id=el.dataset.id;if(a==='refresh')loadActive().catch(function(err){msg(err.message);});else if(a==='loadPresets')loadPresets().catch(function(err){msg(err.message);});else if(a==='loadClients')loadClients().catch(function(err){msg(err.message);});else if(a==='loadUpdate')loadUpdate().catch(function(err){msg(err.message);});else if(a==='saveUpdate')saveUpdate().catch(function(err){msg(err.message);});else if(a==='loadTrash')loadTrash().catch(function(err){msg(err.message);});else if(a==='loadAudit')loadAudit().catch(function(err){msg(err.message);});else if(a==='view')viewPreset(id).catch(function(err){msg(err.message);});else if(a==='approve')approve(id).catch(function(err){msg(err.message);});else if(a==='reject')rejectOne(id).catch(function(err){msg(err.message);});else if(a==='delete')deleteOne(id).catch(function(err){msg(err.message);});else if(a==='restore')restoreOne(id).catch(function(err){msg(err.message);});else if(a==='purge')purgeOne(id).catch(function(err){msg(err.message);});else if(a==='whitelistPreset')whitelistPreset(id).catch(function(err){msg(err.message);});else if(a==='clientUploads'){setTab('presets').then(function(){qs('#presetSearch').value=id.slice(0,12);qs('#presetStatus').value='';return loadPresets();}).catch(function(err){msg(err.message);});}else if(a==='removeWhitelist')removeWhitelist(id).catch(function(err){msg(err.message);});else if(a==='addWhitelist')addWhitelist().catch(function(err){msg(err.message);});else if(a==='rebuild')rebuild().catch(function(err){msg(err.message);});else if(a==='logout')logout().catch(function(err){msg(err.message);});else if(a==='closeDetail')closeDetail();});
+document.addEventListener('click',function(e){const el=e.target.closest('button,input[type=checkbox]');if(!el)return;const a=el.dataset.action;if(el.dataset.tab){setTab(el.dataset.tab).catch(function(err){msg(err.message);});return;}if(el.dataset.bulk){bulk(el.dataset.bulk).catch(function(err){msg(err.message);});return;}if(a==='toggleAll'){qsa('.rowcheck').forEach(function(c){c.checked=el.checked;});return;}const id=el.dataset.id;if(a==='refresh')loadActive().catch(function(err){msg(err.message);});else if(a==='loadPresets')loadPresets().catch(function(err){msg(err.message);});else if(a==='loadClients')loadClients().catch(function(err){msg(err.message);});else if(a==='loadUpdate')loadUpdate().catch(function(err){msg(err.message);});else if(a==='saveUpdate')saveUpdate().catch(function(err){msg(err.message);});else if(a==='uploadUpdateArtifact')uploadUpdateArtifact().catch(function(err){msg(err.message);});else if(a==='loadTrash')loadTrash().catch(function(err){msg(err.message);});else if(a==='loadAudit')loadAudit().catch(function(err){msg(err.message);});else if(a==='view')viewPreset(id).catch(function(err){msg(err.message);});else if(a==='approve')approve(id).catch(function(err){msg(err.message);});else if(a==='reject')rejectOne(id).catch(function(err){msg(err.message);});else if(a==='delete')deleteOne(id).catch(function(err){msg(err.message);});else if(a==='restore')restoreOne(id).catch(function(err){msg(err.message);});else if(a==='purge')purgeOne(id).catch(function(err){msg(err.message);});else if(a==='whitelistPreset')whitelistPreset(id).catch(function(err){msg(err.message);});else if(a==='clientUploads'){setTab('presets').then(function(){qs('#presetSearch').value=id.slice(0,12);qs('#presetStatus').value='';return loadPresets();}).catch(function(err){msg(err.message);});}else if(a==='removeWhitelist')removeWhitelist(id).catch(function(err){msg(err.message);});else if(a==='addWhitelist')addWhitelist().catch(function(err){msg(err.message);});else if(a==='rebuild')rebuild().catch(function(err){msg(err.message);});else if(a==='logout')logout().catch(function(err){msg(err.message);});else if(a==='closeDetail')closeDetail();});
 setTab('dashboard').catch(function(err){msg(err.message);});
 </script></body></html>`;
 
@@ -1336,18 +1513,21 @@ export default {
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
     try {
-      if (method === "GET" && url.pathname === "/api/v1/catalog") return getCatalog(env);
+      if (method === "GET" && url.pathname === "/api/v1/catalog") return await getCatalog(env);
       if (method === "GET" && url.pathname === "/api/v1/update") return await updateInfo(request, env);
-      if (method === "POST" && url.pathname === "/api/v1/presets") return submitPreset(request, env);
-      if (method === "GET" && url.pathname === "/api/v1/me/presets") return listMyPresets(request, env);
-      let match = url.pathname.match(/^\/api\/v1\/me\/presets\/([^/]+)$/);
-      if (method === "PUT" && match) return updateMyPreset(request, env, match[1]);
-      if (method === "DELETE" && match) return deleteMyPreset(request, env, match[1]);
+      if (method === "GET" && url.pathname === "/api/v1/update/artifact") return await updateArtifact(request, env);
+      if (method === "POST" && url.pathname === "/api/v1/presets") return await submitPreset(request, env);
+      if (method === "GET" && url.pathname === "/api/v1/me/presets") return await listMyPresets(request, env);
+      let match = url.pathname.match(/^\/api\/v1\/me\/presets\/([^/]+)\/update$/);
+      if (method === "DELETE" && match) return await cancelMyPresetUpdate(request, env, match[1]);
+      match = url.pathname.match(/^\/api\/v1\/me\/presets\/([^/]+)$/);
+      if (method === "PUT" && match) return await updateMyPreset(request, env, match[1]);
+      if (method === "DELETE" && match) return await deleteMyPreset(request, env, match[1]);
       match = url.pathname.match(/^\/api\/v1\/presets\/([^/]+)\/download$/);
-      if (method === "GET" && match) return downloadPreset(request, env, match[1]);
+      if (method === "GET" && match) return await downloadPreset(request, env, match[1]);
       match = url.pathname.match(/^\/api\/v1\/presets\/([^/]+)\/like$/);
-      if (method === "POST" && match) return toggleLike(request, env, match[1]);
-      if (method === "POST" && url.pathname === "/api/v1/admin/login") return loginAdmin(request, env);
+      if (method === "POST" && match) return await toggleLike(request, env, match[1]);
+      if (method === "POST" && url.pathname === "/api/v1/admin/login") return await loginAdmin(request, env);
       if (method === "POST" && url.pathname === "/api/v1/admin/logout") return logoutAdmin();
       if (url.pathname === "/admin" && method === "GET") {
         if (!(await isAdmin(request, env))) {
@@ -1358,35 +1538,36 @@ export default {
       }
       if (url.pathname.startsWith("/api/v1/admin/")) {
         if (!(await isAdmin(request, env))) return bad("Unauthorized", 401);
-        if (method === "GET" && url.pathname === "/api/v1/admin/overview") return adminOverview(env);
-        if (method === "GET" && url.pathname === "/api/v1/admin/update") return adminGetUpdateSettings(env);
-        if (method === "PUT" && url.pathname === "/api/v1/admin/update") return adminSaveUpdateSettings(request, env);
-        if (method === "GET" && url.pathname === "/api/v1/admin/presets") return listAdminPresets(env, url.searchParams);
-        if (method === "GET" && url.pathname === "/api/v1/admin/clients") return listAdminClients(env, url.searchParams);
-        if (method === "GET" && url.pathname === "/api/v1/admin/audit") return listAdminAudit(env, url.searchParams);
-        if (method === "GET" && url.pathname === "/api/v1/admin/submissions") return listSubmissions(env, url.searchParams.get("status") || "pending");
-        if (method === "GET" && url.pathname === "/api/v1/admin/submissions/export.zip") return exportPending(env);
+        if (method === "GET" && url.pathname === "/api/v1/admin/overview") return await adminOverview(env);
+        if (method === "GET" && url.pathname === "/api/v1/admin/update") return await adminGetUpdateSettings(env);
+        if (method === "PUT" && url.pathname === "/api/v1/admin/update") return await adminSaveUpdateSettings(request, env);
+        if (method === "PUT" && url.pathname === "/api/v1/admin/update/artifact") return await adminUploadUpdateArtifact(request, env);
+        if (method === "GET" && url.pathname === "/api/v1/admin/presets") return await listAdminPresets(env, url.searchParams);
+        if (method === "GET" && url.pathname === "/api/v1/admin/clients") return await listAdminClients(env, url.searchParams);
+        if (method === "GET" && url.pathname === "/api/v1/admin/audit") return await listAdminAudit(env, url.searchParams);
+        if (method === "GET" && url.pathname === "/api/v1/admin/submissions") return await listSubmissions(env, url.searchParams.get("status") || "pending");
+        if (method === "GET" && url.pathname === "/api/v1/admin/submissions/export.zip") return await exportPending(env);
         if (method === "POST" && url.pathname === "/api/v1/admin/catalog/rebuild") return json({ ok: true, catalog: await rebuildCatalog(env) });
-        if (method === "POST" && url.pathname === "/api/v1/admin/submissions/batch") return batchSubmissions(request, env);
-        if (method === "GET" && url.pathname === "/api/v1/admin/whitelist") return listWhitelist(env);
-        if (method === "POST" && url.pathname === "/api/v1/admin/whitelist") return addWhitelist(request, env);
+        if (method === "POST" && url.pathname === "/api/v1/admin/submissions/batch") return await batchSubmissions(request, env);
+        if (method === "GET" && url.pathname === "/api/v1/admin/whitelist") return await listWhitelist(env);
+        if (method === "POST" && url.pathname === "/api/v1/admin/whitelist") return await addWhitelist(request, env);
         match = url.pathname.match(/^\/api\/v1\/admin\/whitelist\/from-preset\/([^/]+)$/);
-        if (method === "POST" && match) return whitelistFromPreset(request, env, match[1]);
+        if (method === "POST" && match) return await whitelistFromPreset(request, env, match[1]);
         match = url.pathname.match(/^\/api\/v1\/admin\/whitelist\/([a-fA-F0-9]{64})$/);
-        if (method === "DELETE" && match) return deleteWhitelist(request, env, match[1]);
+        if (method === "DELETE" && match) return await deleteWhitelist(request, env, match[1]);
         match = url.pathname.match(/^\/api\/v1\/admin\/presets\/([^/]+)\/restore$/);
-        if (method === "POST" && match) return restorePresetAdmin(request, env, match[1]);
+        if (method === "POST" && match) return await restorePresetAdmin(request, env, match[1]);
         match = url.pathname.match(/^\/api\/v1\/admin\/presets\/([^/]+)\/purge$/);
-        if (method === "POST" && match) return purgePresetAdmin(request, env, match[1]);
+        if (method === "POST" && match) return await purgePresetAdmin(request, env, match[1]);
         match = url.pathname.match(/^\/api\/v1\/admin\/presets\/([^/]+)$/);
-        if (method === "GET" && match) return adminPresetDetail(env, match[1]);
-        if (method === "DELETE" && match) return deletePresetAdmin(request, env, match[1]);
+        if (method === "GET" && match) return await adminPresetDetail(env, match[1]);
+        if (method === "DELETE" && match) return await deletePresetAdmin(request, env, match[1]);
         match = url.pathname.match(/^\/api\/v1\/admin\/presets\/([^/]+)\/ini$/);
-        if (method === "GET" && match) return adminPresetIni(env, match[1]);
+        if (method === "GET" && match) return await adminPresetIni(env, match[1]);
         match = url.pathname.match(/^\/api\/v1\/admin\/submissions\/([^/]+)\/approve$/);
-        if (method === "POST" && match) return approveSubmission(request, env, match[1]);
+        if (method === "POST" && match) return await approveSubmission(request, env, match[1]);
         match = url.pathname.match(/^\/api\/v1\/admin\/submissions\/([^/]+)\/reject$/);
-        if (method === "POST" && match) return rejectSubmission(request, env, match[1]);
+        if (method === "POST" && match) return await rejectSubmission(request, env, match[1]);
       }
       return bad("Not found.", 404);
     } catch (error) {

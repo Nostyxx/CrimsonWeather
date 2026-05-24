@@ -21,18 +21,6 @@ std::wstring Utf8ToWide(const std::string& value) {
     return out;
 }
 
-std::string WideToUtf8(const wchar_t* value) {
-    if (!value || !value[0]) {
-        return std::string();
-    }
-    const int needed = WideCharToMultiByte(CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<size_t>(std::max(0, needed - 1)), '\0');
-    if (needed > 1) {
-        WideCharToMultiByte(CP_UTF8, 0, value, -1, out.data(), needed, nullptr, nullptr);
-    }
-    return out;
-}
-
 std::string LastWinHttpError(const char* prefix) {
     char message[128] = {};
     sprintf_s(message, "%s failed: %lu", prefix ? prefix : "WinHTTP", GetLastError());
@@ -79,7 +67,7 @@ bool CommunityHttp_Request(
         outResponse.error = LastWinHttpError("WinHttpOpen");
         return false;
     }
-    WinHttpSetTimeouts(session, 5000, 5000, 10000, 15000);
+    WinHttpSetTimeouts(session, 5000, 5000, 30000, 120000);
 
     HINTERNET connect = WinHttpConnect(session, host.c_str(), parts.nPort, 0);
     if (!connect) {
