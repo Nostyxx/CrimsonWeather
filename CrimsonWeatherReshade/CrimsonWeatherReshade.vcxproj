@@ -129,6 +129,7 @@
     <ClInclude Include="include\community_service.h" />
     <ClInclude Include="include\community_ui.h" />
     <ClInclude Include="include\dev_mcp_server.h" />
+    <ClInclude Include="include\renodx_bridge.h" />
     <ClInclude Include="include\update_service.h" />
     <ClInclude Include="include\sky_image_loader.h" />
     <ClInclude Include="include\sky_texture_override.h" />
@@ -152,6 +153,7 @@
     <ClCompile Include="dev\dev_mcp_server.cpp" Condition="'$(CWBuildFlavor)'=='Dev'" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="game\aob_scan.cpp" />
+    <ClCompile Include="game\renodx_bridge.cpp" />
     <ClCompile Include="game\sky_image_loader.cpp" />
     <ClCompile Include="game\sky_texture_override.cpp" />
     <ClCompile Include="game\weather_hooks.cpp" />
@@ -173,6 +175,7 @@
     <ClCompile Include="ui\overlay_favorites.cpp" />
     <ClCompile Include="ui\overlay_general.cpp" />
     <ClCompile Include="ui\overlay_presets.cpp" />
+    <ClCompile Include="ui\overlay_renodx.cpp" />
     <ClCompile Include="ui\overlay_status.cpp" />
     <ClCompile Include="ui\overlay_weather.cpp" />
     <ClCompile Include="ui\overlay_widgets.cpp" />

@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_BASE_VERSION "0.6.7"
+#define MOD_BASE_VERSION "0.6.8"
 #if defined(CW_DEV_BUILD)
 #define MOD_VERSION MOD_BASE_VERSION " DEV"
 #else

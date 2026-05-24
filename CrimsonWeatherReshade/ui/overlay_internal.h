@@ -83,6 +83,7 @@ void DrawControlById(
     bool* editChanged = nullptr);
 void DrawTimeControls();
 void DrawGeneralControls();
+void DrawRenoDxInteractionControls();
 
 bool IsSliderTextEditActive(const char* id);
 bool ConsumeSliderTextEditFocusRequest();

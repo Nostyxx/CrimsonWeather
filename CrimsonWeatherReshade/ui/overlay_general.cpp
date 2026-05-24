@@ -533,6 +533,7 @@ void DrawGeneralControls() {
     }
     DrawTimeControls();
     DrawWindControls();
+    DrawRenoDxInteractionControls();
 }
 
 void DrawGeneralTab() {

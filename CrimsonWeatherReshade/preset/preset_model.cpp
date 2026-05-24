@@ -178,7 +178,11 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         a.noFog == b.noFog &&
         FloatNearlyEqual(a.wind, b.wind) &&
         a.noWind == b.noWind &&
-        EnabledFloatNearlyEqual(a.puddleScaleEnabled, a.puddleScale, b.puddleScaleEnabled, b.puddleScale);
+        EnabledFloatNearlyEqual(a.puddleScaleEnabled, a.puddleScale, b.puddleScaleEnabled, b.puddleScale) &&
+        a.renodxAuroraRegionMaskEnabled == b.renodxAuroraRegionMaskEnabled &&
+        (!a.renodxAuroraRegionMaskEnabled ||
+            (a.renodxAuroraGateEnabled == b.renodxAuroraGateEnabled &&
+                (a.renodxAuroraRegionMask & 126u) == (b.renodxAuroraRegionMask & 126u)));
 }
 
 bool PresetMaskAny(const WeatherPresetMask& mask) {
@@ -836,6 +840,9 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.noWind = ChoosePresetBool(a.noWind, b.noWind, t);
     out.puddleScaleEnabled = a.puddleScaleEnabled || b.puddleScaleEnabled;
     out.puddleScale = LerpPresetFloat(a.puddleScale, b.puddleScale, t);
+    out.renodxAuroraRegionMaskEnabled = ChoosePresetBool(a.renodxAuroraRegionMaskEnabled, b.renodxAuroraRegionMaskEnabled, t);
+    out.renodxAuroraGateEnabled = ChoosePresetBool(a.renodxAuroraGateEnabled, b.renodxAuroraGateEnabled, t);
+    out.renodxAuroraRegionMask = t >= 0.5f ? b.renodxAuroraRegionMask : a.renodxAuroraRegionMask;
     return out;
 }
 

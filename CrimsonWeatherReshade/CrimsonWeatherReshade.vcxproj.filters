@@ -42,6 +42,9 @@
     <ClInclude Include="include\community_ui.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\renodx_bridge.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\update_service.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -69,6 +72,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="game\sky_image_loader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="game\renodx_bridge.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="dev\dev_mcp_server.cpp">
@@ -105,6 +111,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ui\overlay_presets.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\overlay_renodx.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ui\overlay_status.cpp">

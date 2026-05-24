@@ -41,6 +41,18 @@ bool TryParseFloat(const std::string& text, float& outValue) {
     return true;
 }
 
+bool TryParseUInt32(const std::string& text, uint32_t& outValue) {
+    std::string trimmed = TrimCopy(text);
+    if (trimmed.empty()) return false;
+    char* endPtr = nullptr;
+    const unsigned long parsed = strtoul(trimmed.c_str(), &endPtr, 0);
+    if (endPtr == trimmed.c_str() || (endPtr && *endPtr != '\0')) {
+        return false;
+    }
+    outValue = static_cast<uint32_t>(parsed);
+    return true;
+}
+
 struct PresetParseState {
     WeatherPresetData data{};
     WeatherPresetMask mask{};
@@ -88,6 +100,8 @@ struct PresetParseState {
     bool heightFogBaselineEnabledSeen = false;
     bool heightFogFalloffEnabledSeen = false;
     bool puddleScaleEnabledSeen = false;
+    bool renodxAuroraRegionMaskSeen = false;
+    bool renodxAuroraGateEnabledSeen = false;
     bool sawLegacyAlias = false;
 };
 
@@ -213,6 +227,7 @@ bool ParseSnowPresetKeyValue(const std::string& key, const std::string& value, P
 void ParsePresetKeyValue(const std::string& key, const std::string& value, PresetParseState& state) {
     bool boolValue = false;
     float floatValue = 0.0f;
+    uint32_t uintValue = 0;
     WeatherPresetData& data = state.data;
     MarkPresetMaskForKey(key, state.mask);
 
@@ -562,6 +577,19 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "PuddleScale")) {
         if (TryParseFloat(value, floatValue)) data.puddleScale = floatValue;
+    } else if (KeyEquals(key, "AuroraEnabled") || KeyEquals(key, "AuroraGateEnabled") || KeyEquals(key, "RenoDxAuroraEnabled")) {
+        if (TryParseBool(value, boolValue)) {
+            data.renodxAuroraRegionMaskEnabled = true;
+            data.renodxAuroraGateEnabled = boolValue;
+            state.renodxAuroraRegionMaskSeen = true;
+            state.renodxAuroraGateEnabledSeen = true;
+        }
+    } else if (KeyEquals(key, "AuroraRegionMask") || KeyEquals(key, "RenoDxAuroraRegionMask") || KeyEquals(key, "RenoDXAuroraRegionMask")) {
+        if (TryParseUInt32(value, uintValue)) {
+            data.renodxAuroraRegionMaskEnabled = true;
+            data.renodxAuroraRegionMask = uintValue & 126u;
+            state.renodxAuroraRegionMaskSeen = true;
+        }
     }
 }
 
@@ -678,6 +706,11 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path, bool exten
     data.cloudDensity = ClampPresetCloudDensity(extendedSliderRange, data.cloudDensity);
     data.midClouds = ClampPresetCloudWide(extendedSliderRange, data.midClouds);
     data.highClouds = ClampPresetCloudWide(extendedSliderRange, data.highClouds);
+    data.renodxAuroraRegionMaskEnabled = state.renodxAuroraRegionMaskSeen;
+    if (data.renodxAuroraRegionMaskEnabled && !state.renodxAuroraGateEnabledSeen) {
+        data.renodxAuroraGateEnabled = true;
+    }
+    data.renodxAuroraRegionMask &= 126u;
 
     if (state.sawLegacyAlias) {
         Log("[preset] loaded legacy cloud aliases from %s\n", path);
@@ -863,6 +896,12 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data, bool extende
     AppendPresetKeyValue(out, "NoFog", FormatPresetBool(data.noFog));
     AppendPresetKeyValue(out, "Wind", FormatPresetFloat(ClampPresetWind(extendedSliderRange, data.wind)));
     AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
+    if (data.renodxAuroraRegionMaskEnabled) {
+        out += '\n';
+        AppendPresetLine(out, "[RenoDX]");
+        AppendPresetKeyValue(out, "AuroraEnabled", FormatPresetBool(data.renodxAuroraGateEnabled));
+        AppendPresetKeyValue(out, "AuroraRegionMask", std::to_string(data.renodxAuroraRegionMask & 126u));
+    }
 
     return out;
 }

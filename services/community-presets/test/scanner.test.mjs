@@ -23,6 +23,15 @@ test("accepts a canonical Crimson Weather preset", () => {
   assert.equal(scan.formatVersion, 6);
 });
 
+test("accepts RenoDX aurora gate preset fields", () => {
+  const scan = scanPresetIni(`${validPreset}
+[RenoDX]
+AuroraEnabled=1
+AuroraRegionMask=126
+`);
+  assert.equal(scan.ok, true);
+});
+
 test("rejects missing header", () => {
   const scan = scanPresetIni(`[Weather]\nRain=1\n`);
   assert.equal(scan.ok, false);

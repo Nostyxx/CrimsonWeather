@@ -1,15 +1,16 @@
 #include "pch.h"
 
+#include <imgui.h>
+#include <reshade.hpp>
+
 #include "overlay_bridge.h"
 #include "community_ui.h"
+#include "renodx_bridge.h"
 #include "sky_texture_override.h"
 #include "preset_service.h"
 #include "runtime_shared.h"
 #include "update_service.h"
 #include "overlay_internal.h"
-
-#include <imgui.h>
-#include <reshade.hpp>
 
 #include <d3d12.h>
 #include <cmath>
@@ -394,6 +395,21 @@ static void OnReShadePresent(reshade::api::command_queue*,
                              uint32_t,
                              const reshade::api::rect*) {
     SkyTextureOnPresent();
+    RenoDxBridgeOnPresent();
+}
+
+static void OnReShadeBeginEffects(reshade::api::effect_runtime* runtime,
+                                  reshade::api::command_list* cmdList,
+                                  reshade::api::resource_view rtv,
+                                  reshade::api::resource_view rtvSrgb) {
+    RenoDxBridgeOnBeginEffects(runtime, cmdList, rtv, rtvSrgb);
+}
+
+static bool OnReShadeSetUniformValue(reshade::api::effect_runtime* runtime,
+                                     reshade::api::effect_uniform_variable variable,
+                                     const void* data,
+                                     size_t size) {
+    return RenoDxBridgeOnSetUniformValue(runtime, variable, data, size);
 }
 
 } // namespace
@@ -407,6 +423,8 @@ bool InitializeOverlayBridge(HMODULE module) {
 
     reshade::register_event<reshade::addon_event::init_device>(&OnReShadeInitDevice);
     reshade::register_event<reshade::addon_event::present>(&OnReShadePresent);
+    reshade::register_event<reshade::addon_event::reshade_begin_effects>(&OnReShadeBeginEffects);
+    reshade::register_event<reshade::addon_event::reshade_set_uniform_value>(&OnReShadeSetUniformValue);
 
     g_overlayModule = module;
     g_overlayRegistered = true;
@@ -420,6 +438,8 @@ void ShutdownOverlayBridge() {
 
     reshade::unregister_event<reshade::addon_event::present>(&OnReShadePresent);
     reshade::unregister_event<reshade::addon_event::init_device>(&OnReShadeInitDevice);
+    reshade::unregister_event<reshade::addon_event::reshade_begin_effects>(&OnReShadeBeginEffects);
+    reshade::unregister_event<reshade::addon_event::reshade_set_uniform_value>(&OnReShadeSetUniformValue);
 
     reshade::unregister_overlay(MOD_NAME, &DrawOverlay);
     reshade::unregister_addon(g_overlayModule);

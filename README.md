@@ -2,7 +2,7 @@
 
 ReShade `.addon64` weather-control mod for `CrimsonDesert.exe`.
 
-Current stable release: `0.6.7`.
+Current stable release: `0.6.8`.
 
 The current main branch is the ReShade addon rewrite. The older DXGI/ImGui build is kept on the `legacy` branch.
 
@@ -57,7 +57,7 @@ Tabs and controls:
 - **Presets**: load/save local and downloaded community presets, save-as, reset sliders, edit global or per-region preset scopes, and configure the optional Time Schedule
 - **Community**: browse, search, sort, download, like/unlike, submit, update, and delete community preset uploads
 - **Favorites**: build custom sections that reuse live controls from the other tabs, with editor-driven add/remove and ordering
-- **General**: visual time override, progress visual time, Match In-Game Clock, advance interval, wind, and no wind
+- **General**: visual time override, progress visual time, Match In-Game Clock, advance interval, wind, no wind, and optional RenoDX aurora region gating
 - **Weather**: force clear sky, rain, dust, snow, thunder, no rain, no dust, no snow, snow accumulation boundaries, and snow coverage threshold
 - **Atmosphere**: Rayleigh scattering color, Rayleigh height, ozone ratio, cloud amount, cloud height, cloud density, mid clouds, high clouds, cloud alpha, cloud fade range, cloud detail ratio, cloud phase, cloud scattering, cloud flow, cloud visible range, fog, no fog, volume fog scatter color, Mie scatter color, aerosol height, aerosol density, aerosol absorption, fog height baseline, and fog height falloff
 - **Celestial**: static/animated moon texture, Milky Way texture, no-moon/no-Milky-Way options, night sky tilt, night sky phase, sun light intensity, sun size, sun yaw/pitch lock, moon light intensity, moon size, moon yaw/pitch lock, and moon rotation
@@ -85,6 +85,8 @@ Animated moon texture packs use the same Moon Texture browser as static moon tex
 Animated moon manifest files support JSONC-style comments, frame durations, loop modes, start frame, and random start. Supported loop modes are `forward`, `pingpong`, `once`, and `hold`.
 
 Static Moon and Milky Way replacements support `.png`, legacy DDS, and DX10 DDS textures. DDS is recommended for finished texture packs.
+
+When `renodx-crimsondesert.addon64` is detected next to the Crimson Weather addon, the General tab shows optional RenoDX interaction controls. Allowed Aurora Regions is disabled by default, can gate RenoDX aurora brightness by region, and is saved only in presets that include it.
 
 Region overrides are saved only for values that differ from the global preset. The Status tab shows which values are inherited and which are region-specific.
 

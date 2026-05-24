@@ -3,9 +3,12 @@ const CURRENT_FORMAT_VERSION = 6;
 const CATALOG_KEY = "catalog/catalog.v1.json";
 const UPDATE_DOWNLOAD_PAGE_URL = "https://www.nexusmods.com/crimsondesert/mods/632?tab=files";
 const UPDATE_CHANNEL = "stable";
-const UPDATE_LATEST_VERSION = "0.6.6";
+const UPDATE_LATEST_VERSION = "0.6.8";
 const UPDATE_ARTIFACT_MAX_BYTES = 128 * 1024 * 1024;
-const UPDATE_CHANGELOG = `Update 0.6.6
+const UPDATE_CHANGELOG = `Update 0.6.8
+- Added RenoDX aurora region gating support
+- Added community preset upload validation for RenoDX aurora preset fields
+Update 0.6.6
 - Added toast notification configuration
 - Expanded community preset controls and update handling
 - Added texture browser and Time Schedule improvements
@@ -159,7 +162,7 @@ Update 0.1.5
 - Fixed Fog slider
 - Added Force Clear sky box`;
 const ALLOWED_SECTIONS = new Set([
-  "Meta", "Weather", "Time", "Cloud", "Experiment", "Celestial", "Atmosphere"
+  "Meta", "Weather", "Time", "Cloud", "Experiment", "Celestial", "Atmosphere", "RenoDX"
 ]);
 const ALLOWED_KEYS = new Set([
   "FormatVersion", "Enabled",
@@ -190,7 +193,9 @@ const ALLOWED_KEYS = new Set([
   "MieScatterColorG", "MieScatterColorB", "MieScatterColorA", "MieScaleHeightEnabled",
   "MieScaleHeight", "MieAerosolDensityEnabled", "MieAerosolDensity",
   "MieAerosolAbsorptionEnabled", "MieAerosolAbsorption", "HeightFogBaselineEnabled",
-  "HeightFogBaseline", "HeightFogFalloffEnabled", "HeightFogFalloff", "NoFog", "Wind", "NoWind"
+  "HeightFogBaseline", "HeightFogFalloffEnabled", "HeightFogFalloff", "NoFog", "Wind", "NoWind",
+  "AuroraEnabled", "AuroraGateEnabled", "RenoDxAuroraEnabled",
+  "AuroraRegionMask", "RenoDxAuroraRegionMask", "RenoDXAuroraRegionMask"
 ]);
 const STRING_KEYS = new Set(["MoonTexture", "MilkywayTexture"]);
 

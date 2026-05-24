@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "runtime_shared.h"
 #include "preset_service.h"
+#include "renodx_bridge.h"
 #include "sky_texture_override.h"
 #include "preset_model.h"
 #include "preset_format.h"
@@ -487,6 +488,9 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.noWind = g_noWind.load();
     data.puddleScaleEnabled = g_oCloudThk.active.load();
     data.puddleScale = data.puddleScaleEnabled ? ClampPresetPuddleScale(extendedSliderRange, g_oCloudThk.value.load()) : 0.0f;
+    data.renodxAuroraRegionMaskEnabled = RenoDxBridgeIsAddonPresent();
+    data.renodxAuroraGateEnabled = RenoDxBridgeIsAuroraGateEnabled();
+    data.renodxAuroraRegionMask = RenoDxBridgeGetAuroraRegionMask();
     return data;
 }
 
@@ -613,6 +617,9 @@ void ApplyPresetData(const WeatherPresetData& data) {
     g_windMul.store(wind);
     g_noWind.store(data.noWind);
     ApplyEnabledOverride(g_oCloudThk, data.puddleScaleEnabled, ClampPresetPuddleScale(extendedSliderRange, data.puddleScale), 0.0f, 5.0f);
+    if (data.renodxAuroraRegionMaskEnabled) {
+        RenoDxBridgeApplyPresetAuroraSettings(data.renodxAuroraGateEnabled, data.renodxAuroraRegionMask);
+    }
 }
 
 bool SanitizeMissingMoonTexture(WeatherPresetData& data, const char* scopeLabel) {
@@ -991,6 +998,21 @@ void Preset_SetEditRegionDataWithOverrides(const WeatherPresetData& data, const 
     if (affectsRuntime) {
         ApplyDetectedRegionFromPackage(g_editDraftPackage);
     }
+    MarkAutoSavePending();
+}
+
+void Preset_SetRenoDxAuroraSettings(bool enabled, uint32_t mask) {
+    EnsureEditDraft();
+    if (!HasSelectedPresetIndexInternal()) {
+        g_newPresetDraftActive = true;
+    }
+    TimeSchedulePinCurrentEntryForUserEdit();
+    g_editDraftPackage.global.renodxAuroraRegionMaskEnabled = RenoDxBridgeIsAddonPresent();
+    g_editDraftPackage.global.renodxAuroraGateEnabled = enabled;
+    g_editDraftPackage.global.renodxAuroraRegionMask = mask & 126u;
+    Log("[preset] edit-global RenoDX aurora enabled=%u mask=0x%02X\n",
+        enabled ? 1u : 0u,
+        g_editDraftPackage.global.renodxAuroraRegionMask);
     MarkAutoSavePending();
 }
 

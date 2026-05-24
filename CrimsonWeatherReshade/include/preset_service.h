@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <cstdint>
 #include <vector>
 
 struct WeatherPresetColor {
@@ -115,6 +116,9 @@ struct WeatherPresetData {
     bool noWind = false;
     bool puddleScaleEnabled = false;
     float puddleScale = 0.0f;
+    bool renodxAuroraRegionMaskEnabled = false;
+    bool renodxAuroraGateEnabled = false;
+    uint32_t renodxAuroraRegionMask = 126;
 };
 
 constexpr int kPresetRegionGlobal = 0;
@@ -257,6 +261,7 @@ WeatherPresetData Preset_GetEditRegionData();
 WeatherPresetSourceMask Preset_GetEditRegionOverrideMask();
 void Preset_SetEditRegionData(const WeatherPresetData& data);
 void Preset_SetEditRegionDataWithOverrides(const WeatherPresetData& data, const WeatherPresetSourceMask& mask);
+void Preset_SetRenoDxAuroraSettings(bool enabled, uint32_t mask);
 void Preset_ResetEditRegion();
 void Preset_SelectNew();
 bool Preset_SelectIndex(int index);
