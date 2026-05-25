@@ -293,36 +293,47 @@ void ShiftScheduleTimeText(char* text, size_t textSize, int deltaMinutes) {
     strcpy_s(text, textSize, PresetSchedule_FormatAmPm(minute).c_str());
 }
 
-void DrawScheduleTimeInput(const char* label, char* text, size_t textSize) {
-    ImGui::PushID(label);
-    ImGui::SetNextItemWidth(128.0f);
-    ImGui::InputText(label, text, textSize);
-    ImGui::SameLine();
-    if (ImGui::Button("-1h")) {
+void DrawScheduleTimeInput(const char* label, const char* id, char* text, size_t textSize, float width) {
+    ImGui::PushID(id);
+    ImGui::TextDisabled("%s", label);
+    ImGui::SetNextItemWidth(width);
+    ImGui::InputText("##time", text, textSize);
+    const float buttonWidth = (width - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    if (ImGui::Button("- 1 hour", ImVec2(buttonWidth, 0.0f))) {
         ShiftScheduleTimeText(text, textSize, -60);
     }
     ImGui::SameLine();
-    if (ImGui::Button("+1h")) {
+    if (ImGui::Button("+ 1 hour", ImVec2(buttonWidth, 0.0f))) {
         ShiftScheduleTimeText(text, textSize, 60);
     }
     ImGui::PopID();
 }
 
 void DrawTimeScheduleEntryPopup() {
+    ImGui::SetNextWindowBgAlpha(0.96f);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(520.0f, 0.0f), ImVec2(520.0f, 1000.0f));
     if (!ImGui::BeginPopupModal("Time Schedule Entry", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         return;
     }
 
-    ImGui::TextUnformatted(g_scheduleEditingIndex >= 0 ? "Edit schedule entry" : "New schedule entry");
+    const bool editing = g_scheduleEditingIndex >= 0;
+    ImGui::TextUnformatted(editing ? "Edit scheduled preset" : "Add scheduled preset");
+    ImGui::TextDisabled("Choose when a preset applies and how smoothly it transitions in.");
     ImGui::Separator();
 
-    DrawScheduleTimeInput("Start time", g_scheduleStartText, IM_ARRAYSIZE(g_scheduleStartText));
-    DrawScheduleTimeInput("End time", g_scheduleEndText, IM_ARRAYSIZE(g_scheduleEndText));
+    ImGui::SeparatorText("Time Range");
+    const float fieldWidth = ImGui::GetContentRegionAvail().x;
+    DrawScheduleTimeInput("START TIME", "start", g_scheduleStartText, IM_ARRAYSIZE(g_scheduleStartText), fieldWidth);
+    DrawScheduleTimeInput("END TIME", "end", g_scheduleEndText, IM_ARRAYSIZE(g_scheduleEndText), fieldWidth);
 
+    ImGui::Spacing();
+    ImGui::SeparatorText("Preset");
     const char* currentPreset = (g_schedulePresetIndex >= 0 && g_schedulePresetIndex < Preset_GetCount())
         ? Preset_GetDisplayName(g_schedulePresetIndex)
         : "Select preset...";
-    if (ImGui::BeginCombo("Preset to apply", currentPreset)) {
+    ImGui::TextDisabled("PRESET TO APPLY");
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##schedule_preset", currentPreset)) {
         for (int i = 0; i < Preset_GetCount(); ++i) {
             const bool selected = i == g_schedulePresetIndex;
             if (ImGui::Selectable(Preset_GetDisplayName(i), selected)) {
@@ -335,10 +346,15 @@ void DrawTimeScheduleEntryPopup() {
         ImGui::EndCombo();
     }
 
-    ImGui::SetNextItemWidth(88.0f);
-    ImGui::InputInt("Blend minutes", &g_scheduleBlendMinutes);
-    ImGui::SetNextItemWidth(88.0f);
-    ImGui::InputInt("Blend seconds", &g_scheduleBlendSeconds);
+    ImGui::Spacing();
+    ImGui::SeparatorText("Transition");
+    ImGui::TextDisabled("Blend into this preset over:");
+    ImGui::TextDisabled("MINUTES");
+    ImGui::SetNextItemWidth(fieldWidth);
+    ImGui::InputInt("##blend_minutes", &g_scheduleBlendMinutes, 0, 0);
+    ImGui::TextDisabled("SECONDS");
+    ImGui::SetNextItemWidth(fieldWidth);
+    ImGui::InputInt("##blend_seconds", &g_scheduleBlendSeconds, 0, 0);
 
     int startMinute = 0;
     int endMinute = 0;
@@ -356,24 +372,45 @@ void DrawTimeScheduleEntryPopup() {
     } else if (!presetOk) {
         ImGui::TextColored(ImVec4(1.0f, 0.58f, 0.36f, 1.0f), "Select an existing preset file.");
     } else {
-        ImGui::TextDisabled("New entry wins: overlapping entries will be trimmed automatically.");
+        const char* rangeNote = startMinute > endMinute ? "This entry crosses midnight. " : "";
+        ImGui::TextDisabled("%sOverlapping entries are trimmed automatically.", rangeNote);
     }
 
     ImGui::Spacing();
+    ImGui::Separator();
+    if (editing) {
+        if (ImGui::Button("Delete Entry", ImVec2(112.0f, 0.0f))) {
+            if (PresetSchedule_DeleteEntry(g_scheduleEditingIndex)) {
+                GUI_SetStatus("Time schedule entry deleted");
+                ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+                return;
+            }
+            GUI_SetStatus("Time schedule entry delete failed");
+        }
+        ImGui::SameLine();
+    }
+    const float actionWidth = 208.0f;
+    const float actionX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - actionWidth;
+    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), actionX));
+    if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
     if (!canSave) {
         ImGui::BeginDisabled();
     }
-    if (ImGui::Button(g_scheduleEditingIndex >= 0 ? "Save" : "Add entry", ImVec2(108.0f, 0.0f))) {
+    if (ImGui::Button(editing ? "Save" : "Add", ImVec2(100.0f, 0.0f))) {
         PresetScheduleEntry entry{};
         entry.startMinute = startMinute;
         entry.endMinute = endMinute;
         entry.presetFile = Preset_GetFileName(g_schedulePresetIndex);
         entry.blendSeconds = g_scheduleBlendMinutes * 60 + g_scheduleBlendSeconds;
-        const bool saved = g_scheduleEditingIndex >= 0
+        const bool saved = editing
             ? PresetSchedule_UpdateEntry(g_scheduleEditingIndex, entry)
             : PresetSchedule_AddEntry(entry);
         if (saved) {
-            GUI_SetStatus(g_scheduleEditingIndex >= 0 ? "Time schedule entry updated" : "Time schedule entry added");
+            GUI_SetStatus(editing ? "Time schedule entry updated" : "Time schedule entry added");
             ImGui::CloseCurrentPopup();
         } else {
             GUI_SetStatus("Time schedule entry failed");
@@ -382,95 +419,107 @@ void DrawTimeScheduleEntryPopup() {
     if (!canSave) {
         ImGui::EndDisabled();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(88.0f, 0.0f))) {
-        ImGui::CloseCurrentPopup();
-    }
 
     ImGui::EndPopup();
 }
 
 void DrawTimeScheduleSection() {
     ImGui::Spacing();
-    ImGui::SeparatorText("Time Schedule");
+    if (ImGui::CollapsingHeader("Time Schedule##time_schedule_section")) {
 
-    bool enabled = PresetSchedule_IsEnabled();
-    if (ImGui::Checkbox("Enable time schedule", &enabled)) {
-        PresetSchedule_SetEnabled(enabled);
-    }
-    const float addButtonWidth = ImGui::CalcTextSize("+ add").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-    ImGui::SameLine();
-    const float addButtonX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - addButtonWidth;
-    ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), addButtonX));
-    if (Preset_GetCount() <= 0) {
-        ImGui::BeginDisabled();
-    }
-    if (ImGui::Button("+ add")) {
-        OpenTimeScheduleEntryPopup(nullptr);
-    }
-    if (Preset_GetCount() <= 0) {
-        ImGui::EndDisabled();
-    }
-
-    int timeSource = PresetSchedule_GetTimeSource();
-    if (ImGui::RadioButton("Use visual time override time", timeSource == 0)) {
-        PresetSchedule_SetTimeSource(0);
-        timeSource = 0;
-    }
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Use in-game time", timeSource == 1)) {
-        PresetSchedule_SetTimeSource(1);
-    }
-
-    const std::vector<PresetScheduleRow> rows = PresetSchedule_BuildRows();
-    const PresetScheduleStatus scheduleStatus = PresetSchedule_GetStatus();
-    DrawTimeScheduleTimeline(rows, scheduleStatus);
-    if (rows.empty()) {
-        ImGui::TextDisabled("No schedule rows");
-    } else if (ImGui::BeginTable("TimeScheduleRows", 4, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed, 158.0f);
-        ImGui::TableSetupColumn("Preset");
-        ImGui::TableSetupColumn("Edit", ImGuiTableColumnFlags_WidthFixed, 58.0f);
-        ImGui::TableSetupColumn("Delete", ImGuiTableColumnFlags_WidthFixed, 64.0f);
-
-        for (const PresetScheduleRow& row : rows) {
+        bool enabled = PresetSchedule_IsEnabled();
+        const float addButtonWidth = 30.0f;
+        if (ImGui::BeginTable("TimeScheduleHeader", 2, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("settings", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("add", ImGuiTableColumnFlags_WidthFixed, addButtonWidth);
             ImGui::TableNextRow();
-            if (scheduleStatus.enabled && !row.gap && row.entryIndex == scheduleStatus.activeEntryIndex) {
-                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImVec4(0.22f, 0.34f, 0.44f, 0.65f)));
-            }
             ImGui::TableSetColumnIndex(0);
-            const std::string rangeText = PresetSchedule_FormatAmPm(row.startMinute) + " -> " + PresetSchedule_FormatAmPm(row.endMinute);
-            ImGui::TextUnformatted(rangeText.c_str());
-
+            if (ImGui::Checkbox("Enable time schedule", &enabled)) {
+                PresetSchedule_SetEnabled(enabled);
+            }
             ImGui::TableSetColumnIndex(1);
-            if (row.gap) {
-                ImGui::TextDisabled("gap - no preset");
-            } else if (row.presetMissing) {
-                const std::string missing = row.displayName + " (missing)";
-                ImGui::TextColored(ImVec4(1.0f, 0.38f, 0.34f, 1.0f), "%s", missing.c_str());
-            } else {
-                ImGui::TextUnformatted(row.displayName.c_str());
+            if (Preset_GetCount() <= 0) {
+                ImGui::BeginDisabled();
             }
-
-            ImGui::TableSetColumnIndex(2);
-            ImGui::PushID(row.gap ? -1000 - row.startMinute : row.entryIndex);
-            if (row.gap) {
-                if (row.startMinute != row.endMinute && Preset_GetCount() > 0 && ImGui::Button("Set")) {
-                    OpenTimeScheduleEntryPopup(&row);
-                }
-            } else if (ImGui::Button("Edit")) {
-                OpenTimeScheduleEntryPopup(&row);
+            if (ImGui::Button("+##add_schedule_entry", ImVec2(addButtonWidth, 0.0f))) {
+                OpenTimeScheduleEntryPopup(nullptr);
             }
-
-            ImGui::TableSetColumnIndex(3);
-            if (!row.gap) {
-                if (ImGui::Button("Delete")) {
-                    PresetSchedule_DeleteEntry(row.entryIndex);
-                }
+            if (Preset_GetCount() <= 0) {
+                ImGui::EndDisabled();
             }
-            ImGui::PopID();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip(Preset_GetCount() > 0 ? "Add scheduled preset" : "Create a preset before adding a schedule entry");
+            }
+            ImGui::EndTable();
         }
-        ImGui::EndTable();
+
+        int timeSource = PresetSchedule_GetTimeSource();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("Clock Source");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Visual Time Override", timeSource == 0)) {
+            PresetSchedule_SetTimeSource(0);
+            timeSource = 0;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("In-Game Time", timeSource == 1)) {
+            PresetSchedule_SetTimeSource(1);
+        }
+
+        const std::vector<PresetScheduleRow> rows = PresetSchedule_BuildRows();
+        const PresetScheduleStatus scheduleStatus = PresetSchedule_GetStatus();
+        DrawTimeScheduleTimeline(rows, scheduleStatus);
+        if (rows.empty()) {
+            ImGui::TextDisabled("No scheduled presets yet. Press + to add one.");
+        } else if (ImGui::BeginTable("TimeScheduleRows", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
+            ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed, 158.0f);
+            ImGui::TableSetupColumn("Preset");
+            ImGui::TableSetupColumn("Blend", ImGuiTableColumnFlags_WidthFixed, 82.0f);
+            ImGui::TableHeadersRow();
+
+            for (const PresetScheduleRow& row : rows) {
+                const bool canOpenRow = !row.gap || (row.startMinute != row.endMinute && Preset_GetCount() > 0);
+                ImGui::TableNextRow();
+                if (scheduleStatus.enabled && !row.gap && row.entryIndex == scheduleStatus.activeEntryIndex) {
+                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImVec4(0.22f, 0.34f, 0.44f, 0.65f)));
+                }
+                ImGui::TableSetColumnIndex(0);
+                const std::string rangeText = PresetSchedule_FormatAmPm(row.startMinute) + " -> " + PresetSchedule_FormatAmPm(row.endMinute);
+                ImGui::TextUnformatted(rangeText.c_str());
+
+                ImGui::TableSetColumnIndex(1);
+                ImGui::PushID(row.gap ? -1000 - row.startMinute : row.entryIndex);
+                if (row.gap) {
+                    if (canOpenRow) {
+                        if (ImGui::Selectable("Add preset to this gap")) {
+                            OpenTimeScheduleEntryPopup(&row);
+                        }
+                    } else {
+                        ImGui::TextDisabled("Unassigned time");
+                    }
+                } else if (row.presetMissing) {
+                    const std::string missing = row.displayName + " (missing)";
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.38f, 0.34f, 1.0f));
+                    if (ImGui::Selectable(missing.c_str())) {
+                        OpenTimeScheduleEntryPopup(&row);
+                    }
+                    ImGui::PopStyleColor();
+                } else {
+                    if (ImGui::Selectable(row.displayName.c_str())) {
+                        OpenTimeScheduleEntryPopup(&row);
+                    }
+                }
+                if (canOpenRow && ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(row.gap ? "Add a preset in this time range" : "Edit scheduled preset");
+                }
+
+                ImGui::TableSetColumnIndex(2);
+                const std::string blendText = row.gap ? "--" : FormatScheduleBlend(row.blendSeconds);
+                ImGui::TextDisabled("%s", blendText.c_str());
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
     }
 
     if (g_schedulePopupOpenRequest) {

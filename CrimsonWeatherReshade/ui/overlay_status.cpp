@@ -162,10 +162,13 @@ void DrawStatusRowEnabledFloat(
 }
 
 void DrawHookControlsTable() {
+    if (!ImGui::CollapsingHeader("Hook Controls##hook_controls_section")) {
+        return;
+    }
+
     RuntimeHookStatusEntry hooks[static_cast<size_t>(RuntimeHookId::Count)] = {};
     const size_t hookCount = GetRuntimeHookStatusEntries(hooks, _countof(hooks));
 
-    ImGui::SeparatorText("Hook Controls");
     if (ImGui::BeginTable(
             "HookControlsTable",
             5,

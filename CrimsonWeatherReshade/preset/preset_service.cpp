@@ -512,7 +512,8 @@ void ApplyPresetData(const WeatherPresetData& data) {
 
     const float nextTimeCadence = ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f);
     float nextTimeHour = NormalizeHour24(data.timeHour);
-    const bool nextTimeCtrlActive = data.visualTimeOverride && g_timeLayoutReady.load();
+    const bool realGameTimeActive = g_realGameTimeEnabled.load();
+    const bool nextTimeCtrlActive = !realGameTimeActive && data.visualTimeOverride && g_timeLayoutReady.load();
     const bool nextTimeFreeze = nextTimeCtrlActive;
     const bool nextProgressVisualTime = nextTimeCtrlActive && data.progressVisualTime;
     const bool nextProgressMatchGameTime = nextProgressVisualTime && data.progressVisualTimeMatchGameTime;

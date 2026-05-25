@@ -3,9 +3,13 @@ const CURRENT_FORMAT_VERSION = 6;
 const CATALOG_KEY = "catalog/catalog.v1.json";
 const UPDATE_DOWNLOAD_PAGE_URL = "https://www.nexusmods.com/crimsondesert/mods/632?tab=files";
 const UPDATE_CHANNEL = "stable";
-const UPDATE_LATEST_VERSION = "0.6.8";
+const UPDATE_LATEST_VERSION = "0.6.9";
 const UPDATE_ARTIFACT_MAX_BYTES = 128 * 1024 * 1024;
-const UPDATE_CHANGELOG = `Update 0.6.8
+const UPDATE_CHANGELOG = `Update 0.6.9
+- Added Real In-Game Time controls with adjustable day and night world-time scales
+- Added a safety warning before enabling real world-clock controls
+- Improved the Time Schedule editor and collapsed Hook Controls by default
+Update 0.6.8
 - Added RenoDX aurora region gating support
 - Added community preset upload validation for RenoDX aurora preset fields
 Update 0.6.6

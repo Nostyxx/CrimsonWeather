@@ -2,7 +2,7 @@
 
 ReShade `.addon64` weather-control mod for `CrimsonDesert.exe`.
 
-Current stable release: `0.6.8`.
+Current stable release: `0.6.9`.
 
 The current main branch is the ReShade addon rewrite. The older DXGI/ImGui build is kept on the `legacy` branch.
 
@@ -57,7 +57,7 @@ Tabs and controls:
 - **Presets**: load/save local and downloaded community presets, save-as, reset sliders, edit global or per-region preset scopes, and configure the optional Time Schedule
 - **Community**: browse, search, sort, download, like/unlike, submit, update, and delete community preset uploads
 - **Favorites**: build custom sections that reuse live controls from the other tabs, with editor-driven add/remove and ordering
-- **General**: visual time override, progress visual time, Match In-Game Clock, advance interval, wind, no wind, and optional RenoDX aurora region gating
+- **General**: real in-game time controls, day/night world-time scaling, visual time override, progress visual time, Match In-Game Clock, advance interval, wind, no wind, and optional RenoDX aurora region gating
 - **Weather**: force clear sky, rain, dust, snow, thunder, no rain, no dust, no snow, snow accumulation boundaries, and snow coverage threshold
 - **Atmosphere**: Rayleigh scattering color, Rayleigh height, ozone ratio, cloud amount, cloud height, cloud density, mid clouds, high clouds, cloud alpha, cloud fade range, cloud detail ratio, cloud phase, cloud scattering, cloud flow, cloud visible range, fog, no fog, volume fog scatter color, Mie scatter color, aerosol height, aerosol density, aerosol absorption, fog height baseline, and fog height falloff
 - **Celestial**: static/animated moon texture, Milky Way texture, no-moon/no-Milky-Way options, night sky tilt, night sky phase, sun light intensity, sun size, sun yaw/pitch lock, moon light intensity, moon size, moon yaw/pitch lock, and moon rotation
@@ -114,6 +114,16 @@ Each schedule entry can blend from the current effective state into the target p
 
 Manual preset selection disables the schedule. Manually changing Visual Time Override also disables the schedule, because the scheduler and manual visual-time editing intentionally do not co-own the clock.
 
+## Real In-Game Time
+
+Real In-Game Time controls the game's actual world clock. Adjusting it can affect lighting, NPC behavior, quests, and other timed game systems, so the overlay shows a warning before its controls are first selected in each session.
+
+The shared Time control selector chooses whether the clock dial edits real in-game time or visual time override. Real in-game time includes `-1 Day` and `+1 Day` actions plus separate Day Time Scale and Night Time Scale controls. `NATIVE` is the normal game speed.
+
+Day Time Scale applies from `03:00 AM` through `06:59 PM`. Night Time Scale applies from `07:00 PM` through `02:59 AM`. Custom time scaling continues while Visual Time Override is selected, allowing visual screenshot changes without returning world time to native speed.
+
+Real in-game time controls are global only and are not available in region overrides or saved inside presets. Day and night scale values are stored locally in `CrimsonWeather.ini`.
+
 ## Input
 
 Default effect toggle hotkeys:
@@ -155,6 +165,10 @@ AutoDownload=0
 
 [TextureSwitcher]
 Enabled=1
+
+[RealGameTime]
+DayScale=1.0000
+NightScale=1.0000
 ```
 
 `AutoSaved=1` automatically saves edits to the currently selected preset shortly after the active UI interaction ends. It does not create new preset files; use `Create Preset` or `Save As` first.

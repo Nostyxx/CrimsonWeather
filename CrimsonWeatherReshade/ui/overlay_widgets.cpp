@@ -285,6 +285,7 @@ bool DustHookReady() { return HookReady(RuntimeHookId::GetDustIntensity); }
 bool WindPackReady() { return HookReady(RuntimeHookId::WindPack); }
 bool SceneFrameReady() { return HookReady(RuntimeHookId::SceneFrameUpdate); }
 bool WeatherFrameReady() { return HookReady(RuntimeHookId::WeatherFrameUpdate); }
+bool RealGameTimeReady() { return HookReady(RuntimeHookId::GameTimeUpdate) && HookReady(RuntimeHookId::GameTimeGetter); }
 
 bool DrawResetButton(const char* id) {
     ImGui::SameLine();
@@ -356,10 +357,12 @@ bool DrawSliderFloatRow(
     float minValue,
     float maxValue,
     const char* format,
-    bool* outValueChanged = nullptr,
-    bool* overrideEnabled = nullptr,
-    bool* outOverrideChanged = nullptr,
-    bool nativeDisplay = false) {
+    bool* outValueChanged,
+    bool* overrideEnabled,
+    bool* outOverrideChanged,
+    bool nativeDisplay,
+    bool centerOnNative,
+    float nativeValue) {
     ImGui::PushID(id);
     const bool overrideChanged = DrawOverrideToggle(overrideEnabled);
     const bool regionOverride = !overrideEnabled || *overrideEnabled;
@@ -387,9 +390,13 @@ bool DrawSliderFloatRow(
     }
     ImGui::SetNextItemWidth(-1.0f);
     char inheritedFormat[64] = {};
+    char centeredFormat[64] = {};
     const char* displayFormat = format;
     if (nativeDisplay) {
         displayFormat = "NATIVE";
+    } else if (centerOnNative) {
+        sprintf_s(centeredFormat, sizeof(centeredFormat), format, *value);
+        displayFormat = centeredFormat;
     }
     if (sliderDisabled) {
         sprintf_s(inheritedFormat, sizeof(inheritedFormat), "G: %s", nativeDisplay ? "NATIVE" : format);
@@ -424,7 +431,19 @@ bool DrawSliderFloatRow(
             g_sliderEditFocusRequest = false;
         }
     } else {
-        valueChanged = ImGui::SliderFloat("##value", value, minValue, maxValue, displayFormat);
+        if (centerOnNative && nativeValue > minValue && nativeValue < maxValue) {
+            float sliderPosition = *value <= nativeValue
+                ? (*value - nativeValue) / (nativeValue - minValue)
+                : (*value - nativeValue) / (maxValue - nativeValue);
+            if (ImGui::SliderFloat("##value", &sliderPosition, -1.0f, 1.0f, displayFormat)) {
+                *value = sliderPosition <= 0.0f
+                    ? nativeValue + sliderPosition * (nativeValue - minValue)
+                    : nativeValue + sliderPosition * (maxValue - nativeValue);
+                valueChanged = true;
+            }
+        } else {
+            valueChanged = ImGui::SliderFloat("##value", value, minValue, maxValue, displayFormat);
+        }
         if (!sliderDisabled && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
             g_sliderEditId = id;
             g_sliderEditFocusRequest = true;
@@ -531,15 +550,17 @@ bool DrawOverrideCheckboxRow(
     return valueChanged;
 }
 
-bool DrawClockDial(const char* id, int* minuteOfDay) {
+bool DrawClockDial(const char* id, int* minuteOfDay, bool centerDial) {
     constexpr float kPi = 3.14159265358979323846f;
     constexpr float kTwoPi = kPi * 2.0f;
     constexpr float kDialSize = 116.0f;
 
     ImGui::PushID(id);
-    const float availWidth = ImGui::GetContentRegionAvail().x;
-    const float centeredX = ImGui::GetCursorPosX() + max(0.0f, (availWidth - kDialSize) * 0.5f);
-    ImGui::SetCursorPosX(centeredX);
+    if (centerDial) {
+        const float availWidth = ImGui::GetContentRegionAvail().x;
+        const float centeredX = ImGui::GetCursorPosX() + max(0.0f, (availWidth - kDialSize) * 0.5f);
+        ImGui::SetCursorPosX(centeredX);
+    }
     ImGui::InvisibleButton("##clock", ImVec2(kDialSize, kDialSize));
     const bool hovered = ImGui::IsItemHovered();
     const bool active = ImGui::IsItemActive();

@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_BASE_VERSION "0.6.8"
+#define MOD_BASE_VERSION "0.6.9"
 #if defined(CW_DEV_BUILD)
 #define MOD_VERSION MOD_BASE_VERSION " DEV"
 #else
@@ -44,6 +44,8 @@ struct Config {
     bool updaterEnabled = true;
     bool updaterAutoDownload = false;
     bool textureSwitcherEnabled = true;
+    float realGameTimeDayScale = 1.0f;
+    float realGameTimeNightScale = 1.0f;
     int effectToggleVK = VK_F10;
     WORD controllerEffectToggleMask = 0;
     bool reshadeDiagnostics = false;
@@ -187,6 +189,9 @@ typedef void(__fastcall* WeatherFrameUpdate_fn)(long long* self, float dt);
 typedef void(__fastcall* ProcessWindState_fn)(long long self);
 typedef void(__fastcall* WindPack_fn)(long long* windNodePtr, float* packedOut);
 typedef void*(__fastcall* SceneFrameUpdate_fn)(long long self, long long context);
+typedef long long(__fastcall* GameTimeUpdate_fn)(long long self, float dt);
+typedef long long(__fastcall* GameTimeGetter_fn)(unsigned char* source, long long outTime);
+typedef long long(__fastcall* GameFieldInfoResolver_fn)(unsigned short* areaId);
 typedef void(__fastcall* NativeLightningScheduler_fn)(long long self);
 typedef int(__fastcall* PlayWeatherSoundEvent_fn)(uint32_t eventId);
 struct NativeSoundResourceRef {
@@ -226,6 +231,9 @@ inline WeatherFrameUpdate_fn g_pOrigWeatherFrameUpdate = nullptr;
 inline ProcessWindState_fn g_pOrigProcessWindState = nullptr;
 inline WindPack_fn g_pOrigWindPack = nullptr;
 inline SceneFrameUpdate_fn g_pOrigSceneFrameUpdate = nullptr;
+inline GameTimeUpdate_fn g_pOrigGameTimeUpdate = nullptr;
+inline GameTimeGetter_fn g_pOrigGameTimeGetter = nullptr;
+inline GameFieldInfoResolver_fn g_pGameFieldInfoResolver = nullptr;
 inline NativeLightningScheduler_fn g_pNativeLightningScheduler = nullptr;
 inline PlayWeatherSoundEvent_fn g_pPlayWeatherSoundEvent = nullptr;
 inline LoadSoundBank_fn g_pLoadSoundBank = nullptr;
@@ -310,6 +318,8 @@ enum class AobTargetId : uint8_t {
     NativeToast,
     MinimapRegionLabels,
     MinimapGameTimeUpdate,
+    GameTimeUpdate,
+    GameTimeGetter,
     Count
 };
 
@@ -357,6 +367,8 @@ enum class RuntimeHookId : uint8_t {
     FogSet4,
     MinimapRegionLabels,
     MinimapGameTimeUpdate,
+    GameTimeUpdate,
+    GameTimeGetter,
     Count
 };
 
@@ -565,6 +577,54 @@ inline std::atomic<bool> g_timeUiClockValid{ false };
 inline std::atomic<unsigned long long> g_timeUiClockTick{ 0 };
 inline std::atomic<int> g_timeUiClockHour24{ -1 };
 inline std::atomic<int> g_timeUiClockMinute{ -1 };
+inline std::atomic<bool> g_realGameTimeEnabled{ false };
+inline std::atomic<float> g_realGameTimeDayScale{ 1.0f };
+inline std::atomic<float> g_realGameTimeNightScale{ 1.0f };
+inline std::atomic<int> g_realGameTimeSetMinuteRequest{ -1 };
+inline std::atomic<int> g_realGameTimeDayDeltaRequest{ 0 };
+inline std::atomic<unsigned long long> g_realGameTimeWriteCount{ 0 };
+inline std::atomic<unsigned long long> g_realGameTimeScaleWriteCount{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeCallCount{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeGetterCallCount{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeLastRealtimeMs{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeLastGetterRealtimeMs{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeLastFrameMs{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeLastGetterFrameMs{ 0 };
+inline std::atomic<long long> g_gameTimeProbeLastClockMs{ 0 };
+inline std::atomic<long long> g_gameTimeProbeLastDeltaClockMs{ 0 };
+inline std::atomic<long long> g_gameTimeProbeLastAccumUs{ 0 };
+inline std::atomic<long long> g_gameTimeProbeLastDeltaAccumUs{ 0 };
+inline std::atomic<bool> g_gameTimeProbeAccumulatorActive{ false };
+inline std::atomic<float> g_gameTimeProbeLastSpeed{ 0.0f };
+inline std::atomic<int> g_gameTimeProbeHour{ -1 };
+inline std::atomic<int> g_gameTimeProbeMinute{ -1 };
+inline std::atomic<int> g_gameTimeProbeSecond{ -1 };
+inline std::atomic<int> g_gameTimeProbeMillisecond{ -1 };
+inline std::atomic<int> g_gameTimeProbeDay{ -1 };
+inline std::atomic<int> g_gameTimeProbeLastMinuteDelta{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeLastMinuteRealtimeMs{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeMinuteChangeCount{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeMinuteDeltaMinMs{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeMinuteDeltaMaxMs{ 0 };
+inline std::atomic<unsigned long long> g_gameTimeProbeMinuteDeltaTotalMs{ 0 };
+inline std::atomic<bool> g_devGameTimeOverrideEnabled{ false };
+inline std::atomic<int> g_devGameTimeOverrideMode{ 0 };
+inline std::atomic<int> g_devGameTimeOffsetMinutes{ 0 };
+inline std::atomic<int> g_devGameTimeFixedHour{ 12 };
+inline std::atomic<int> g_devGameTimeFixedMinute{ 0 };
+inline std::atomic<float> g_devGameTimeScale{ 1.0f };
+inline std::atomic<int> g_devGameTimeMinuteMs{ 5000 };
+inline std::atomic<bool> g_devGameTimeResetAnchor{ false };
+inline std::atomic<bool> g_devGameTimeWriteNative{ false };
+inline std::atomic<bool> g_devGameTimeCommitOnce{ false };
+inline std::atomic<bool> g_devGameTimeAnchorValid{ false };
+inline std::atomic<long long> g_devGameTimeAnchorNativeMs{ 0 };
+inline std::atomic<long long> g_devGameTimeAnchorVirtualMs{ 0 };
+inline std::atomic<long long> g_devGameTimeLastNativeMs{ 0 };
+inline std::atomic<long long> g_devGameTimeLastVirtualMs{ 0 };
+inline std::atomic<unsigned long long> g_devGameTimeLastStorage{ 0 };
+inline std::atomic<unsigned long long> g_devGameTimeWriteCount{ 0 };
+inline std::atomic<unsigned long long> g_devGameTimeOverrideCallCount{ 0 };
 inline std::atomic<float> g_timeOriginalHour{ 12.0f };
 inline std::atomic<bool> g_timeOriginalHourValid{ false };
 inline std::atomic<bool> g_timeDomainKnown{ false };
@@ -714,4 +774,7 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut);
 void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context);
 long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short areaId, unsigned short subAreaId);
 void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventContext);
+long long __fastcall Hooked_GameTimeUpdate(long long self, float dt);
+long long __fastcall Hooked_GameTimeGetter(unsigned char* source, long long outTime);
 void __fastcall Hooked_WeatherTick(long long self, float dt);
+void ResetGameTimeProbeStats();

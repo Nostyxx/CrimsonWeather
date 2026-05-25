@@ -111,6 +111,8 @@ void WriteDefaultConfig(const char* path) {
     WritePrivateProfileStringA("Updater", "Enabled", "1", path);
     WritePrivateProfileStringA("Updater", "AutoDownload", "0", path);
     WritePrivateProfileStringA("TextureSwitcher", "Enabled", "1", path);
+    WritePrivateProfileStringA("RealGameTime", "DayScale", "1.0000", path);
+    WritePrivateProfileStringA("RealGameTime", "NightScale", "1.0000", path);
 #else
     WritePrivateProfileStringA("Wind", "Multiplier", "1.0000", path);
 #endif
@@ -191,6 +193,12 @@ void PatchMissingConfigKeys(const char* path) {
     }
     if (GetPrivateProfileStringA("TextureSwitcher", "Enabled", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("TextureSwitcher", "Enabled", "1", path);
+    }
+    if (GetPrivateProfileStringA("RealGameTime", "DayScale", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("RealGameTime", "DayScale", "1.0000", path);
+    }
+    if (GetPrivateProfileStringA("RealGameTime", "NightScale", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("RealGameTime", "NightScale", "1.0000", path);
     }
 #endif
 #if defined(CW_DEV_BUILD)
@@ -434,6 +442,10 @@ const char* AobTargetLabel(AobTargetId id) {
         return "MinimapRegionLabels";
     case AobTargetId::MinimapGameTimeUpdate:
         return "MinimapGameTimeUpdate";
+    case AobTargetId::GameTimeUpdate:
+        return "GameTimeUpdate";
+    case AobTargetId::GameTimeGetter:
+        return "GameTimeGetter";
     default:
         return "UnknownTarget";
     }
@@ -700,6 +712,12 @@ void LoadConfig(const char* dir) {
     g_cfg.updaterAutoDownload = atoi(buf) != 0;
     GetPrivateProfileStringA("TextureSwitcher", "Enabled", "1", buf, sizeof(buf), path);
     g_cfg.textureSwitcherEnabled = atoi(buf) != 0;
+    GetPrivateProfileStringA("RealGameTime", "DayScale", "1.0000", buf, sizeof(buf), path);
+    g_cfg.realGameTimeDayScale = min(60.0f, max(0.01f, static_cast<float>(atof(buf))));
+    g_realGameTimeDayScale.store(g_cfg.realGameTimeDayScale);
+    GetPrivateProfileStringA("RealGameTime", "NightScale", "1.0000", buf, sizeof(buf), path);
+    g_cfg.realGameTimeNightScale = min(60.0f, max(0.01f, static_cast<float>(atof(buf))));
+    g_realGameTimeNightScale.store(g_cfg.realGameTimeNightScale);
 #endif
 #if defined(CW_DEV_BUILD)
     char devBuf[96] = {};
@@ -725,6 +743,11 @@ void SaveGeneralConfig() {
     WritePrivateProfileStringA("General", "ExtendedSliderRange", g_extendedSliderRange.load() ? "1" : "0", path);
 #if !defined(CW_WIND_ONLY)
     WritePrivateProfileStringA("Updater", "AutoDownload", g_cfg.updaterAutoDownload ? "1" : "0", path);
+    char timeScale[32] = {};
+    sprintf_s(timeScale, "%.4f", min(60.0f, max(0.01f, g_realGameTimeDayScale.load())));
+    WritePrivateProfileStringA("RealGameTime", "DayScale", timeScale, path);
+    sprintf_s(timeScale, "%.4f", min(60.0f, max(0.01f, g_realGameTimeNightScale.load())));
+    WritePrivateProfileStringA("RealGameTime", "NightScale", timeScale, path);
 #endif
 }
 
@@ -840,6 +863,13 @@ void ResetAllSliders() {
     g_timeProgressLastTick.store(0);
     g_timeProgressMatchLastMinute.store(-1);
     g_timeProgressMatchPendingMs.store(0);
+    g_realGameTimeEnabled.store(false);
+    g_realGameTimeDayScale.store(1.0f);
+    g_realGameTimeNightScale.store(1.0f);
+    g_cfg.realGameTimeDayScale = 1.0f;
+    g_cfg.realGameTimeNightScale = 1.0f;
+    g_realGameTimeSetMinuteRequest.store(-1);
+    g_realGameTimeDayDeltaRequest.store(0);
     g_timeApplyRequest.store(false);
     g_timeTargetHour.store(g_timeCurrentHour.load());
     g_timeOriginalHour.store(g_timeCurrentHour.load());
@@ -918,6 +948,7 @@ void ResetAllSliders() {
     g_sceneBaseMoonYaw.store(0.0f);
     g_sceneBaseMoonPitch.store(0.0f);
     g_sceneBaseNightSkyYaw.store(0.0f);
+    SaveGeneralConfig();
     g_resetStopRequested.store(true);
 }
 

@@ -22,6 +22,9 @@ int g_timeEditLastMinute = -1;
 bool g_timeEditActive = false;
 bool g_timeEditFocusRequest = false;
 bool g_timeEditHadFocus = false;
+int g_realClockDialPendingMinute = -1;
+bool g_hideRealGameTimeWarningThisSession = false;
+bool g_suppressRealGameTimeWarningChoice = false;
 void LogTimeUiAction(
     const char* action,
     bool detachedEdit,
@@ -78,6 +81,7 @@ void DrawTimeControls() {
     ImGui::Spacing();
     ImGui::SeparatorText("Time");
     bool visualTimeOverride = detachedEdit ? editData.visualTimeOverride : (g_timeCtrlActive.load() && g_timeFreeze.load());
+    bool realGameTime = !regionScoped && g_realGameTimeEnabled.load();
     bool progressVisualTime = detachedEdit ? editData.progressVisualTime : g_timeProgressVisualTime.load();
     bool progressVisualTimeMatchGameTime = detachedEdit ? editData.progressVisualTimeMatchGameTime : g_timeProgressMatchGameTime.load();
     float progressVisualTimeIntervalMs = detachedEdit
@@ -86,22 +90,101 @@ void DrawTimeControls() {
     const bool timeEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::TimeControls) &&
                              g_timeLayoutReady.load() &&
                              WeatherTickReady();
+    const bool realGameTimeAvailable = !regionScoped && RealGameTimeReady();
     const bool timeValueLocked = regionScoped && !overrideMask.time;
-    if (!timeEnabled) {
-        ImGui::BeginDisabled();
-    }
     bool timeOverrideChanged = false;
-    const bool visualTimeChanged = regionScoped
-        ? DrawOverrideCheckboxRow("Visual Time Override", "visual_time", &visualTimeOverride, &overrideMask.time, &timeOverrideChanged)
-        : ImGui::Checkbox("Visual Time Override", &visualTimeOverride);
-    if (PresetSchedule_IsEnabled() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Changing this will disable Time Schedule.");
+    if (regionScoped) {
+        timeOverrideChanged = DrawOverrideToggle(&overrideMask.time);
+        ImGui::SameLine();
     }
     if (timeOverrideChanged) {
         editChanged = true;
     }
-    if (visualTimeChanged) {
-        if (detachedEdit) {
+    int timeMode = realGameTime ? 1 : (visualTimeOverride ? 2 : 0);
+    int nextTimeMode = timeMode;
+    if (ImGui::RadioButton("Native", timeMode == 0)) {
+        nextTimeMode = 0;
+    }
+    ImGui::SameLine();
+    if (!realGameTimeAvailable) {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::RadioButton("Real In-Game Time", timeMode == 1)) {
+        if (g_hideRealGameTimeWarningThisSession) {
+            nextTimeMode = 1;
+        } else {
+            g_suppressRealGameTimeWarningChoice = false;
+            ImGui::OpenPopup("Real In-Game Time Warning");
+        }
+    }
+    if (!realGameTimeAvailable) {
+        ImGui::EndDisabled();
+    }
+    ImGui::SameLine();
+    if (!timeEnabled || timeValueLocked) {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::RadioButton("Visual Time Override", timeMode == 2)) {
+        nextTimeMode = 2;
+    }
+    if (!timeEnabled || timeValueLocked) {
+        ImGui::EndDisabled();
+    }
+    const bool realTimeScaleActive =
+        fabsf(g_realGameTimeDayScale.load() - 1.0f) > 0.001f ||
+        fabsf(g_realGameTimeNightScale.load() - 1.0f) > 0.001f;
+    if (!regionScoped && !realGameTime && realTimeScaleActive) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Time Scale Active");
+    }
+    if (ImGui::BeginPopupModal("Real In-Game Time Warning", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 38.0f);
+        ImGui::TextUnformatted(
+            "Real In-Game Time changes the game's actual world clock. "
+            "Advancing or speeding up time may affect quests, NPC behavior, "
+            "and other timed systems.");
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Please use this feature carefully and at your own risk.");
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        ImGui::Checkbox("Don't display again for this session", &g_suppressRealGameTimeWarningChoice);
+        ImGui::Spacing();
+        if (ImGui::Button("I understand", ImVec2(140.0f, 0.0f))) {
+            g_hideRealGameTimeWarningThisSession = g_suppressRealGameTimeWarningChoice;
+            nextTimeMode = 1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    const bool timeModeChanged = nextTimeMode != timeMode;
+    if (PresetSchedule_IsEnabled() && timeModeChanged) {
+        ImGui::SetTooltip("Changing this will disable Time Schedule.");
+    }
+    if (timeModeChanged) {
+        visualTimeOverride = nextTimeMode == 2;
+        realGameTime = nextTimeMode == 1;
+        if (realGameTime) {
+            g_realGameTimeEnabled.store(true);
+            g_realGameTimeSetMinuteRequest.store(-1);
+            g_realGameTimeDayDeltaRequest.store(0);
+            g_timeCtrlActive.store(false);
+            g_timeFreeze.store(false);
+            g_timeProgressVisualTime.store(false);
+            g_timeProgressMatchGameTime.store(false);
+            g_timeProgressLastTick.store(0);
+            g_timeProgressMatchLastMinute.store(-1);
+            g_timeProgressMatchPendingMs.store(0);
+            g_timeApplyRequest.store(true);
+        } else if (detachedEdit) {
+            if (!regionScoped) {
+                g_realGameTimeEnabled.store(false);
+                g_realGameTimeSetMinuteRequest.store(-1);
+                g_realGameTimeDayDeltaRequest.store(0);
+            }
             editData.visualTimeOverride = visualTimeOverride;
             if (!visualTimeOverride) {
                 editData.progressVisualTime = false;
@@ -110,6 +193,9 @@ void DrawTimeControls() {
             if (regionScoped) overrideMask.time = true;
             editChanged = true;
         } else {
+            g_realGameTimeEnabled.store(realGameTime);
+            g_realGameTimeSetMinuteRequest.store(-1);
+            g_realGameTimeDayDeltaRequest.store(0);
             g_timeCtrlActive.store(visualTimeOverride);
             g_timeFreeze.store(visualTimeOverride);
             if (!visualTimeOverride) {
@@ -121,14 +207,25 @@ void DrawTimeControls() {
             }
             g_timeApplyRequest.store(true);
         }
-        LogTimeUiAction("visual-toggle", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        LogTimeUiAction("time-mode", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
         manualTimeEditChanged = true;
-        GUI_SetStatus(visualTimeOverride ? "Visual time override enabled" : "Visual time override disabled");
+        GUI_SetStatus(visualTimeOverride ? "Visual Time Override enabled" :
+            (realGameTime ? "Real In-Game Time controls selected" : "Native time selected"));
     }
     if (!visualTimeOverride) {
         progressVisualTime = false;
         progressVisualTimeMatchGameTime = false;
     }
+    float hudGameTimeHour = 0.0f;
+    const bool hasHudGameTime = TryGetHudGameTimeHour(&hudGameTimeHour);
+    const int nativeHour = g_gameTimeProbeHour.load();
+    const int nativeMinute = g_gameTimeProbeMinute.load();
+    const bool hasNativeGameTime = nativeHour >= 0 && nativeHour < 24 && nativeMinute >= 0 && nativeMinute < 60;
+    const float nativeGameTimeHour = hasNativeGameTime
+        ? MinuteOfDayToHour(nativeHour * 60 + nativeMinute)
+        : 0.0f;
+    bool timeReset = false;
+    if (!realGameTime) {
     const bool progressDisabled = !(timeEnabled && visualTimeOverride) || timeValueLocked;
     if (progressDisabled) {
         ImGui::BeginDisabled();
@@ -167,8 +264,6 @@ void DrawTimeControls() {
         GUI_SetStatus(progressVisualTime ? "Progress Visual Time enabled" : "Progress Visual Time disabled");
     }
 
-    float hudGameTimeHour = 0.0f;
-    const bool hasHudGameTime = TryGetHudGameTimeHour(&hudGameTimeHour);
     char hudGameTimeText[32] = {};
     if (hasHudGameTime) {
         FormatGameClockFromHour(hudGameTimeHour, hudGameTimeText, sizeof(hudGameTimeText));
@@ -305,41 +400,121 @@ void DrawTimeControls() {
     const float resetWidth = 28.0f;
     const float resetX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - resetWidth;
     ImGui::SetCursorPosX(max(ImGui::GetCursorPosX(), resetX));
-    const bool timeReset = ImGui::Button("R##time_reset", ImVec2(resetWidth, 0.0f));
+    timeReset = ImGui::Button("R##time_reset", ImVec2(resetWidth, 0.0f));
     if (!timeEnabled) {
-        ImGui::EndDisabled();
         if (!RuntimeFeatureAvailable(RuntimeFeatureId::TimeControls) || !g_timeLayoutReady.load()) {
             DrawFeatureUnavailable(RuntimeFeatureId::TimeControls);
         } else {
             DrawHookUnavailable(RuntimeHookId::WeatherTick);
         }
     }
+    } else {
+        const SliderRange realTimeScaleRange = ActiveSliderRange(0.01f, 20.0f, 0.01f, 60.0f);
+        float dayScale = g_realGameTimeDayScale.load();
+        float nightScale = g_realGameTimeNightScale.load();
+        bool dayChanged = false;
+        bool nightChanged = false;
+        const bool resetDay = DrawSliderFloatRow(
+            "Day Time Scale", "real_day_scale", &dayScale, realTimeScaleRange.lo, realTimeScaleRange.hi, "x%.2f",
+            &dayChanged, nullptr, nullptr, fabsf(dayScale - 1.0f) <= 0.001f, true, 1.0f);
+        const bool resetNight = DrawSliderFloatRow(
+            "Night Time Scale", "real_night_scale", &nightScale, realTimeScaleRange.lo, realTimeScaleRange.hi, "x%.2f",
+            &nightChanged, nullptr, nullptr, fabsf(nightScale - 1.0f) <= 0.001f, true, 1.0f);
+        if (resetDay) {
+            dayScale = 1.0f;
+            dayChanged = true;
+        }
+        if (resetNight) {
+            nightScale = 1.0f;
+            nightChanged = true;
+        }
+        if (dayChanged || nightChanged) {
+            dayScale = min(realTimeScaleRange.hi, max(realTimeScaleRange.lo, dayScale));
+            nightScale = min(realTimeScaleRange.hi, max(realTimeScaleRange.lo, nightScale));
+            g_realGameTimeDayScale.store(dayScale);
+            g_realGameTimeNightScale.store(nightScale);
+            g_cfg.realGameTimeDayScale = dayScale;
+            g_cfg.realGameTimeNightScale = nightScale;
+            SaveGeneralConfig();
+            GUI_SetStatus("Real game time scale changed");
+        }
+    }
 
     const bool runtimeProgressVisualTimeActive =
         g_timeCtrlActive.load() && g_timeFreeze.load() && g_timeProgressVisualTime.load();
     const bool progressUiActive = runtimeProgressVisualTimeActive;
+    const bool displayRealTime = realGameTime && hasNativeGameTime;
     const bool displayMatchedHudTime = progressVisualTimeMatchGameTime && hasHudGameTime;
-    const float displayedTimeHour = displayMatchedHudTime
+    const float displayedTimeHour = displayRealTime
+        ? nativeGameTimeHour
+        : displayMatchedHudTime
         ? hudGameTimeHour
         : runtimeProgressVisualTimeActive
         ? g_timeTargetHour.load()
         : (detachedEdit ? editData.timeHour : g_timeTargetHour.load());
-    int timeMinutes = displayMatchedHudTime
+    int timeMinutes = displayRealTime
+        ? HourToMinuteOfDay(nativeGameTimeHour)
+        : displayMatchedHudTime
         ? HourToMinuteOfDay(hudGameTimeHour)
         : progressUiActive
         ? HourToMinuteOfDayFloor(displayedTimeHour)
         : HourToMinuteOfDay(displayedTimeHour);
+    if (realGameTime && g_realClockDialPendingMinute >= 0) {
+        timeMinutes = g_realClockDialPendingMinute;
+    }
     char targetClock[32] = {};
     FormatGameClockFromMinute(timeMinutes, targetClock, sizeof(targetClock));
 
-    const bool manualClockDisabled = !(timeEnabled && visualTimeOverride) || timeValueLocked || progressVisualTimeMatchGameTime;
+    const bool manualClockDisabled = realGameTime
+        ? !realGameTimeAvailable
+        : (!(timeEnabled && visualTimeOverride) || timeValueLocked || progressVisualTimeMatchGameTime);
     if (manualClockDisabled) {
         ImGui::BeginDisabled();
     }
-    const bool timeChanged = DrawClockDial("time", &timeMinutes);
-    const bool dialActive = ImGui::IsItemActive();
+    bool previousDay = false;
+    bool nextDay = false;
+    bool timeChanged = false;
+    bool dialActive = false;
+    bool dialReleased = false;
+    if (realGameTime) {
+        constexpr float kDayButtonWidth = 72.0f;
+        constexpr float kDialWidth = 116.0f;
+        constexpr float kGap = 8.0f;
+        const float rowWidth = kDayButtonWidth * 2.0f + kDialWidth + kGap * 2.0f;
+        const float rowY = ImGui::GetCursorPosY();
+        const float buttonY = rowY + (kDialWidth - ImGui::GetFrameHeight()) * 0.5f;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + max(0.0f, (ImGui::GetContentRegionAvail().x - rowWidth) * 0.5f));
+        ImGui::SetCursorPosY(buttonY);
+        previousDay = ImGui::Button("-1 Day", ImVec2(kDayButtonWidth, 0.0f));
+        ImGui::SameLine(0.0f, kGap);
+        ImGui::SetCursorPosY(rowY);
+        timeChanged = DrawClockDial("time", &timeMinutes, false);
+        dialActive = ImGui::IsItemActive();
+        dialReleased = ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SameLine(0.0f, kGap);
+        ImGui::SetCursorPosY(buttonY);
+        nextDay = ImGui::Button("+1 Day", ImVec2(kDayButtonWidth, 0.0f));
+    } else {
+        timeChanged = DrawClockDial("time", &timeMinutes);
+        dialActive = ImGui::IsItemActive();
+    }
 
-    if (timeChanged && timeEnabled && visualTimeOverride && !progressVisualTimeMatchGameTime) {
+    if (realGameTime && (previousDay || nextDay)) {
+        g_realGameTimeDayDeltaRequest.store(previousDay ? -1 : 1);
+        GUI_SetStatus(previousDay ? "Moved real game time back one day" : "Moved real game time forward one day");
+    }
+    if (realGameTime && timeChanged) {
+        g_realClockDialPendingMinute = timeMinutes;
+        FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), targetClock, sizeof(targetClock));
+        FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), g_timeEditText, sizeof(g_timeEditText));
+        g_timeEditLastMinute = timeMinutes;
+    }
+    if (realGameTime && g_realClockDialPendingMinute >= 0 &&
+        (dialReleased || (!dialActive && !ImGui::IsMouseDown(ImGuiMouseButton_Left)))) {
+        g_realGameTimeSetMinuteRequest.store(g_realClockDialPendingMinute);
+        g_realClockDialPendingMinute = -1;
+        GUI_SetStatus("Real game time changed");
+    } else if (timeChanged && timeEnabled && visualTimeOverride && !progressVisualTimeMatchGameTime) {
         if (detachedEdit) {
             editData.timeHour = MinuteOfDayToHour(timeMinutes);
             editData.visualTimeOverride = true;
@@ -361,7 +536,7 @@ void DrawTimeControls() {
         FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), targetClock, sizeof(targetClock));
         FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), g_timeEditText, sizeof(g_timeEditText));
         g_timeEditLastMinute = timeMinutes;
-    } else if (g_timeEditLastMinute != timeMinutes && !g_timeEditActive && !dialActive) {
+    } else if (g_timeEditLastMinute != timeMinutes && !g_timeEditActive && !dialActive && g_realClockDialPendingMinute < 0) {
         strcpy_s(g_timeEditText, targetClock);
         g_timeEditLastMinute = timeMinutes;
     }
@@ -458,6 +633,10 @@ void DrawTimeControls() {
         g_timeEditHadFocus = false;
         g_timeEditLastMinute = -1;
         GUI_SetStatus("Time reset");
+    } else if (realGameTime && typedValid) {
+        g_realGameTimeSetMinuteRequest.store(timeMinutes);
+        g_realClockDialPendingMinute = -1;
+        GUI_SetStatus("Real game time changed");
     } else if (timeEnabled && visualTimeOverride && !progressVisualTimeMatchGameTime && typedValid) {
         if (detachedEdit) {
             editData.timeHour = MinuteOfDayToHour(timeMinutes);

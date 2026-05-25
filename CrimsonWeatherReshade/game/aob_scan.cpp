@@ -17,6 +17,7 @@ static bool EnableWindPackHook() { return false; }
 static bool EnableSceneFrameHook() { return false; }
 static bool EnableFogHooks() { return false; }
 static bool EnableRegionHook() { return false; }
+static bool EnableGameTimeHooks() { return false; }
 static bool DevLaunchOptionIsFullProfile() { return false; }
 #else
 #if defined(CW_DEV_BUILD)
@@ -58,6 +59,10 @@ static bool EnableRegionHook() {
     return option == DevLaunchOption::Full || option == DevLaunchOption::RegionHook;
 }
 
+static bool EnableGameTimeHooks() {
+    return ActiveDevLaunchOption() == DevLaunchOption::Full;
+}
+
 static bool EnableProcessWindHook() {
     return EnableWindHooks();
 }
@@ -75,6 +80,7 @@ static bool EnableWindPackHook() { return true; }
 static bool EnableSceneFrameHook() { return true; }
 static bool EnableFogHooks() { return true; }
 static bool EnableRegionHook() { return true; }
+static bool EnableGameTimeHooks() { return true; }
 static bool DevLaunchOptionIsFullProfile() { return true; }
 #endif
 #endif
@@ -99,6 +105,8 @@ const char* RuntimeHookLabel(RuntimeHookId id) {
     case RuntimeHookId::FogSet4: return "FogSet4";
     case RuntimeHookId::MinimapRegionLabels: return "MinimapRegionLabels";
     case RuntimeHookId::MinimapGameTimeUpdate: return "MinimapGameTimeUpdate";
+    case RuntimeHookId::GameTimeUpdate: return "GameTimeUpdate";
+    case RuntimeHookId::GameTimeGetter: return "GameTimeGetter";
     default: return "Unknown";
     }
 }
@@ -127,6 +135,10 @@ static const char* RuntimeHookKind(RuntimeHookId id) {
         return "Region";
     case RuntimeHookId::MinimapGameTimeUpdate:
         return "HUD time";
+    case RuntimeHookId::GameTimeUpdate:
+        return "Game time";
+    case RuntimeHookId::GameTimeGetter:
+        return "Game time";
     default:
         return "";
     }
@@ -273,6 +285,19 @@ static uintptr_t ScanModule(const char*pat){
 static uintptr_t ReadCall(uintptr_t a){
     if(*reinterpret_cast<uint8_t*>(a)!=0xE8)return 0;
     return a+5+*reinterpret_cast<int32_t*>(a+1);}
+static uintptr_t ReadFirstDirectCallInRange(uintptr_t start, size_t offset, size_t len) {
+    for (size_t i = offset; i + 5 <= len; ++i) {
+        const uintptr_t site = start + i;
+        if (*reinterpret_cast<uint8_t*>(site) != 0xE8) {
+            continue;
+        }
+        const uintptr_t target = ReadCall(site);
+        if (target) {
+            return target;
+        }
+    }
+    return 0;
+}
 static uintptr_t ReadRIP7(uintptr_t a){
     return a+7+*reinterpret_cast<int32_t*>(a+3);}
 static uintptr_t ReadRIP6(uintptr_t a){
@@ -1826,6 +1851,30 @@ bool RunAOBScan(){
         "48 8D AC 24 ?? ?? FF FF 48 81 EC ?? 03 00 00 4C 8B F9 "
         "48 83 B9 ?? 03 00 00 00 0F 84"
     );
+    uintptr_t addrGameTimeUpdate = 0;
+    uintptr_t addrGameTimeGetter = 0;
+    uintptr_t addrGameFieldInfoResolver = 0;
+#if !defined(CW_WIND_ONLY)
+    addrGameTimeUpdate = ScanModule(
+        "48 8B C4 48 89 58 10 48 89 68 18 48 89 70 20 57 41 56 41 57 "
+        "48 81 EC ?? ?? 00 00 C5 F8 29 70 ?? C5 F8 29 78"
+    );
+    addrGameTimeGetter = ScanModule(
+        "48 89 5C 24 10 57 48 83 EC 60 48 8B 01 48 8B FA "
+        "48 8D 54 24 70 48 8B D9 FF 50 58 B8 FF FF 00 00"
+    );
+ #if defined(CW_DEV_BUILD)
+    if (addrGameTimeGetter) {
+        addrGameFieldInfoResolver = ReadFirstDirectCallInRange(addrGameTimeGetter, 0x20, 0x50);
+    }
+    if (!addrGameFieldInfoResolver) {
+        addrGameFieldInfoResolver = ScanModule(
+            "48 89 5C 24 ?? 48 89 6C 24 ?? 56 57 41 56 48 83 EC ?? "
+            "0F B7 39 48 8B 1D ?? ?? ?? ?? 3B 7B ??"
+        );
+    }
+ #endif
+#endif
     if (addrMinimapRegionLabels) {
         Log("[AOB] MinimapRegionLabels = %p\n", (void*)addrMinimapRegionLabels);
     } else {
@@ -1836,9 +1885,27 @@ bool RunAOBScan(){
     } else {
         Log("[W] MinimapGameTimeUpdate not found (game HUD time source disabled)\n");
     }
+    if (addrGameTimeUpdate) {
+        Log("[AOB] GameTimeUpdate = %p\n", (void*)addrGameTimeUpdate);
+    } else {
+        Log("[W] GameTimeUpdate not found (real in-game time controls disabled)\n");
+    }
+    if (addrGameTimeGetter) {
+        Log("[AOB] GameTimeGetter = %p\n", (void*)addrGameTimeGetter);
+    } else {
+        Log("[W] GameTimeGetter not found (real in-game time controls disabled)\n");
+    }
+#if defined(CW_DEV_BUILD)
+    if (addrGameFieldInfoResolver) {
+        Log("[AOB] GameFieldInfoResolver = %p\n", (void*)addrGameFieldInfoResolver);
+    } else {
+        Log("[W] GameFieldInfoResolver not found (DEV native time writeback disabled)\n");
+    }
+#endif
 
     g_pActivateEffect = reinterpret_cast<ActivateEffect_fn>(addrActivate);
     g_pSetIntensity   = reinterpret_cast<SetIntensity_fn>  (addrSetIntensity);
+    g_pGameFieldInfoResolver = reinterpret_cast<GameFieldInfoResolver_fn>(addrGameFieldInfoResolver);
     g_pOrigAtmosFogBlend = reinterpret_cast<AtmosFogBlend_fn>(addrAtmosFogBlend);
     if (g_pOrigAtmosFogBlend) {
         Log("[AOB] AtmosFogBlend helper ready (callable, not directly hooked)\n");
@@ -1893,6 +1960,14 @@ bool RunAOBScan(){
         if(addrMinimapGameTimeUpdate)
             InstallHook((void*)addrMinimapGameTimeUpdate,(void*)&Hooked_MinimapGameTimeUpdate,
                         (void**)&g_pOrigMinimapGameTimeUpdate,"MinimapGameTimeUpdate",false);
+    }
+    if (EnableGameTimeHooks() && addrGameTimeUpdate) {
+        InstallHook((void*)addrGameTimeUpdate, (void*)&Hooked_GameTimeUpdate,
+                    (void**)&g_pOrigGameTimeUpdate, "GameTimeUpdate", false);
+    }
+    if (EnableGameTimeHooks() && addrGameTimeGetter) {
+        InstallHook((void*)addrGameTimeGetter, (void*)&Hooked_GameTimeGetter,
+                    (void**)&g_pOrigGameTimeGetter, "GameTimeGetter", false);
     }
     if (!DevLaunchOptionIsFullProfile()) {
 #if defined(CW_DEV_BUILD)
@@ -2036,6 +2111,18 @@ bool RunAOBScan(){
         minimapGameTimeInstalled ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
         addrMinimapGameTimeUpdate,
         minimapGameTimeInstalled ? "game HUD time hook installed" : "game HUD time hook unavailable");
+
+    const bool gameTimeUpdateInstalled = addrGameTimeUpdate && g_pOrigGameTimeUpdate;
+    SetAobTargetHealth(AobTargetId::GameTimeUpdate,
+        gameTimeUpdateInstalled ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
+        addrGameTimeUpdate,
+        gameTimeUpdateInstalled ? "real game clock hook installed" : "real game clock unavailable");
+
+    const bool gameTimeGetterInstalled = addrGameTimeGetter && g_pOrigGameTimeGetter;
+    SetAobTargetHealth(AobTargetId::GameTimeGetter,
+        gameTimeGetterInstalled ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
+        addrGameTimeGetter,
+        gameTimeGetterInstalled ? "real game time getter hook installed" : "real game time getter unavailable");
 
     RecomputeRuntimeHealthSummary();
     LogRuntimeHealthSummary();

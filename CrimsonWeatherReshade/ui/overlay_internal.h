@@ -38,6 +38,7 @@ bool DustHookReady();
 bool WindPackReady();
 bool SceneFrameReady();
 bool WeatherFrameReady();
+bool RealGameTimeReady();
 bool DrawResetButton(const char* id);
 bool DrawOverrideToggle(bool* enabled);
 void DrawOverrideBadge(bool regionOverride);
@@ -52,7 +53,9 @@ bool DrawSliderFloatRow(
     bool* outValueChanged,
     bool* overrideEnabled,
     bool* outOverrideChanged,
-    bool nativeDisplay);
+    bool nativeDisplay,
+    bool centerOnNative = false,
+    float nativeValue = 1.0f);
 bool DrawColorRow(
     const char* label,
     const char* id,
@@ -68,7 +71,7 @@ bool DrawOverrideCheckboxRow(
     bool* value,
     bool* overrideEnabled,
     bool* outOverrideChanged);
-bool DrawClockDial(const char* id, int* minuteOfDay);
+bool DrawClockDial(const char* id, int* minuteOfDay, bool centerDial = true);
 bool TextContainsNoCase(const char* text, const char* needle);
 bool DrawDisabledTabBody();
 void DrawSliderById(

@@ -1808,6 +1808,673 @@ void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventCont
     }
 }
 
+namespace {
+
+constexpr uintptr_t kGameClockBaseMsRva = 0x5E87E00;
+constexpr uintptr_t kGameClockAccumUsRva = 0x5E87DF8;
+constexpr uintptr_t kGameClockActiveRva = 0x5E87E08;
+constexpr unsigned long long kNativeClockDayMs = 0x4819080ull;
+constexpr unsigned long long kNativeClockDawnBendMs = 0x5265C0ull;
+constexpr unsigned long long kNativeClockNightBendMs = 0x42F2AC0ull;
+std::atomic<int> g_probeLastMinuteOfDay{ -1 };
+std::atomic<unsigned long long> g_probeLastMinuteTick{ 0 };
+std::atomic<int> g_probeLastGetterMinuteOfDay{ -1 };
+std::atomic<unsigned long long> g_probeLastGetterMinuteTick{ 0 };
+
+struct GameClockCalendar {
+    int day = -1;
+    int hour = -1;
+    int minute = -1;
+    int second = -1;
+    int millisecond = -1;
+};
+
+bool ReadGameClockGlobals(long long& outBaseMs, long long& outAccumUs, bool& outActive) {
+    const uintptr_t moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!moduleBase) {
+        return false;
+    }
+
+    __try {
+        outBaseMs = *reinterpret_cast<long long*>(moduleBase + kGameClockBaseMsRva);
+        outAccumUs = *reinterpret_cast<long long*>(moduleBase + kGameClockAccumUsRva);
+        outActive = *reinterpret_cast<unsigned char*>(moduleBase + kGameClockActiveRva) != 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+GameClockCalendar ConvertGameClockMs(long long clockMs) {
+    GameClockCalendar out;
+    if (clockMs < 0) {
+        return out;
+    }
+
+    unsigned long long withinDay = static_cast<unsigned long long>(clockMs) % kNativeClockDayMs;
+    out.day = static_cast<int>(static_cast<unsigned long long>(clockMs) / kNativeClockDayMs);
+    unsigned long long visualMs = 0;
+    if (withinDay >= kNativeClockDawnBendMs) {
+        visualMs = withinDay >= kNativeClockNightBendMs
+            ? (2ull * withinDay) - 64800000ull
+            : withinDay + 5400000ull;
+    } else {
+        visualMs = 2ull * withinDay;
+    }
+
+    const unsigned long long totalSeconds = visualMs / 1000ull;
+    out.hour = static_cast<int>((totalSeconds / 3600ull) % 24ull);
+    out.minute = static_cast<int>((totalSeconds / 60ull) % 60ull);
+    out.second = static_cast<int>(totalSeconds % 60ull);
+    out.millisecond = static_cast<int>(visualMs % 1000ull);
+    return out;
+}
+
+bool ReadGameClockCalendarStruct(long long outTime, GameClockCalendar& out) {
+    if (!outTime) {
+        return false;
+    }
+
+    __try {
+        const int day = *reinterpret_cast<int*>(outTime + 0x00);
+        const int hour = *reinterpret_cast<int*>(outTime + 0x04);
+        const int minute = *reinterpret_cast<int*>(outTime + 0x08);
+        const int second = *reinterpret_cast<int*>(outTime + 0x0C);
+        const int millisecond = *reinterpret_cast<int*>(outTime + 0x10);
+        if (day < 0 || hour < 0 || hour > 47 || minute < 0 || minute > 59 ||
+            second < 0 || second > 59 || millisecond < 0 || millisecond > 999) {
+            return false;
+        }
+        out.day = day;
+        out.hour = hour;
+        out.minute = minute;
+        out.second = second;
+        out.millisecond = millisecond;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+long long CalendarToLinearMs(const GameClockCalendar& cal) {
+    const long long hour = cal.hour >= 24 ? cal.hour % 24 : cal.hour;
+    return (((static_cast<long long>(cal.day) * 24ll + hour) * 60ll + cal.minute) * 60ll + cal.second) * 1000ll +
+        cal.millisecond;
+}
+
+GameClockCalendar LinearMsToCalendar(long long linearMs) {
+    if (linearMs < 0) {
+        linearMs = 0;
+    }
+
+    GameClockCalendar out;
+    out.millisecond = static_cast<int>(linearMs % 1000ll);
+    long long totalSeconds = linearMs / 1000ll;
+    out.second = static_cast<int>(totalSeconds % 60ll);
+    long long totalMinutes = totalSeconds / 60ll;
+    out.minute = static_cast<int>(totalMinutes % 60ll);
+    long long totalHours = totalMinutes / 60ll;
+    out.hour = static_cast<int>(totalHours % 24ll);
+    out.day = static_cast<int>(totalHours / 24ll);
+    return out;
+}
+
+long long CalendarToNativeClockTicks(const GameClockCalendar& cal) {
+    const long long hour = cal.hour >= 24 ? cal.hour % 24 : cal.hour;
+    unsigned long long visualMs =
+        static_cast<unsigned long long>(cal.millisecond) +
+        1000ull * (static_cast<unsigned long long>(cal.second) +
+        60ull * (static_cast<unsigned long long>(cal.minute) +
+        60ull * static_cast<unsigned long long>(hour)));
+    unsigned long long withinDay = visualMs;
+    if (visualMs >= 10800000ull) {
+        if (visualMs < 75600000ull) {
+            withinDay = visualMs - 5400000ull;
+        } else {
+            withinDay = (visualMs + 64800000ull) >> 1;
+        }
+    } else {
+        withinDay = visualMs >> 1;
+    }
+    return static_cast<long long>(withinDay + kNativeClockDayMs * static_cast<unsigned long long>(cal.day));
+}
+
+void WriteGameClockCalendarStruct(long long outTime, const GameClockCalendar& cal) {
+    if (!outTime) {
+        return;
+    }
+
+    __try {
+        *reinterpret_cast<int*>(outTime + 0x00) = cal.day;
+        *reinterpret_cast<int*>(outTime + 0x04) = cal.hour;
+        *reinterpret_cast<int*>(outTime + 0x08) = cal.minute;
+        *reinterpret_cast<int*>(outTime + 0x0C) = cal.second;
+        *reinterpret_cast<int*>(outTime + 0x10) = cal.millisecond;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+bool CommitGlobalGameTime(long long outTime,
+                          const GameClockCalendar& nativeCal,
+                          const GameClockCalendar& targetCal,
+                          const char* action) {
+    const uintptr_t moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!moduleBase || !outTime) {
+        return false;
+    }
+
+    unsigned short rate = 0;
+    __try {
+        rate = *reinterpret_cast<unsigned short*>(outTime + 0x16);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    if (rate == 0) {
+        rate = 1;
+    }
+
+    const long long nativeTick = CalendarToNativeClockTicks(nativeCal);
+    const long long targetTick = CalendarToNativeClockTicks(targetCal);
+    const long long clockShift = (targetTick - nativeTick) / static_cast<long long>(rate);
+    __try {
+        *reinterpret_cast<long long*>(moduleBase + kGameClockBaseMsRva) += clockShift;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    const unsigned long long writes = g_realGameTimeWriteCount.fetch_add(1) + 1;
+    Log("[real-time] %s native=day %d %02d:%02d:%02d.%03d target=day %d %02d:%02d:%02d.%03d rate=%u shift=%lld writes=%llu\n",
+        action ? action : "commit",
+        nativeCal.day,
+        nativeCal.hour,
+        nativeCal.minute,
+        nativeCal.second,
+        nativeCal.millisecond,
+        targetCal.day,
+        targetCal.hour,
+        targetCal.minute,
+        targetCal.second,
+        targetCal.millisecond,
+        static_cast<unsigned>(rate),
+        clockShift,
+        writes);
+    return true;
+}
+
+bool ApplyRealGameTimeAction(long long outTime, const GameClockCalendar& nativeCal) {
+    if (!g_modEnabled.load() || !g_realGameTimeEnabled.load()) {
+        return false;
+    }
+
+    const int dayDelta = g_realGameTimeDayDeltaRequest.exchange(0);
+    const int minuteRequest = g_realGameTimeSetMinuteRequest.exchange(-1);
+    if (dayDelta == 0 && minuteRequest < 0) {
+        return false;
+    }
+
+    GameClockCalendar target = nativeCal;
+    if (dayDelta != 0) {
+        target.day = max(0, target.day + dayDelta);
+    }
+    if (minuteRequest >= 0) {
+        const int clampedMinute = min(24 * 60 - 1, max(0, minuteRequest));
+        target.hour = clampedMinute / 60;
+        target.minute = clampedMinute % 60;
+        target.second = 0;
+        target.millisecond = 0;
+    }
+    if (!CommitGlobalGameTime(outTime, nativeCal, target, dayDelta ? "day-step" : "clock-set")) {
+        return false;
+    }
+    WriteGameClockCalendarStruct(outTime, target);
+    return true;
+}
+
+long long ApplyRealGameTimeScale(long long beforeClockMs, long long afterClockMs) {
+    static double s_fractionalShift = 0.0;
+    if (!g_modEnabled.load()) {
+        s_fractionalShift = 0.0;
+        return afterClockMs;
+    }
+
+    const int hour = g_gameTimeProbeHour.load();
+    if (hour < 0 || hour >= 24) {
+        return afterClockMs;
+    }
+    const long long nativeStep = afterClockMs - beforeClockMs;
+    if (nativeStep <= 0) {
+        return afterClockMs;
+    }
+
+    const bool isDay = hour >= 3 && hour < 19;
+    const float selectedScale = isDay
+        ? g_realGameTimeDayScale.load()
+        : g_realGameTimeNightScale.load();
+    const double speed = static_cast<double>(min(60.0f, max(0.01f, selectedScale)));
+    const double exactShift = static_cast<double>(nativeStep) * (speed - 1.0) + s_fractionalShift;
+    const long long clockShift = static_cast<long long>(std::llround(exactShift));
+    s_fractionalShift = exactShift - static_cast<double>(clockShift);
+    if (!clockShift) {
+        return afterClockMs;
+    }
+
+    const uintptr_t moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!moduleBase) {
+        return afterClockMs;
+    }
+    __try {
+        *reinterpret_cast<long long*>(moduleBase + kGameClockBaseMsRva) += clockShift;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return afterClockMs;
+    }
+    g_realGameTimeScaleWriteCount.fetch_add(1);
+    return afterClockMs + clockShift;
+}
+
+bool ResolveNativeGameTimeStorage(unsigned char* source, long long& outStorage, unsigned short& outAreaId) {
+#if defined(CW_DEV_BUILD)
+    outStorage = 0;
+    outAreaId = 0xFFFF;
+    if (!source || !g_pGameFieldInfoResolver) {
+        return false;
+    }
+
+    __try {
+        void** vtable = *reinterpret_cast<void***>(source);
+        if (!vtable || !vtable[11]) {
+            return false;
+        }
+        using GetAreaIdFn = void(__fastcall*)(unsigned char*, unsigned short*);
+        reinterpret_cast<GetAreaIdFn>(vtable[11])(source, &outAreaId);
+        if (outAreaId == 0xFFFF) {
+            return false;
+        }
+
+        long long fieldInfo = g_pGameFieldInfoResolver(&outAreaId);
+        if (!fieldInfo) {
+            return false;
+        }
+        const unsigned char timeValid = *reinterpret_cast<unsigned char*>(fieldInfo + 0x64);
+        if (!timeValid) {
+            return false;
+        }
+        outStorage = fieldInfo + 0x40;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        outStorage = 0;
+        outAreaId = 0xFFFF;
+        return false;
+    }
+#else
+    (void)source;
+    outStorage = 0;
+    outAreaId = 0xFFFF;
+    return false;
+#endif
+}
+
+bool WriteNativeGameTimeStorage(unsigned char* source,
+                                long long outTime,
+                                const GameClockCalendar& nativeCal,
+                                const GameClockCalendar& virtualCal,
+                                bool allowGlobalFallback) {
+#if defined(CW_DEV_BUILD)
+    long long storage = 0;
+    unsigned short areaId = 0xFFFF;
+    if (ResolveNativeGameTimeStorage(source, storage, areaId)) {
+        WriteGameClockCalendarStruct(storage, virtualCal);
+        g_devGameTimeLastStorage.store(static_cast<unsigned long long>(storage));
+        const unsigned long long writes = g_devGameTimeWriteCount.fetch_add(1) + 1;
+        if (writes <= 8 || (writes % 300) == 0) {
+            Log("[time-probe] DEV writeback field area=%u storage=%p time=day %d %02d:%02d:%02d.%03d writes=%llu\n",
+                static_cast<unsigned>(areaId),
+                reinterpret_cast<void*>(storage),
+                virtualCal.day,
+                virtualCal.hour,
+                virtualCal.minute,
+                virtualCal.second,
+                virtualCal.millisecond,
+                writes);
+        }
+        return true;
+    }
+
+    if (!allowGlobalFallback) {
+        return false;
+    }
+
+    const uintptr_t moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!moduleBase || !outTime) {
+        return false;
+    }
+    unsigned short rate = 0;
+    __try {
+        rate = *reinterpret_cast<unsigned short*>(outTime + 0x16);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    if (rate == 0) {
+        rate = 1;
+    }
+    const long long nativeTick = CalendarToNativeClockTicks(nativeCal);
+    const long long virtualTick = CalendarToNativeClockTicks(virtualCal);
+    const long long clockShift = (virtualTick - nativeTick) / static_cast<long long>(rate);
+    __try {
+        long long* baseMs = reinterpret_cast<long long*>(moduleBase + kGameClockBaseMsRva);
+        *baseMs += clockShift;
+        storage = reinterpret_cast<long long>(baseMs);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    g_devGameTimeLastStorage.store(static_cast<unsigned long long>(storage));
+    const unsigned long long writes = g_devGameTimeWriteCount.fetch_add(1) + 1;
+    if (writes <= 8 || (writes % 300) == 0) {
+        Log("[time-probe] DEV writeback global base=%p rate=%u native=day %d %02d:%02d:%02d.%03d virtual=day %d %02d:%02d:%02d.%03d shift=%lld writes=%llu\n",
+            reinterpret_cast<void*>(storage),
+            static_cast<unsigned>(rate),
+            nativeCal.day,
+            nativeCal.hour,
+            nativeCal.minute,
+            nativeCal.second,
+            nativeCal.millisecond,
+            virtualCal.day,
+            virtualCal.hour,
+            virtualCal.minute,
+            virtualCal.second,
+            virtualCal.millisecond,
+            clockShift,
+            writes);
+    }
+    return true;
+#else
+    (void)source;
+    (void)outTime;
+    (void)nativeCal;
+    (void)virtualCal;
+    return false;
+#endif
+}
+
+bool ApplyDevGameTimeOverride(unsigned char* source, long long outTime, const GameClockCalendar& nativeCal) {
+#if defined(CW_DEV_BUILD)
+    if (!g_devGameTimeOverrideEnabled.load()) {
+        g_devGameTimeAnchorValid.store(false);
+        return false;
+    }
+
+    const long long nativeMs = CalendarToLinearMs(nativeCal);
+    long long virtualMs = nativeMs;
+    const int mode = g_devGameTimeOverrideMode.load();
+    if (mode == 0) {
+        virtualMs = nativeMs + static_cast<long long>(g_devGameTimeOffsetMinutes.load()) * 60ll * 1000ll;
+    } else if (mode == 1) {
+        const int fixedHour = std::clamp(g_devGameTimeFixedHour.load(), 0, 23);
+        const int fixedMinute = std::clamp(g_devGameTimeFixedMinute.load(), 0, 59);
+        virtualMs = (((static_cast<long long>(nativeCal.day) * 24ll + fixedHour) * 60ll + fixedMinute) * 60ll) * 1000ll;
+    } else {
+        if (g_devGameTimeResetAnchor.exchange(false) || !g_devGameTimeAnchorValid.load()) {
+            g_devGameTimeAnchorNativeMs.store(nativeMs);
+            g_devGameTimeAnchorVirtualMs.store(nativeMs);
+            g_devGameTimeAnchorValid.store(true);
+        }
+        const long long anchorNativeMs = g_devGameTimeAnchorNativeMs.load();
+        const long long anchorVirtualMs = g_devGameTimeAnchorVirtualMs.load();
+        const int targetMinuteMs = std::max(1, g_devGameTimeMinuteMs.load());
+        const float sliderScale = std::max(0.0f, g_devGameTimeScale.load());
+        const double scaleFromMinuteMs = 5000.0 / static_cast<double>(targetMinuteMs);
+        const double effectiveScale = sliderScale * scaleFromMinuteMs;
+        virtualMs = anchorVirtualMs + static_cast<long long>(static_cast<double>(nativeMs - anchorNativeMs) * effectiveScale);
+    }
+
+    const GameClockCalendar virtualCal = LinearMsToCalendar(virtualMs);
+    const bool commitOnce = g_devGameTimeCommitOnce.exchange(false);
+    const bool shouldWriteNative = g_devGameTimeWriteNative.load() || commitOnce;
+    if (shouldWriteNative) {
+        WriteNativeGameTimeStorage(source, outTime, nativeCal, virtualCal, commitOnce);
+    }
+    WriteGameClockCalendarStruct(outTime, virtualCal);
+    g_devGameTimeLastNativeMs.store(nativeMs);
+    g_devGameTimeLastVirtualMs.store(virtualMs);
+    const unsigned long long calls = g_devGameTimeOverrideCallCount.fetch_add(1) + 1;
+    if (calls <= 8 || (calls % 300) == 0) {
+        Log("[time-probe] DEV override mode=%d native=%02d:%02d:%02d.%03d virtual=%02d:%02d:%02d.%03d calls=%llu\n",
+            mode,
+            nativeCal.hour,
+            nativeCal.minute,
+            nativeCal.second,
+            nativeCal.millisecond,
+            virtualCal.hour,
+            virtualCal.minute,
+            virtualCal.second,
+            virtualCal.millisecond,
+            calls);
+    }
+    return true;
+#else
+    (void)source;
+    (void)outTime;
+    (void)nativeCal;
+    return false;
+#endif
+}
+
+void StoreGameTimeProbeSample(long long beforeClockMs,
+                              long long beforeAccumUs,
+                              unsigned long long beforeRealtimeMs,
+                              long long afterClockMs,
+                              long long afterAccumUs,
+                              bool active) {
+    const unsigned long long now = GetTickCount64();
+    const unsigned long long calls = g_gameTimeProbeCallCount.fetch_add(1) + 1;
+    const unsigned long long lastRealtimeMs = g_gameTimeProbeLastRealtimeMs.exchange(now);
+    const unsigned long long elapsedRealtimeMs = (lastRealtimeMs && now >= lastRealtimeMs) ? (now - lastRealtimeMs) : 0;
+    const long long deltaClockMs = afterClockMs - beforeClockMs;
+    const long long deltaAccumUs = afterAccumUs - beforeAccumUs;
+
+    g_gameTimeProbeLastFrameMs.store(elapsedRealtimeMs);
+    g_gameTimeProbeLastClockMs.store(afterClockMs);
+    g_gameTimeProbeLastDeltaClockMs.store(deltaClockMs);
+    g_gameTimeProbeLastAccumUs.store(afterAccumUs);
+    g_gameTimeProbeLastDeltaAccumUs.store(deltaAccumUs);
+    g_gameTimeProbeAccumulatorActive.store(active);
+    if (elapsedRealtimeMs > 0) {
+        g_gameTimeProbeLastSpeed.store(static_cast<float>(deltaClockMs) / static_cast<float>(elapsedRealtimeMs));
+    }
+
+    const GameClockCalendar cal = ConvertGameClockMs(afterClockMs);
+    if (cal.hour >= 0 && cal.minute >= 0) {
+        const int minuteOfDay = cal.hour * 60 + cal.minute;
+        const int previousMinute = g_probeLastMinuteOfDay.exchange(minuteOfDay);
+        if (previousMinute >= 0 && previousMinute != minuteOfDay) {
+            int minuteDelta = minuteOfDay - previousMinute;
+            if (minuteDelta < 0) {
+                minuteDelta += 24 * 60;
+            }
+            const unsigned long long previousMinuteTick = g_probeLastMinuteTick.exchange(now);
+            const unsigned long long minuteRealtimeDelta = (previousMinuteTick && now >= previousMinuteTick)
+                ? now - previousMinuteTick
+                : 0;
+            Log("[time-probe] accumulator minute %02d:%02d:%02d deltaMin=%d realtime=%llums clockDelta=%lldms accumDelta=%lldus active=%u\n",
+                cal.hour,
+                cal.minute,
+                cal.second,
+                minuteDelta,
+                minuteRealtimeDelta,
+                deltaClockMs,
+                deltaAccumUs,
+                active ? 1u : 0u);
+        } else if (previousMinute < 0) {
+            g_probeLastMinuteTick.store(now);
+        }
+    }
+
+    if (calls <= 8 || (calls % 300) == 0) {
+        Log("[time-probe] accumulator call=%llu frame=%llums clock=%lldms delta=%lldms accum=%lldus deltaAccum=%lldus speed=%.3f time=%02d:%02d:%02d active=%u preFrame=%llums\n",
+            calls,
+            elapsedRealtimeMs,
+            afterClockMs,
+            deltaClockMs,
+            afterAccumUs,
+            deltaAccumUs,
+            g_gameTimeProbeLastSpeed.load(),
+            cal.hour,
+            cal.minute,
+            cal.second,
+            active ? 1u : 0u,
+            beforeRealtimeMs ? (now >= beforeRealtimeMs ? now - beforeRealtimeMs : 0ull) : 0ull);
+    }
+}
+
+void StoreGameTimeGetterSample(unsigned char* source, long long outTime) {
+    GameClockCalendar cal;
+    if (!ReadGameClockCalendarStruct(outTime, cal)) {
+        return;
+    }
+
+    const unsigned long long now = GetTickCount64();
+    const unsigned long long calls = g_gameTimeProbeGetterCallCount.fetch_add(1) + 1;
+    const unsigned long long lastRealtimeMs = g_gameTimeProbeLastGetterRealtimeMs.exchange(now);
+    const unsigned long long elapsedRealtimeMs = (lastRealtimeMs && now >= lastRealtimeMs) ? (now - lastRealtimeMs) : 0;
+
+    g_gameTimeProbeLastGetterFrameMs.store(elapsedRealtimeMs);
+    g_gameTimeProbeDay.store(cal.day);
+    g_gameTimeProbeHour.store(cal.hour);
+    g_gameTimeProbeMinute.store(cal.minute);
+    g_gameTimeProbeSecond.store(cal.second);
+    g_gameTimeProbeMillisecond.store(cal.millisecond);
+
+    const int minuteOfDay = (cal.day * 24 * 60) + ((cal.hour % 24) * 60) + cal.minute;
+    const int previousMinute = g_probeLastGetterMinuteOfDay.exchange(minuteOfDay);
+    if (previousMinute >= 0 && previousMinute != minuteOfDay) {
+        int minuteDelta = minuteOfDay - previousMinute;
+        if (minuteDelta < 0) {
+            minuteDelta += 24 * 60;
+        }
+        const unsigned long long previousMinuteTick = g_probeLastGetterMinuteTick.exchange(now);
+        const unsigned long long minuteRealtimeDelta = (previousMinuteTick && now >= previousMinuteTick)
+            ? now - previousMinuteTick
+            : 0;
+        g_gameTimeProbeLastMinuteDelta.store(minuteDelta);
+        g_gameTimeProbeLastMinuteRealtimeMs.store(minuteRealtimeDelta);
+        if (minuteRealtimeDelta > 0) {
+            g_gameTimeProbeMinuteChangeCount.fetch_add(1);
+            g_gameTimeProbeMinuteDeltaTotalMs.fetch_add(minuteRealtimeDelta);
+            unsigned long long minMs = g_gameTimeProbeMinuteDeltaMinMs.load();
+            while ((minMs == 0 || minuteRealtimeDelta < minMs) &&
+                   !g_gameTimeProbeMinuteDeltaMinMs.compare_exchange_weak(minMs, minuteRealtimeDelta)) {
+            }
+            unsigned long long maxMs = g_gameTimeProbeMinuteDeltaMaxMs.load();
+            while (minuteRealtimeDelta > maxMs &&
+                   !g_gameTimeProbeMinuteDeltaMaxMs.compare_exchange_weak(maxMs, minuteRealtimeDelta)) {
+            }
+        }
+        Log("[time-probe] getter minute day=%d %02d:%02d:%02d.%03d deltaMin=%d realtime=%llums source=%p out=%p\n",
+            cal.day,
+            cal.hour,
+            cal.minute,
+            cal.second,
+            cal.millisecond,
+            minuteDelta,
+            minuteRealtimeDelta,
+            source,
+            reinterpret_cast<void*>(outTime));
+    } else if (previousMinute < 0) {
+        g_probeLastGetterMinuteTick.store(now);
+    }
+
+    if (calls <= 8 || (calls % 300) == 0) {
+        Log("[time-probe] getter call=%llu frame=%llums day=%d time=%02d:%02d:%02d.%03d source=%p out=%p hud=%02d:%02d valid=%u\n",
+            calls,
+            elapsedRealtimeMs,
+            cal.day,
+            cal.hour,
+            cal.minute,
+            cal.second,
+            cal.millisecond,
+            source,
+            reinterpret_cast<void*>(outTime),
+            g_timeUiClockHour24.load(),
+            g_timeUiClockMinute.load(),
+            (g_timeUiClockSourceValid.load() && g_timeUiClockValid.load()) ? 1u : 0u);
+    }
+}
+
+} // namespace
+
+void ResetGameTimeProbeStats() {
+    g_gameTimeProbeCallCount.store(0);
+    g_gameTimeProbeGetterCallCount.store(0);
+    g_gameTimeProbeLastRealtimeMs.store(0);
+    g_gameTimeProbeLastGetterRealtimeMs.store(0);
+    g_gameTimeProbeLastFrameMs.store(0);
+    g_gameTimeProbeLastGetterFrameMs.store(0);
+    g_gameTimeProbeLastClockMs.store(0);
+    g_gameTimeProbeLastDeltaClockMs.store(0);
+    g_gameTimeProbeLastAccumUs.store(0);
+    g_gameTimeProbeLastDeltaAccumUs.store(0);
+    g_gameTimeProbeAccumulatorActive.store(false);
+    g_gameTimeProbeLastSpeed.store(0.0f);
+    g_gameTimeProbeDay.store(-1);
+    g_gameTimeProbeHour.store(-1);
+    g_gameTimeProbeMinute.store(-1);
+    g_gameTimeProbeSecond.store(-1);
+    g_gameTimeProbeMillisecond.store(-1);
+    g_gameTimeProbeLastMinuteDelta.store(0);
+    g_gameTimeProbeLastMinuteRealtimeMs.store(0);
+    g_gameTimeProbeMinuteChangeCount.store(0);
+    g_gameTimeProbeMinuteDeltaMinMs.store(0);
+    g_gameTimeProbeMinuteDeltaMaxMs.store(0);
+    g_gameTimeProbeMinuteDeltaTotalMs.store(0);
+    g_probeLastMinuteOfDay.store(-1);
+    g_probeLastMinuteTick.store(0);
+    g_probeLastGetterMinuteOfDay.store(-1);
+    g_probeLastGetterMinuteTick.store(0);
+}
+
+long long __fastcall Hooked_GameTimeUpdate(long long self, float dt) {
+    long long beforeBaseMs = 0;
+    long long beforeAccumUs = 0;
+    bool beforeActive = false;
+    const bool beforeOk = ReadGameClockGlobals(beforeBaseMs, beforeAccumUs, beforeActive);
+    const long long beforeClockMs = beforeOk
+        ? beforeBaseMs + (beforeActive ? beforeAccumUs / 1000ll : 0ll)
+        : 0ll;
+    const unsigned long long beforeRealtimeMs = GetTickCount64();
+
+    long long result = 0;
+    if (g_pOrigGameTimeUpdate) {
+        result = g_pOrigGameTimeUpdate(self, dt);
+    }
+
+    long long afterBaseMs = 0;
+    long long afterAccumUs = 0;
+    bool afterActive = false;
+    if (beforeOk && ReadGameClockGlobals(afterBaseMs, afterAccumUs, afterActive)) {
+        long long afterClockMs = afterBaseMs + (afterActive ? afterAccumUs / 1000ll : 0ll);
+        afterClockMs = ApplyRealGameTimeScale(beforeClockMs, afterClockMs);
+        StoreGameTimeProbeSample(beforeClockMs, beforeAccumUs, beforeRealtimeMs, afterClockMs, afterAccumUs, afterActive);
+    }
+
+    return result;
+}
+
+long long __fastcall Hooked_GameTimeGetter(unsigned char* source, long long outTime) {
+    long long result = outTime;
+    if (g_pOrigGameTimeGetter) {
+        result = g_pOrigGameTimeGetter(source, outTime);
+    }
+
+    GameClockCalendar nativeCal;
+    if (ReadGameClockCalendarStruct(outTime, nativeCal)) {
+        if (ApplyRealGameTimeAction(outTime, nativeCal)) {
+            ReadGameClockCalendarStruct(outTime, nativeCal);
+        }
+        ApplyDevGameTimeOverride(source, outTime, nativeCal);
+    }
+    StoreGameTimeGetterSample(source, outTime);
+    return result;
+}
+
 struct ThunderAudioCandidate {
     uint32_t eventId;
     const char* eventName;
