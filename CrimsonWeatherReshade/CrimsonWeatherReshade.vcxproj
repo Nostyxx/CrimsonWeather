@@ -128,7 +128,6 @@
     <ClInclude Include="include\community_models.h" />
     <ClInclude Include="include\community_service.h" />
     <ClInclude Include="include\community_ui.h" />
-    <ClInclude Include="include\dev_mcp_server.h" />
     <ClInclude Include="include\renodx_bridge.h" />
     <ClInclude Include="include\update_service.h" />
     <ClInclude Include="include\sky_image_loader.h" />
@@ -150,7 +149,6 @@
     <ClCompile Include="community\update_service.cpp" />
     <ClCompile Include="core\hotkey_service.cpp" />
     <ClCompile Include="core\runtime_state.cpp" />
-    <ClCompile Include="dev\dev_mcp_server.cpp" Condition="'$(CWBuildFlavor)'=='Dev'" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="game\aob_scan.cpp" />
     <ClCompile Include="game\renodx_bridge.cpp" />

@@ -1400,8 +1400,13 @@ bool RunAOBScan(){
 
 #if defined(CW_WIND_ONLY)
     uintptr_t windOnlyAddrGetDust = ScanModule(
-        "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
+        "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
     );
+    if (!windOnlyAddrGetDust) {
+        windOnlyAddrGetDust = ScanModule(
+            "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
+        );
+    }
     if (!windOnlyAddrGetDust) {
         Log("[E] AOB: GetDustIntensity not found\n");
         return false;
@@ -1467,22 +1472,32 @@ bool RunAOBScan(){
         return t;};
 
     uintptr_t addrProcessRain  = EC(0x0AF,"ProcessRainState");
-    uintptr_t addrGetSnow      = EC(0x248,"GetSnowIntensity");
-    uintptr_t addrGetDust      = EC(0x301,"GetDustIntensity");
-    uintptr_t addrProcessWind  = EC(0x457,"ProcessWindState");
+    uintptr_t addrGetSnow      = EC(0x418,"GetSnowIntensity");
+    uintptr_t addrGetDust      = EC(0x4C9,"GetDustIntensity");
+    uintptr_t addrProcessWind  = EC(0x0FE,"ProcessWindState");
     addrProcessWind = PromoteToFunctionStart(addrProcessWind, "ProcessWindState");
     if (!addrGetSnow) {
         addrGetSnow = ScanModule(
-            "48 8B 51 50 4C 8B D1 48 85 D2 B9 40 00 00 00 48 8D 42 18 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 4D 8D 81 50 01 00 00"
+            "48 8B 51 50 4C 8B D1 48 85 D2 B9 40 00 00 00 48 8D 42 18 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 4D 8D 81 68 01 00 00"
         );
+        if (!addrGetSnow) {
+            addrGetSnow = ScanModule(
+                "48 8B 51 50 4C 8B D1 48 85 D2 B9 40 00 00 00 48 8D 42 18 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 4D 8D 81 50 01 00 00"
+            );
+        }
         if (addrGetSnow) {
             Log("[AOB] GetSnowIntensity(sig) = %p\n", (void*)addrGetSnow);
         }
     }
     if (!addrGetDust) {
         addrGetDust = ScanModule(
-            "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
+            "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
         );
+        if (!addrGetDust) {
+            addrGetDust = ScanModule(
+                "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
+            );
+        }
         if (addrGetDust) {
             Log("[AOB] GetDustIntensity(sig) = %p\n", (void*)addrGetDust);
         }
@@ -1863,7 +1878,6 @@ bool RunAOBScan(){
         "48 89 5C 24 10 57 48 83 EC 60 48 8B 01 48 8B FA "
         "48 8D 54 24 70 48 8B D9 FF 50 58 B8 FF FF 00 00"
     );
- #if defined(CW_DEV_BUILD)
     if (addrGameTimeGetter) {
         addrGameFieldInfoResolver = ReadFirstDirectCallInRange(addrGameTimeGetter, 0x20, 0x50);
     }
@@ -1873,7 +1887,6 @@ bool RunAOBScan(){
             "0F B7 39 48 8B 1D ?? ?? ?? ?? 3B 7B ??"
         );
     }
- #endif
 #endif
     if (addrMinimapRegionLabels) {
         Log("[AOB] MinimapRegionLabels = %p\n", (void*)addrMinimapRegionLabels);
@@ -1895,13 +1908,11 @@ bool RunAOBScan(){
     } else {
         Log("[W] GameTimeGetter not found (real in-game time controls disabled)\n");
     }
-#if defined(CW_DEV_BUILD)
     if (addrGameFieldInfoResolver) {
         Log("[AOB] GameFieldInfoResolver = %p\n", (void*)addrGameFieldInfoResolver);
     } else {
-        Log("[W] GameFieldInfoResolver not found (DEV native time writeback disabled)\n");
+        Log("[W] GameFieldInfoResolver not found (native time writeback disabled)\n");
     }
-#endif
 
     g_pActivateEffect = reinterpret_cast<ActivateEffect_fn>(addrActivate);
     g_pSetIntensity   = reinterpret_cast<SetIntensity_fn>  (addrSetIntensity);
@@ -2003,7 +2014,7 @@ bool RunAOBScan(){
             ? RuntimeHealthState::Ready
             : RuntimeHealthState::Disabled,
         addrGetSnow,
-        !(addrGetSnow && g_pOrigGetSnowIntensity) ? "Tick+0x248 unresolved or hook failed"
+        !(addrGetSnow && g_pOrigGetSnowIntensity) ? "unresolved or hook failed"
             : "hook installed");
 
     SetAobTargetHealth(AobTargetId::GetDustIntensity,
@@ -2011,7 +2022,7 @@ bool RunAOBScan(){
             ? RuntimeHealthState::Ready
             : RuntimeHealthState::Disabled,
         addrGetDust,
-        !(addrGetDust && g_pOrigGetDustIntensity) ? "Tick+0x301 unresolved or hook failed"
+        !(addrGetDust && g_pOrigGetDustIntensity) ? "unresolved or hook failed"
             : "hook installed");
 
     const bool processWindInstalled = addrProcessWind && g_pOrigProcessWindState;

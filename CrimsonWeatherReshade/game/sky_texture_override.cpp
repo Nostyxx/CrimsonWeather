@@ -306,8 +306,9 @@ TextureFingerprintTarget g_moonFingerprintTargets[] = {
 TextureFingerprintTarget g_milkywayFingerprintTargets[] = {
     {
         "MilkywayTextureUploadCommit",
-        "8B C4 48 8D 55 A0 48 8B 8D 80 00 00 00 FF 55 88 "
-        "EB 61 4C 8B A9 D8 08 00 00 49 8B 45 00 48 8B 80 D8 00 00 00 48 89 45 88",
+        "49 8B 45 00 48 8B 80 D8 00 00 00 48 89 45 D7 "
+        "48 8B 40 10 48 89 55 AF 48 8B 08 E8 ?? ?? ?? ?? "
+        "48 8B D8 48 89 45 AF",
         0,
         0x220
     },

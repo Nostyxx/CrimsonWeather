@@ -27,9 +27,6 @@
     <ClInclude Include="include\sky_image_loader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="include\dev_mcp_server.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="include\community_http.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -75,9 +72,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="game\renodx_bridge.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="dev\dev_mcp_server.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="community\community_http.cpp">

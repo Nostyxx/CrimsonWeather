@@ -28,7 +28,7 @@ using std::min;
 #define MOD_LOG_FILE "CrimsonWeather.log"
 #endif
 
-#define MOD_BASE_VERSION "0.6.9"
+#define MOD_BASE_VERSION "0.7.1"
 #if defined(CW_DEV_BUILD)
 #define MOD_VERSION MOD_BASE_VERSION " DEV"
 #else
@@ -109,19 +109,19 @@ namespace WCO {
 }
 
 namespace CN {
-    constexpr ptrdiff_t DUST_BASE = 0x120;
-    constexpr ptrdiff_t DUST_ADD = 0x18C;
-    constexpr ptrdiff_t DUST_WIND_SCALE = 0x140;
-    constexpr ptrdiff_t FOG_A = 0x11C;
-    constexpr ptrdiff_t CLOUD_TOP = 0x124;
-    constexpr ptrdiff_t CLOUD_THICK = 0x128;
-    constexpr ptrdiff_t CLOUD_BASE = 0x12C;
-    constexpr ptrdiff_t CLOUD_SHAPE_A = 0x130;
-    constexpr ptrdiff_t CLOUD_SHAPE_B = 0x134;
-    constexpr ptrdiff_t CLOUD_SHAPE_C = 0x138;
-    constexpr ptrdiff_t DUST_THRESH = 0x180;
-    constexpr ptrdiff_t STORM_THRESH = 0x184;
-    constexpr ptrdiff_t FOG_B = 0x188;
+    constexpr ptrdiff_t DUST_BASE = 0x138;
+    constexpr ptrdiff_t DUST_ADD = 0x1A4;
+    constexpr ptrdiff_t DUST_WIND_SCALE = 0x158;
+    constexpr ptrdiff_t FOG_A = 0x134;
+    constexpr ptrdiff_t CLOUD_TOP = 0x13C;
+    constexpr ptrdiff_t CLOUD_THICK = 0x140;
+    constexpr ptrdiff_t CLOUD_BASE = 0x144;
+    constexpr ptrdiff_t CLOUD_SHAPE_A = 0x148;
+    constexpr ptrdiff_t CLOUD_SHAPE_B = 0x14C;
+    constexpr ptrdiff_t CLOUD_SHAPE_C = 0x150;
+    constexpr ptrdiff_t DUST_THRESH = 0x198;
+    constexpr ptrdiff_t STORM_THRESH = 0x19C;
+    constexpr ptrdiff_t FOG_B = 0x1A0;
 }
 
 namespace AC0 {
@@ -189,7 +189,7 @@ typedef void(__fastcall* WeatherFrameUpdate_fn)(long long* self, float dt);
 typedef void(__fastcall* ProcessWindState_fn)(long long self);
 typedef void(__fastcall* WindPack_fn)(long long* windNodePtr, float* packedOut);
 typedef void*(__fastcall* SceneFrameUpdate_fn)(long long self, long long context);
-typedef long long(__fastcall* GameTimeUpdate_fn)(long long self, float dt);
+typedef long long(__fastcall* GameTimeUpdate_fn)(long long self, long long eventContext, long long* timeContext, long long outTime);
 typedef long long(__fastcall* GameTimeGetter_fn)(unsigned char* source, long long outTime);
 typedef long long(__fastcall* GameFieldInfoResolver_fn)(unsigned short* areaId);
 typedef void(__fastcall* NativeLightningScheduler_fn)(long long self);
@@ -774,7 +774,7 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut);
 void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context);
 long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short areaId, unsigned short subAreaId);
 void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventContext);
-long long __fastcall Hooked_GameTimeUpdate(long long self, float dt);
+long long __fastcall Hooked_GameTimeUpdate(long long self, long long eventContext, long long* timeContext, long long outTime);
 long long __fastcall Hooked_GameTimeGetter(unsigned char* source, long long outTime);
 void __fastcall Hooked_WeatherTick(long long self, float dt);
 void ResetGameTimeProbeStats();

@@ -27,13 +27,12 @@ constexpr RenoDxRegionToggle kAuroraRegionToggles[] = {
 } // namespace
 
 void DrawRenoDxInteractionControls() {
+    if (!RenoDxBridgeIsAddonPresent()) {
+        return;
+    }
+
     ImGui::Spacing();
     ImGui::SeparatorText("RenoDX Interaction");
-
-    const bool detected = RenoDxBridgeIsAddonPresent();
-    if (!detected) {
-        ImGui::BeginDisabled();
-    }
 
     uint32_t mask = RenoDxBridgeGetAuroraRegionMask();
     uint32_t newMask = mask;
@@ -58,11 +57,6 @@ void DrawRenoDxInteractionControls() {
     }
     if (!newAuroraEnabled) {
         ImGui::EndDisabled();
-    }
-
-    if (!detected) {
-        ImGui::EndDisabled();
-        ImGui::TextDisabled("renodx-crimsondesert.addon64 not detected");
     }
 
     if (newAuroraEnabled != auroraEnabled) {

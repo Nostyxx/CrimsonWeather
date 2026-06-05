@@ -6,24 +6,48 @@ $msbuild = 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Curren
 
 function Get-SanitizedEnvironmentMap {
     $envMap = @{}
-    $pathValue = $null
+    $names = @(
+        'ALLUSERSPROFILE',
+        'APPDATA',
+        'CommonProgramFiles',
+        'CommonProgramW6432',
+        'COMPUTERNAME',
+        'ComSpec',
+        'LOCALAPPDATA',
+        'NUMBER_OF_PROCESSORS',
+        'OS',
+        'PATHEXT',
+        'PROCESSOR_ARCHITECTURE',
+        'ProgramData',
+        'ProgramFiles',
+        'ProgramFiles(x86)',
+        'ProgramW6432',
+        'PSModulePath',
+        'PUBLIC',
+        'SystemDrive',
+        'SystemRoot',
+        'TEMP',
+        'TMP',
+        'USERDOMAIN',
+        'USERNAME',
+        'USERPROFILE',
+        'windir'
+    )
 
-    foreach ($item in Get-ChildItem Env:) {
-        if ($item.Name -ieq 'PATH') {
-            if ($null -eq $pathValue -or $item.Name -ceq 'Path') {
-                $pathValue = $item.Value
-            }
-            continue
-        }
-
-        if (-not $envMap.ContainsKey($item.Name)) {
-            $envMap[$item.Name] = $item.Value
+    foreach ($name in $names) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ($null -ne $value -and -not $envMap.ContainsKey($name)) {
+            $envMap[$name] = $value
         }
     }
 
-    if ($null -ne $pathValue) {
-        $envMap['Path'] = $pathValue
+    $pathValue = [Environment]::GetEnvironmentVariable('Path', 'Process')
+    if ($null -eq $pathValue) {
+        $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        $pathValue = (($machinePath, $userPath) | Where-Object { $_ }) -join ';'
     }
+    $envMap['Path'] = $pathValue
 
     return $envMap
 }
@@ -41,10 +65,15 @@ function Invoke-SanitizedMSBuild {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
-    $psi.EnvironmentVariables.Clear()
+
+    $envTarget = $psi.Environment
+    if ($null -eq $envTarget) {
+        $envTarget = $psi.EnvironmentVariables
+    }
+    $envTarget.Clear()
 
     foreach ($entry in (Get-SanitizedEnvironmentMap).GetEnumerator()) {
-        [void]$psi.EnvironmentVariables.Add($entry.Key, $entry.Value)
+        [void]$envTarget.Add($entry.Key, $entry.Value)
     }
 
     $proc = [System.Diagnostics.Process]::Start($psi)

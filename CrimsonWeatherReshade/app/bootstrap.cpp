@@ -5,9 +5,6 @@
 #include "preset_service.h"
 #include "runtime_shared.h"
 #include "update_service.h"
-#if defined(CW_DEV_BUILD)
-#include "dev_mcp_server.h"
-#endif
 
 extern "C" BOOL ReserveBufferBlock(LPVOID pOrigin);
 
@@ -175,9 +172,6 @@ DWORD WINAPI BootstrapThread(void* param) {
     OpenStartupLog(module);
     UpdateService_CleanupStaleFiles();
 #if defined(CW_DEV_BUILD)
-    if (StartDevMcpServer(module)) {
-        Log("[mcp] DEV pipe server start requested\n");
-    }
     const DevLaunchOption launchOption = g_devLaunchOption.load();
     const bool useTextureHook = g_cfg.textureSwitcherEnabled && DevLaunchOptionUsesTextureHook(launchOption);
     const bool mayUseRuntimeHooks = DevLaunchOptionUsesRuntimeStartup(launchOption);
@@ -256,9 +250,6 @@ bool InitializeCrimsonWeather(HMODULE module) {
 
 void ShutdownCrimsonWeather() {
     if (!g_initialized.exchange(false)) {
-#if defined(CW_DEV_BUILD)
-        StopDevMcpServer();
-#endif
         RestoreRuntimePatches();
         StopHotkeyService();
         ShutdownSkyTextureOverride();
@@ -280,9 +271,6 @@ void ShutdownCrimsonWeather() {
     }
 
     SuspendTimeControl();
-#if defined(CW_DEV_BUILD)
-    StopDevMcpServer();
-#endif
     RestoreRuntimePatches();
     StopHotkeyService();
     ShutdownSkyTextureOverride();
