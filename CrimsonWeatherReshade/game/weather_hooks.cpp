@@ -1810,11 +1810,11 @@ void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventCont
 
 namespace {
 
-constexpr uintptr_t kGameClockBaseMsRva = 0x6067108;
-constexpr uintptr_t kGameClockElapsedBaseMsRva = 0x5F525A8;
-constexpr uintptr_t kGameClockAccumUsRva = 0x5F52598;
-constexpr uintptr_t kGameClockSnapshotPrimaryRva = 0x5D31F08;
-constexpr uintptr_t kGameClockSnapshotTlsRva = 0x5D31F28;
+constexpr uintptr_t kGameClockBaseMsRva = 0x6075608;
+constexpr uintptr_t kGameClockElapsedBaseMsRva = 0x5F60968;
+constexpr uintptr_t kGameClockAccumUsRva = 0x5F60960;
+constexpr uintptr_t kGameClockSnapshotPrimaryRva = 0x5D3FF98;
+constexpr uintptr_t kGameClockSnapshotTlsRva = 0x5D3FFB8;
 constexpr unsigned long long kNativeClockDayMs = 0x4819080ull;
 constexpr unsigned long long kNativeClockDawnBendMs = 0x5265C0ull;
 constexpr unsigned long long kNativeClockNightBendMs = 0x42F2AC0ull;

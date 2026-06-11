@@ -97,6 +97,10 @@
       <EnableUAC>false</EnableUAC>
       <AdditionalDependencies>d3d12.lib;dxgi.lib;windowscodecs.lib;winhttp.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>$(CWFlavorPreprocessorDefinitions)%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -127,6 +131,7 @@
     <ClInclude Include="include\community_http.h" />
     <ClInclude Include="include\community_models.h" />
     <ClInclude Include="include\community_service.h" />
+    <ClInclude Include="include\mod_metadata.h" />
     <ClInclude Include="include\community_ui.h" />
     <ClInclude Include="include\renodx_bridge.h" />
     <ClInclude Include="include\update_service.h" />
@@ -193,6 +198,9 @@
     <ClCompile Include="third_party\minhook\src\hde\hde64.c">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="CrimsonWeatherReshade.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

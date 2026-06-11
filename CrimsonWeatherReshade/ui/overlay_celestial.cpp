@@ -88,11 +88,13 @@ void DrawCelestialTab() {
             for (int i = 0; i < optionCount; ++i) {
                 const char* optionName = MilkywayTextureOptionName(i);
                 const char* optionLabel = MilkywayTextureOptionLabel(i);
+                const bool optionAnimated = i > 0 && MilkywayTextureOptionIsAnimated(i);
                 const bool visible = i == 0
                     ? TextContainsNoCase("Native", g_milkywayTextureFilter)
                     : (TextContainsNoCase(optionLabel, g_milkywayTextureFilter) ||
                        TextContainsNoCase(optionName, g_milkywayTextureFilter) ||
-                       TextContainsNoCase(MilkywayTextureOptionPack(i), g_milkywayTextureFilter));
+                       TextContainsNoCase(MilkywayTextureOptionPack(i), g_milkywayTextureFilter) ||
+                       (optionAnimated && TextContainsNoCase("anim", g_milkywayTextureFilter)));
                 if (!visible) {
                     continue;
                 }
@@ -109,7 +111,9 @@ void DrawCelestialTab() {
                 if (optionHasPack) {
                     ImGui::Indent(12.0f);
                 }
-                if (ImGui::Selectable(optionLabel, selected)) {
+                char optionDisplay[256] = {};
+                sprintf_s(optionDisplay, sizeof(optionDisplay), "%s%s", optionLabel, optionAnimated ? " [ANIM]" : "");
+                if (ImGui::Selectable(optionDisplay, selected)) {
                     milkywayTexture = i;
                     if (detachedEdit) {
                         editData.milkywayTextureEnabled = i > 0;

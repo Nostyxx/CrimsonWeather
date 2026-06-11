@@ -9,6 +9,12 @@
 #include <cstdio>
 #include <cstring>
 
+#if defined(CW_VERBOSE_SKY_TEXTURE) || defined(CW_DEV_BUILD)
+#define CW_SKY_IMAGE_VERBOSE_LOG(...) Log(__VA_ARGS__)
+#else
+#define CW_SKY_IMAGE_VERBOSE_LOG(...) do {} while (0)
+#endif
+
 namespace {
 
     constexpr UINT kMaxPngDimension = 16384;
@@ -409,7 +415,7 @@ namespace {
         outImage.sourceRows = outImage.mipLevels[0].sourceRows;
         outImage.sourceRowPitch = outImage.mipLevels[0].sourceRowPitch;
 
-        Log("[sky-image] loaded DDS %s %ux%u mips=%u fmt=%s(%u) bytes=%zu\n",
+        CW_SKY_IMAGE_VERBOSE_LOG("[sky-image] loaded DDS %s %ux%u mips=%u fmt=%s(%u) bytes=%zu\n",
             path.c_str(),
             outImage.width,
             outImage.height,
@@ -531,7 +537,7 @@ namespace {
             return false;
         }
 
-        Log("[sky-image] loaded PNG %s %ux%u mips=%u fmt=%s(%u) bytes=%zu\n",
+        CW_SKY_IMAGE_VERBOSE_LOG("[sky-image] loaded PNG %s %ux%u mips=%u fmt=%s(%u) bytes=%zu\n",
             path.c_str(),
             outImage.width,
             outImage.height,

@@ -61,7 +61,7 @@ void PrimeMinHookRelayBlock() {
     void* gameBase = GetModuleHandle(nullptr);
     const BOOL reserved = ReserveBufferBlock(gameBase);
     Log(reserved
-        ? "[i] MinHook relay block reserved near game base\n"
+        ? "[startup] minhook: relay block reserved near game base\n"
         : "[W] MinHook relay block reserve failed near game base\n");
 }
 
@@ -91,7 +91,7 @@ DWORD WINAPI StartThread(void*) {
     StartupSetStep(StartupStepId::Config, 1, "Preparing startup");
     GUI_SetStatus("Starting Crimson Weather...");
     const bool autoStart = g_nextStartIsAuto.exchange(false);
-    Log(autoStart ? "[i] Auto Start requested from config\n" : "[i] Start requested from ReShade overlay\n");
+    Log("[startup] runtime: start requested source=%s\n", autoStart ? "auto" : "overlay");
 
 #if defined(CW_DEV_BUILD)
     const DevLaunchOption launchOption = g_devLaunchOption.load();
@@ -106,6 +106,7 @@ DWORD WINAPI StartThread(void*) {
 #endif
 
     StartupSetStep(StartupStepId::MinHook, 2, "Initializing hook engine");
+    Log("[startup] runtime: initializing hook engine\n");
     const MH_STATUS mhStatus = MH_Initialize();
     if (mhStatus != MH_OK && mhStatus != MH_ERROR_ALREADY_INITIALIZED) {
         Log("[E] MH_Initialize failed: %d\n", static_cast<int>(mhStatus));
@@ -115,6 +116,7 @@ DWORD WINAPI StartThread(void*) {
     g_minHookInitialized.store(true);
 
     StartupSetStep(StartupStepId::AobScan, 3, "Scanning game code");
+    Log("[startup] runtime: scanning game code\n");
     if (!RunAOBScan()) {
         Log("[E] AOB scan failed\n");
         CleanupFailedStart();
@@ -131,11 +133,14 @@ DWORD WINAPI StartThread(void*) {
 
 #if !defined(CW_WIND_ONLY)
     StartupSetStep(StartupStepId::Presets, 4, "Preparing presets");
+    Log("[startup] runtime: preparing presets\n");
     Preset_ArmAutoApplyRemembered();
 #else
     StartupSetStep(StartupStepId::Presets, 4, "Wind-only preset step skipped");
+    Log("[startup] runtime: preset step skipped for Wind-only build\n");
 #endif
     StartupSetStep(StartupStepId::Hotkeys, 5, "Starting hotkeys");
+    Log("[startup] runtime: starting hotkeys\n");
     if (!StartHotkeyService()) {
         Log("[E] Hotkey service failed to start\n");
         CleanupFailedStart();
@@ -147,7 +152,7 @@ DWORD WINAPI StartThread(void*) {
     g_addonStartupState.store(AddonStartupState::Ready);
     StartupSetStep(StartupStepId::Ready, 6, "Crimson Weather ready");
     GUI_SetStatus("Ready");
-    Log("[+] Ready\n");
+    Log("[startup] runtime: ready\n");
     return 0;
 }
 
@@ -160,7 +165,7 @@ void OpenStartupLog(HMODULE module) {
     Log("================================================\n");
     Log("  " MOD_DISPLAY_NAME " v" MOD_VERSION "\n");
     Log("================================================\n\n");
-    Log("[i] base: %p\n", GetModuleHandle(nullptr));
+    Log("[startup] bootstrap: base=%p\n", GetModuleHandle(nullptr));
 }
 
 DWORD WINAPI BootstrapThread(void* param) {
@@ -184,9 +189,9 @@ DWORD WINAPI BootstrapThread(void* param) {
         Log("[dev] MinHook relay prime skipped for LaunchOption=%s\n", DevLaunchOptionName(launchOption));
     }
     if (useTextureHook) {
-        Log("[i] Initializing sky texture override\n");
+        Log("[startup] textures: initializing moon/milkyway switcher\n");
         const bool skyTextureOk = TryInitializeSkyTextureOverride(module);
-        Log(skyTextureOk ? "[i] Sky texture override initialized\n" : "[W] Sky texture override disabled\n");
+        Log(skyTextureOk ? "[startup] textures: ready\n" : "[W] Sky texture override disabled\n");
     } else if (!g_cfg.textureSwitcherEnabled) {
         Log("[i] Sky texture override skipped: TextureSwitcher.Enabled=0\n");
     } else {
@@ -195,21 +200,21 @@ DWORD WINAPI BootstrapThread(void* param) {
 #else
     PrimeMinHookRelayBlock();
     if (g_cfg.textureSwitcherEnabled) {
-        Log("[i] Initializing sky texture override\n");
+        Log("[startup] textures: initializing moon/milkyway switcher\n");
         const bool skyTextureOk = TryInitializeSkyTextureOverride(module);
-        Log(skyTextureOk ? "[i] Sky texture override initialized\n" : "[W] Sky texture override disabled\n");
+        Log(skyTextureOk ? "[startup] textures: ready\n" : "[W] Sky texture override disabled\n");
     } else {
         Log("[i] Sky texture override skipped: TextureSwitcher.Enabled=0\n");
     }
 #endif
     if (g_cfg.autoStart) {
-        Log("[i] ReShade addon loaded; Auto Start enabled\n");
+        Log("[startup] addon: loaded autoStart=1\n");
         StartupSetStep(StartupStepId::Idle, 0, "Auto Start enabled");
         GUI_SetStatus("Auto Start enabled");
         g_nextStartIsAuto.store(true);
         RequestCrimsonWeatherStart();
     } else {
-        Log("[i] ReShade addon loaded; waiting for user start\n");
+        Log("[startup] addon: loaded autoStart=0 waiting for user start\n");
     }
     return 0;
 }

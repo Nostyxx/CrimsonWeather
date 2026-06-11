@@ -9,6 +9,7 @@
 
 #include <filesystem>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdarg>
 #include <cstdlib>
@@ -21,6 +22,12 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#if defined(CW_VERBOSE_SKY_TEXTURE) || defined(CW_DEV_BUILD)
+#define CW_SKY_VERBOSE_LOG(...) Log(__VA_ARGS__)
+#else
+#define CW_SKY_VERBOSE_LOG(...) do {} while (0)
+#endif
 
 #if defined(CW_WIND_ONLY)
 
@@ -49,6 +56,7 @@ int MilkywayTextureOptionCount() { return 1; }
 const char* MilkywayTextureOptionName(int) { return "Native"; }
 const char* MilkywayTextureOptionLabel(int) { return "Native"; }
 const char* MilkywayTextureOptionPack(int) { return ""; }
+bool MilkywayTextureOptionIsAnimated(int) { return false; }
 int MilkywayTextureFindOptionByName(const char*) { return 0; }
 int MilkywayTextureSelectedOption() { return 0; }
 void MilkywayTextureSelectOption(int) {}
@@ -110,9 +118,23 @@ enum class AnimationLoopMode {
     Once
 };
 
+constexpr size_t kDefaultAnimatedTextureGpuSlotCount = 12;
+constexpr size_t kMinAnimatedTextureGpuSlotCount = 4;
+constexpr size_t kMaxAnimatedTextureGpuSlotCount = 120;
+
+struct AnimatedFrameSlot {
+    size_t frameIndex = static_cast<size_t>(-1);
+    ID3D12Resource* resource = nullptr;
+    ULONGLONG lastUsedTick = 0;
+    UINT64 gpuEstimateBytes = 0;
+    UINT64 sourceBytes = 0;
+    DWORD loadMs = 0;
+};
+
 struct CachedAnimation {
     std::string path;
-    std::vector<ID3D12Resource*> frames;
+    std::vector<std::string> framePaths;
+    std::vector<AnimatedFrameSlot> frameSlots;
     std::vector<double> frameDurationsMs;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     UINT mips = 0;
@@ -122,6 +144,36 @@ struct CachedAnimation {
     AnimationLoopMode loopMode = AnimationLoopMode::Forward;
     size_t startFrame = 0;
     bool randomStart = false;
+};
+
+void ReleaseAnimationResources(CachedAnimation& cached);
+double BytesToMiB(UINT64 bytes);
+
+size_t ConfiguredAnimatedTextureGpuSlotCount() {
+    return std::clamp<size_t>(
+        static_cast<size_t>(std::max(0, g_cfg.textureSwitcherAnimatedTextureGpuSlots)),
+        kMinAnimatedTextureGpuSlotCount,
+        kMaxAnimatedTextureGpuSlotCount);
+}
+
+size_t AnimationGpuSlotCapacity(const CachedAnimation& cached) {
+    return cached.frameSlots.empty() ? ConfiguredAnimatedTextureGpuSlotCount() : cached.frameSlots.size();
+}
+
+void EnsureAnimationSlotStorage(CachedAnimation& cached) {
+    if (cached.frameSlots.empty()) {
+        cached.frameSlots.assign(ConfiguredAnimatedTextureGpuSlotCount(), AnimatedFrameSlot{});
+    }
+}
+
+struct TextureSlot;
+
+struct AnimationLoadRequest {
+    TextureSlot* slot = nullptr;
+    std::string path;
+    size_t frameIndex = 0;
+    uint32_t priority = 0;
+    ULONGLONG queuedTick = 0;
 };
 
 struct TextureFingerprintTarget {
@@ -170,9 +222,28 @@ struct TextureSlot {
     std::vector<CachedTexture> cache;
     std::vector<CachedAnimation> animCache;
     size_t animFrameIndex = 0;
+    size_t animStartFrame = 0;
     int animDirection = 1;
+    int animStartDirection = 1;
+    ULONGLONG animStartTick = 0;
     ULONGLONG animLastTick = 0;
     bool animFrameApplied = false;
+    uint64_t animFrameLoadCount = 0;
+    uint64_t animFrameMissCount = 0;
+    uint64_t animFrameEvictCount = 0;
+    uint64_t animRewriteCount = 0;
+    uint64_t animFrameQueueCount = 0;
+    uint64_t animFrameSkipCount = 0;
+    uint64_t animFrameStaleDropCount = 0;
+    bool animQueuedWindowValid = false;
+    size_t animQueuedWindowFrame = static_cast<size_t>(-1);
+    int animQueuedWindowDirection = 1;
+    UINT64 animResidentGpuEstimateBytes = 0;
+    UINT64 animPeakResidentGpuEstimateBytes = 0;
+    DWORD animLastLoadMs = 0;
+    DWORD animPeakLoadMs = 0;
+    ULONGLONG animLastDiagnosticTick = 0;
+    uint32_t animDiagnosticLogCount = 0;
 
     bool sawUnormSrv = false;
     bool sawSrgbSrv = false;
@@ -236,6 +307,8 @@ struct TextureSlot {
     }
 };
 
+int RewriteTrackedDescriptorsLocked(TextureSlot& slot, ID3D12Resource* replacement);
+
 using PFN_D3D12CreateDevice = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
 using PFN_CreateCommandList = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, UINT, D3D12_COMMAND_LIST_TYPE, ID3D12CommandAllocator*, ID3D12PipelineState*, REFIID, void**);
 using PFN_CreateShaderResourceView = void(STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Resource*, const D3D12_SHADER_RESOURCE_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
@@ -268,6 +341,10 @@ std::atomic<bool> g_commandListHooksInstalled{ false };
 std::atomic<ID3D12Device*> g_device{ nullptr };
 std::atomic<ID3D12CommandQueue*> g_uploadQueue{ nullptr };
 void* g_d3d12CreateDeviceTarget = nullptr;
+HANDLE g_animationWorkerThread = nullptr;
+HANDLE g_animationWorkerEvent = nullptr;
+std::atomic<bool> g_animationWorkerStop{ false };
+std::vector<AnimationLoadRequest> g_animationLoadRequests;
 TextureFingerprintTarget g_moonFingerprintTargets[] = {
     {
         "MoonTextureNodeApply",
@@ -391,6 +468,7 @@ constexpr const char* kNoMoonSentinelPath = "cw://builtin/no-moon";
 constexpr const char* kNoMilkywaySentinelPath = "cw://builtin/no-milkyway";
 
 bool StringEqualsIgnoreCase(const std::string& a, const std::string& b);
+bool StringEqualsIgnoreCase(const std::string& a, const char* b);
 
 bool TextureSwitcherEnabled() {
     return g_cfg.textureSwitcherEnabled;
@@ -469,6 +547,22 @@ std::string TextureRootDirectory(const TextureSlot& slot) {
 
 bool StringEqualsIgnoreCase(const std::string& a, const std::string& b) {
     return _stricmp(a.c_str(), b.c_str()) == 0;
+}
+
+bool StringEqualsIgnoreCase(const std::string& a, const char* b) {
+    return b && _stricmp(a.c_str(), b) == 0;
+}
+
+size_t RemoveAnimationLoadRequestsLocked(TextureSlot& slot, const char* path) {
+    const size_t before = g_animationLoadRequests.size();
+    g_animationLoadRequests.erase(
+        std::remove_if(g_animationLoadRequests.begin(), g_animationLoadRequests.end(),
+            [&](const AnimationLoadRequest& request) {
+                return request.slot == &slot &&
+                    (!path || !path[0] || StringEqualsIgnoreCase(request.path, path));
+            }),
+        g_animationLoadRequests.end());
+    return before - g_animationLoadRequests.size();
 }
 
 int HexNibble(char c) {
@@ -579,7 +673,7 @@ bool ResolveFingerprintTargets(TextureSlot& slot) {
         TextureFingerprintTarget& target = slot.fingerprintTargets[i];
         target.start = ScanExecutableModulePattern(target.pattern);
         if (target.start) {
-            Log("[%s] fingerprint %s = %p rva=0x%llX range=0x%zX\n",
+            CW_SKY_VERBOSE_LOG("[%s] fingerprint %s = %p rva=0x%llX range=0x%zX\n",
                 slot.logTag,
                 target.name,
                 reinterpret_cast<void*>(target.start),
@@ -614,7 +708,7 @@ void LogFingerprintSummary(TextureSlot& slot) {
     for (size_t i = 0; i < slot.fingerprintTargetCount; ++i) {
         const TextureFingerprintTarget& target = slot.fingerprintTargets[i];
         if (target.start && base) {
-            Log("[%s] fingerprint target %s rva=0x%llX range=0x%llX\n",
+            CW_SKY_VERBOSE_LOG("[%s] fingerprint target %s rva=0x%llX range=0x%llX\n",
                 slot.logTag,
                 target.name,
                 static_cast<unsigned long long>(target.start - base),
@@ -892,14 +986,14 @@ const char* AnimationLoopModeName(AnimationLoopMode mode) {
     }
 }
 
-bool LoadAnimatedMoonFrameList(const std::filesystem::path& folder,
-                               std::vector<std::string>& outFrames,
-                               double& outFps,
-                               std::vector<double>& outFrameDurationsMs,
-                               AnimationLoopMode& outLoopMode,
-                               size_t& outStartFrame,
-                               bool& outRandomStart,
-                               bool allowFallback) {
+bool LoadAnimatedTextureFrameList(const std::filesystem::path& folder,
+                                  std::vector<std::string>& outFrames,
+                                  double& outFps,
+                                  std::vector<double>& outFrameDurationsMs,
+                                  AnimationLoopMode& outLoopMode,
+                                  size_t& outStartFrame,
+                                  bool& outRandomStart,
+                                  bool allowFallback) {
     outFrames.clear();
     outFrameDurationsMs.clear();
     outFps = kDefaultAnimatedMoonFps;
@@ -989,10 +1083,10 @@ bool LoadAnimatedMoonFrameList(const std::filesystem::path& folder,
     return false;
 }
 
-bool TryAnimatedMoonPackPath(const std::filesystem::path& root,
-                             const std::filesystem::path& folder,
-                             std::string& outPack,
-                             std::string& outLabel) {
+bool TryAnimatedTexturePackPath(const std::filesystem::path& root,
+                                const std::filesystem::path& folder,
+                                std::string& outPack,
+                                std::string& outLabel) {
     std::error_code ec;
     const std::filesystem::path relative = std::filesystem::relative(folder, root, ec);
     std::vector<std::string> parts;
@@ -1010,7 +1104,7 @@ bool TryAnimatedMoonPackPath(const std::filesystem::path& root,
     AnimationLoopMode loopMode = AnimationLoopMode::Forward;
     size_t startFrame = 0;
     bool randomStart = false;
-    if (!LoadAnimatedMoonFrameList(folder, frames, fps, frameDurations, loopMode, startFrame, randomStart, true)) {
+    if (!LoadAnimatedTextureFrameList(folder, frames, fps, frameDurations, loopMode, startFrame, randomStart, true)) {
         return false;
     }
     outPack = parts[0];
@@ -1073,14 +1167,13 @@ void RefreshTextureListLocked(TextureSlot& slot) {
             }
 
             const std::filesystem::path path = it->path();
-            if (&slot == &g_moonSlot &&
-                (StringEqualsIgnoreCase(path.filename().string(), "manifest.json") ||
+            if (StringEqualsIgnoreCase(path.filename().string(), "manifest.json") ||
                 StringEqualsIgnoreCase(path.filename().string(), "frame_000.png") ||
-                 StringEqualsIgnoreCase(path.filename().string(), "frame_000.dds"))) {
+                StringEqualsIgnoreCase(path.filename().string(), "frame_000.dds")) {
                 std::string pack;
                 std::string label;
                 const std::filesystem::path folder = path.parent_path();
-                if (TryAnimatedMoonPackPath(root, folder, pack, label) && !HasTextureOptionPath(slot.options, folder.string())) {
+                if (TryAnimatedTexturePackPath(root, folder, pack, label) && !HasTextureOptionPath(slot.options, folder.string())) {
                     slot.options.push_back({ label + " (" + pack + ")", label, pack, folder.string(), true });
                 }
                 continue;
@@ -1304,7 +1397,7 @@ void LogNativeStack(TextureSlot& slot, const char* tag) {
     const uint32_t index = slot.nativeLogCount.fetch_add(1);
     if (index >= 3) {
         if (index == 3) {
-            Log("[%s] stack log cap reached\n", slot.logTag);
+            CW_SKY_VERBOSE_LOG("[%s] stack log cap reached\n", slot.logTag);
         }
         return;
     }
@@ -1322,7 +1415,7 @@ void LogNativeStack(TextureSlot& slot, const char* tag) {
                 static_cast<unsigned long long>(addr - base));
         }
     }
-    Log("[%s] stack %s:%s\n", slot.logTag, tag, used ? line : " <no game frames>");
+    CW_SKY_VERBOSE_LOG("[%s] stack %s:%s\n", slot.logTag, tag, used ? line : " <no game frames>");
 }
 
 bool CurrentStackHasLoaderFingerprint(TextureSlot& slot) {
@@ -1434,7 +1527,7 @@ void UpdateMoonProofStateLocked(const char* reason) {
         g_moonSlot.bindings.size(),
         g_moonSlot.sourceSrvCount,
         g_moonSlot.copiedSrvCount);
-    Log("[moon-main] proof %s state=%s level=%d native=%p candidates=%zu bindings=%zu source=%u copied=%u srvPair=%u/%u\n",
+    CW_SKY_VERBOSE_LOG("[moon-main] proof %s state=%s level=%d native=%p candidates=%zu bindings=%zu source=%u copied=%u srvPair=%u/%u\n",
         reason,
         MoonProofNameLocked(),
         level,
@@ -1528,6 +1621,42 @@ void ActivateCachedTextureLocked(TextureSlot& slot, const CachedTexture& cached)
 }
 
 void DeactivateFileResourceLocked(TextureSlot& slot) {
+    size_t queuedAnimationRequests = 0;
+    if (slot.activeAnimated && !slot.activePath.empty()) {
+        queuedAnimationRequests = RemoveAnimationLoadRequestsLocked(slot, slot.activePath.c_str());
+        for (CachedAnimation& cached : slot.animCache) {
+            if (!StringEqualsIgnoreCase(cached.path, slot.activePath)) {
+                continue;
+            }
+
+            size_t residentSlots = 0;
+            UINT64 residentBytes = 0;
+            for (const AnimatedFrameSlot& frameSlot : cached.frameSlots) {
+                if (frameSlot.resource) {
+                    ++residentSlots;
+                    residentBytes += frameSlot.gpuEstimateBytes;
+                }
+            }
+            const int restoredDescriptors = TextureSwapReadyLocked(slot) ? RewriteTrackedDescriptorsLocked(slot, nullptr) : 0;
+            slot.fileResource.store(nullptr);
+            ReleaseAnimationResources(cached);
+            slot.animResidentGpuEstimateBytes = 0;
+            slot.animPeakResidentGpuEstimateBytes = 0;
+            Log("[%s] animation deactivated path=%s gpuSlots=%zu restoredDescriptors=%d releasedSlots=%zu releasedGpuApprox=%.2f MiB queuedDrops=%zu metadata=kept cachedAnimations=%zu\n",
+                slot.logTag,
+                cached.path.c_str(),
+                AnimationGpuSlotCapacity(cached),
+                restoredDescriptors,
+                residentSlots,
+                BytesToMiB(residentBytes),
+                queuedAnimationRequests,
+                slot.animCache.size());
+            break;
+        }
+    } else {
+        queuedAnimationRequests = RemoveAnimationLoadRequestsLocked(slot, nullptr);
+    }
+
     slot.activePath.clear();
     slot.activeAnimated = false;
     slot.fileResource.store(nullptr);
@@ -1536,9 +1665,15 @@ void DeactivateFileResourceLocked(TextureSlot& slot) {
     slot.fileWidth = 0;
     slot.fileHeight = 0;
     slot.animFrameIndex = 0;
+    slot.animStartFrame = 0;
     slot.animDirection = 1;
+    slot.animStartDirection = 1;
+    slot.animStartTick = 0;
     slot.animLastTick = 0;
     slot.animFrameApplied = false;
+    slot.animQueuedWindowValid = false;
+    slot.animQueuedWindowFrame = static_cast<size_t>(-1);
+    slot.animQueuedWindowDirection = 1;
 }
 
 void EnforceCacheLimitLocked(TextureSlot& slot) {
@@ -1558,18 +1693,210 @@ void EnforceCacheLimitLocked(TextureSlot& slot) {
         if (evict->resource) {
             evict->resource->Release();
         }
-        Log("[%s] cache evicted path=%s cached=%zu\n", slot.logTag, evict->path.c_str(), slot.cache.size() - 1);
+        CW_SKY_VERBOSE_LOG("[%s] cache evicted path=%s cached=%zu\n", slot.logTag, evict->path.c_str(), slot.cache.size() - 1);
         slot.cache.erase(evict);
     }
 }
 
 void ReleaseAnimationResources(CachedAnimation& cached) {
-    for (ID3D12Resource* frame : cached.frames) {
-        if (frame) {
-            frame->Release();
+    for (AnimatedFrameSlot& slot : cached.frameSlots) {
+        if (slot.resource) {
+            slot.resource->Release();
+        }
+        slot = {};
+    }
+}
+
+double BytesToMiB(UINT64 bytes) {
+    return static_cast<double>(bytes) / (1024.0 * 1024.0);
+}
+
+UINT64 AnimationResidentGpuBytes(const CachedAnimation& cached) {
+    UINT64 bytes = 0;
+    for (const AnimatedFrameSlot& slot : cached.frameSlots) {
+        if (slot.resource) {
+            bytes += slot.gpuEstimateBytes;
         }
     }
-    cached.frames.clear();
+    return bytes;
+}
+
+size_t AnimationResidentSlotCount(const CachedAnimation& cached) {
+    size_t count = 0;
+    for (const AnimatedFrameSlot& slot : cached.frameSlots) {
+        if (slot.resource) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+UINT64 ImageSourceBytes(const SkyImageData& image) {
+    UINT64 bytes = 0;
+    for (const SkyImageData::MipLevel& mip : image.mipLevels) {
+        bytes += static_cast<UINT64>(mip.byteSize);
+    }
+    return bytes;
+}
+
+void UpdateAnimationResidentStatsLocked(TextureSlot& owner, const CachedAnimation& cached) {
+    owner.animResidentGpuEstimateBytes = AnimationResidentGpuBytes(cached);
+    owner.animPeakResidentGpuEstimateBytes = std::max(owner.animPeakResidentGpuEstimateBytes, owner.animResidentGpuEstimateBytes);
+}
+
+void ResetAnimationDiagnosticsLocked(TextureSlot& slot) {
+    slot.animFrameLoadCount = 0;
+    slot.animFrameMissCount = 0;
+    slot.animFrameEvictCount = 0;
+    slot.animRewriteCount = 0;
+    slot.animFrameQueueCount = 0;
+    slot.animFrameSkipCount = 0;
+    slot.animFrameStaleDropCount = 0;
+    slot.animResidentGpuEstimateBytes = 0;
+    slot.animPeakResidentGpuEstimateBytes = 0;
+    slot.animLastLoadMs = 0;
+    slot.animPeakLoadMs = 0;
+    slot.animLastDiagnosticTick = 0;
+    slot.animDiagnosticLogCount = 0;
+}
+
+void LogAnimationDiagnosticsLocked(TextureSlot& slot, const CachedAnimation& cached, const char* reason, bool force = false) {
+    const ULONGLONG now = GetTickCount64();
+    constexpr ULONGLONG kDiagnosticIntervalMs = 5000;
+    if (!force && slot.animLastDiagnosticTick != 0 && now - slot.animLastDiagnosticTick < kDiagnosticIntervalMs) {
+        return;
+    }
+
+    UpdateAnimationResidentStatsLocked(slot, cached);
+    slot.animLastDiagnosticTick = now;
+    ++slot.animDiagnosticLogCount;
+
+    Log("[%s] animation stats reason=%s frame=%zu/%zu slots=%zu/%zu gpuSlots=%zu gpuApprox=%.2f MiB peak=%.2f MiB loads=%llu queued=%llu misses=%llu skipped=%llu evictions=%llu staleDrops=%llu rewrites=%llu lastLoadMs=%lu peakLoadMs=%lu descriptors=%zu sample=%u\n",
+        slot.logTag,
+        reason && reason[0] ? reason : "periodic",
+        slot.animFrameIndex,
+        cached.framePaths.size(),
+        AnimationResidentSlotCount(cached),
+        AnimationGpuSlotCapacity(cached),
+        AnimationGpuSlotCapacity(cached),
+        BytesToMiB(slot.animResidentGpuEstimateBytes),
+        BytesToMiB(slot.animPeakResidentGpuEstimateBytes),
+        static_cast<unsigned long long>(slot.animFrameLoadCount),
+        static_cast<unsigned long long>(slot.animFrameQueueCount),
+        static_cast<unsigned long long>(slot.animFrameMissCount),
+        static_cast<unsigned long long>(slot.animFrameSkipCount),
+        static_cast<unsigned long long>(slot.animFrameEvictCount),
+        static_cast<unsigned long long>(slot.animFrameStaleDropCount),
+        static_cast<unsigned long long>(slot.animRewriteCount),
+        static_cast<unsigned long>(slot.animLastLoadMs),
+        static_cast<unsigned long>(slot.animPeakLoadMs),
+        slot.bindings.size(),
+        slot.animDiagnosticLogCount);
+}
+
+size_t AnimationFrameCount(const CachedAnimation& cached) {
+    return cached.framePaths.size();
+}
+
+size_t AnimationStepPreviewIndexWithDirection(const CachedAnimation& cached, size_t frameIndex, int& direction, size_t steps);
+bool AnimationFrameInPlaybackWindow(const CachedAnimation& cached, size_t windowFrame, int windowDirection, size_t candidateFrame);
+
+ID3D12Resource* FindAnimationFrameResourceLocked(CachedAnimation& cached, size_t frameIndex, bool markUsed = true) {
+    for (AnimatedFrameSlot& slot : cached.frameSlots) {
+        if (slot.resource && slot.frameIndex == frameIndex) {
+            if (markUsed) {
+                slot.lastUsedTick = GetTickCount64();
+            }
+            return slot.resource;
+        }
+    }
+    return nullptr;
+}
+
+AnimatedFrameSlot* SelectAnimationFrameSlotLocked(TextureSlot& owner, CachedAnimation& cached, size_t frameIndex) {
+    for (AnimatedFrameSlot& slot : cached.frameSlots) {
+        if (slot.resource && slot.frameIndex == frameIndex) {
+            return &slot;
+        }
+    }
+
+    for (AnimatedFrameSlot& slot : cached.frameSlots) {
+        if (!slot.resource) {
+            return &slot;
+        }
+    }
+
+    AnimatedFrameSlot* evict = nullptr;
+    ID3D12Resource* currentPublished = owner.fileResource.load();
+    for (AnimatedFrameSlot& slot : cached.frameSlots) {
+        if (slot.frameIndex == owner.animFrameIndex ||
+            AnimationFrameInPlaybackWindow(cached, owner.animFrameIndex, owner.animDirection, slot.frameIndex) ||
+            (currentPublished && slot.resource == currentPublished)) {
+            continue;
+        }
+        if (!evict || slot.lastUsedTick < evict->lastUsedTick) {
+            evict = &slot;
+        }
+    }
+
+    return evict;
+}
+
+ID3D12Resource* StoreAnimationFrameResourceLocked(TextureSlot& owner,
+                                                  CachedAnimation& cached,
+                                                  size_t frameIndex,
+                                                  ID3D12Resource* resource,
+                                                  UINT64 gpuEstimateBytes,
+                                                  UINT64 sourceBytes,
+                                                  DWORD loadMs) {
+    if (!resource || frameIndex >= AnimationFrameCount(cached)) {
+        return nullptr;
+    }
+
+    if (ID3D12Resource* existing = FindAnimationFrameResourceLocked(cached, frameIndex)) {
+        resource->Release();
+        UpdateAnimationResidentStatsLocked(owner, cached);
+        return existing;
+    }
+
+    AnimatedFrameSlot* slot = SelectAnimationFrameSlotLocked(owner, cached, frameIndex);
+    if (!slot) {
+        CW_SKY_VERBOSE_LOG("[%s] animation frame load skipped: no evictable slot frame=%zu active=%zu published=%p\n",
+            owner.logTag,
+            frameIndex,
+            owner.animFrameIndex,
+            owner.fileResource.load());
+        resource->Release();
+        return nullptr;
+    }
+    if (slot->resource) {
+        ++owner.animFrameEvictCount;
+        CW_SKY_VERBOSE_LOG("[%s] animation frame evicted index=%zu bytes=%.2f MiB\n",
+            owner.logTag,
+            slot->frameIndex,
+            BytesToMiB(slot->gpuEstimateBytes));
+        slot->resource->Release();
+    }
+    slot->frameIndex = frameIndex;
+    slot->resource = resource;
+    slot->lastUsedTick = GetTickCount64();
+    slot->gpuEstimateBytes = gpuEstimateBytes;
+    slot->sourceBytes = sourceBytes;
+    slot->loadMs = loadMs;
+    ++owner.animFrameLoadCount;
+    owner.animLastLoadMs = loadMs;
+    owner.animPeakLoadMs = std::max(owner.animPeakLoadMs, loadMs);
+    UpdateAnimationResidentStatsLocked(owner, cached);
+    CW_SKY_VERBOSE_LOG("[%s] animation frame resident index=%zu slots=%zu/%zu gpuApprox=%.2f MiB peak=%.2f MiB source=%.2f MiB loadMs=%lu\n",
+        owner.logTag,
+        frameIndex,
+        AnimationResidentSlotCount(cached),
+        AnimationGpuSlotCapacity(cached),
+        BytesToMiB(owner.animResidentGpuEstimateBytes),
+        BytesToMiB(owner.animPeakResidentGpuEstimateBytes),
+        BytesToMiB(sourceBytes),
+        static_cast<unsigned long>(loadMs));
+    return resource;
 }
 
 CachedAnimation* FindCachedAnimationLocked(TextureSlot& slot, const std::string& path) {
@@ -1584,7 +1911,20 @@ CachedAnimation* FindCachedAnimationLocked(TextureSlot& slot, const std::string&
     return nullptr;
 }
 
-void ActivateCachedAnimationLocked(TextureSlot& slot, const CachedAnimation& cached) {
+CachedAnimation* FindCachedAnimationLocked(TextureSlot& slot, const char* path) {
+    if (!path || !path[0]) {
+        return nullptr;
+    }
+    for (CachedAnimation& cached : slot.animCache) {
+        if (StringEqualsIgnoreCase(cached.path, path)) {
+            return &cached;
+        }
+    }
+    return nullptr;
+}
+
+void ActivateCachedAnimationLocked(TextureSlot& slot, CachedAnimation& cached) {
+    EnsureAnimationSlotStorage(cached);
     slot.activePath = cached.path;
     slot.activeAnimated = true;
     slot.fileFormat = cached.format;
@@ -1592,26 +1932,35 @@ void ActivateCachedAnimationLocked(TextureSlot& slot, const CachedAnimation& cac
     slot.fileWidth = cached.width;
     slot.fileHeight = cached.height;
     size_t startFrame = cached.startFrame;
-    if (cached.randomStart && !cached.frames.empty()) {
+    const size_t frameCount = AnimationFrameCount(cached);
+    if (cached.randomStart && frameCount > 0) {
         LARGE_INTEGER qpc{};
         QueryPerformanceCounter(&qpc);
         const ULONGLONG seed = GetTickCount64() ^
             static_cast<ULONGLONG>(qpc.QuadPart) ^
             static_cast<ULONGLONG>(GetCurrentThreadId());
-        startFrame = static_cast<size_t>(seed % cached.frames.size());
+        startFrame = static_cast<size_t>(seed % frameCount);
     }
-    if (startFrame >= cached.frames.size()) {
+    if (startFrame >= frameCount) {
         startFrame = 0;
     }
 
     slot.animFrameIndex = startFrame;
+    slot.animStartFrame = startFrame;
     slot.animDirection = 1;
-    if (cached.loopMode == AnimationLoopMode::PingPong && !cached.frames.empty() && slot.animFrameIndex + 1 >= cached.frames.size()) {
+    if (cached.loopMode == AnimationLoopMode::PingPong && frameCount > 0 && slot.animFrameIndex + 1 >= frameCount) {
         slot.animDirection = -1;
     }
-    slot.animLastTick = GetTickCount64();
+    slot.animStartDirection = slot.animDirection;
+    slot.animStartTick = GetTickCount64();
+    slot.animLastTick = slot.animStartTick;
     slot.animFrameApplied = false;
-    slot.fileResource.store(cached.frames.empty() ? nullptr : cached.frames[slot.animFrameIndex]);
+    slot.fileResource.store(nullptr);
+    slot.animQueuedWindowValid = false;
+    slot.animQueuedWindowFrame = static_cast<size_t>(-1);
+    slot.animQueuedWindowDirection = slot.animDirection;
+    RemoveAnimationLoadRequestsLocked(slot, nullptr);
+    ResetAnimationDiagnosticsLocked(slot);
 }
 
 void EnforceAnimationCacheLimitLocked(TextureSlot& slot) {
@@ -1629,55 +1978,9 @@ void EnforceAnimationCacheLimitLocked(TextureSlot& slot) {
         }
 
         ReleaseAnimationResources(*evict);
-        Log("[%s] animation cache evicted path=%s cached=%zu\n", slot.logTag, evict->path.c_str(), slot.animCache.size() - 1);
+        CW_SKY_VERBOSE_LOG("[%s] animation cache evicted path=%s cached=%zu\n", slot.logTag, evict->path.c_str(), slot.animCache.size() - 1);
         slot.animCache.erase(evict);
     }
-}
-
-bool AdvanceAnimationFrameLocked(TextureSlot& slot, const CachedAnimation& cached, size_t steps) {
-    if (cached.frames.empty() || steps == 0) {
-        return false;
-    }
-    if (slot.animFrameIndex >= cached.frames.size()) {
-        slot.animFrameIndex = 0;
-        slot.animDirection = 1;
-    }
-
-    if (cached.loopMode == AnimationLoopMode::Hold) {
-        return false;
-    }
-
-    if (cached.loopMode == AnimationLoopMode::Once) {
-        const size_t oldFrame = slot.animFrameIndex;
-        slot.animFrameIndex = std::min(cached.frames.size() - 1, slot.animFrameIndex + steps);
-        return slot.animFrameIndex != oldFrame;
-    }
-
-    if (cached.loopMode != AnimationLoopMode::PingPong || cached.frames.size() < 3) {
-        slot.animFrameIndex = (slot.animFrameIndex + steps) % cached.frames.size();
-        return true;
-    }
-
-    bool advanced = false;
-    for (size_t i = 0; i < steps; ++i) {
-        if (slot.animDirection >= 0) {
-            if (slot.animFrameIndex + 1 >= cached.frames.size()) {
-                slot.animDirection = -1;
-                --slot.animFrameIndex;
-            } else {
-                ++slot.animFrameIndex;
-            }
-        } else {
-            if (slot.animFrameIndex == 0) {
-                slot.animDirection = 1;
-                ++slot.animFrameIndex;
-            } else {
-                --slot.animFrameIndex;
-            }
-        }
-        advanced = true;
-    }
-    return advanced;
 }
 
 double AnimationFrameDurationMs(const CachedAnimation& cached, size_t frameIndex) {
@@ -1889,8 +2192,453 @@ ID3D12Resource* CreateTextureResourceFromImage(TextureSlot& slot,
     return texture;
 }
 
-ID3D12Resource* EnsureAnimatedMoonResource(ID3D12Device* device) {
-    TextureSlot& slot = g_moonSlot;
+ID3D12Resource* CreateAnimationFrameResource(TextureSlot& slot,
+                                             ID3D12Device* device,
+                                             const CachedAnimation& animation,
+                                             size_t frameIndex,
+                                             UINT64& outUploadSize,
+                                             UINT64& outSourceBytes,
+                                             DWORD& outLoadMs) {
+    outUploadSize = 0;
+    outSourceBytes = 0;
+    outLoadMs = 0;
+    if (!device || frameIndex >= animation.framePaths.size()) {
+        return nullptr;
+    }
+
+    const ULONGLONG startTick = GetTickCount64();
+    SkyImageData image{};
+    char loadStatus[128] = {};
+    const std::string& framePath = animation.framePaths[frameIndex];
+    if (!LoadSkyImageFile(framePath, image, loadStatus, sizeof(loadStatus))) {
+        outLoadMs = static_cast<DWORD>(std::min<ULONGLONG>(GetTickCount64() - startTick, MAXDWORD));
+        SetTextureStatus(slot, "%s: frame load failed", slot.displayName);
+        Log("[%s] animation frame load failed index=%zu path=%s status=%s\n",
+            slot.logTag,
+            frameIndex,
+            framePath.c_str(),
+            loadStatus);
+        return nullptr;
+    }
+
+    outSourceBytes = ImageSourceBytes(image);
+    const UINT mipCount = static_cast<UINT>(image.mipLevels.size());
+    if (animation.format != image.format ||
+        animation.mips != mipCount ||
+        animation.width != image.width ||
+        animation.height != image.height) {
+        outLoadMs = static_cast<DWORD>(std::min<ULONGLONG>(GetTickCount64() - startTick, MAXDWORD));
+        SetTextureStatus(slot, "%s: mixed animation frame format", slot.displayName);
+        Log("[%s] animation frame mismatch index=%zu path=%s got=%ux%u mips=%u fmt=%s(%u) expected=%ux%u mips=%u fmt=%s(%u)\n",
+            slot.logTag,
+            frameIndex,
+            framePath.c_str(),
+            image.width,
+            image.height,
+            mipCount,
+            FormatName(image.format),
+            static_cast<unsigned>(image.format),
+            animation.width,
+            animation.height,
+            animation.mips,
+            FormatName(animation.format),
+            static_cast<unsigned>(animation.format));
+        return nullptr;
+    }
+
+    UINT uploadedMips = 0;
+    ID3D12Resource* frame = CreateTextureResourceFromImage(slot, device, image, framePath, uploadedMips, outUploadSize);
+    if (frame && uploadedMips != animation.mips) {
+        Log("[%s] animation frame uploaded mip mismatch index=%zu got=%u expected=%u\n",
+            slot.logTag,
+            frameIndex,
+            uploadedMips,
+            animation.mips);
+    }
+    outLoadMs = static_cast<DWORD>(std::min<ULONGLONG>(GetTickCount64() - startTick, MAXDWORD));
+    return frame;
+}
+
+bool EnsureAnimationFrameLoaded(TextureSlot& slot,
+                                const char* activePath,
+                                size_t frameIndex,
+                                ID3D12Device* device,
+                                ID3D12Resource** outResource = nullptr) {
+    if (outResource) {
+        *outResource = nullptr;
+    }
+    if (!device || !activePath || !activePath[0]) {
+        return false;
+    }
+
+    EnterCriticalSection(&g_hookLock);
+    CachedAnimation* cached = FindCachedAnimationLocked(slot, activePath);
+    if (!cached || frameIndex >= AnimationFrameCount(*cached)) {
+        LeaveCriticalSection(&g_hookLock);
+        return false;
+    }
+    if (!AnimationFrameInPlaybackWindow(*cached, slot.animFrameIndex, slot.animDirection, frameIndex)) {
+        ++slot.animFrameStaleDropCount;
+        LeaveCriticalSection(&g_hookLock);
+        return false;
+    }
+    if (ID3D12Resource* existing = FindAnimationFrameResourceLocked(*cached, frameIndex)) {
+        if (outResource) {
+            *outResource = existing;
+        }
+        LeaveCriticalSection(&g_hookLock);
+        return true;
+    }
+    CachedAnimation metadata = *cached;
+    LeaveCriticalSection(&g_hookLock);
+
+    UINT64 uploadSize = 0;
+    UINT64 sourceBytes = 0;
+    DWORD loadMs = 0;
+    ID3D12Resource* loaded = CreateAnimationFrameResource(slot, device, metadata, frameIndex, uploadSize, sourceBytes, loadMs);
+    if (!loaded) {
+        return false;
+    }
+
+    EnterCriticalSection(&g_hookLock);
+    cached = FindCachedAnimationLocked(slot, activePath);
+    if (!cached || !slot.activeAnimated || !StringEqualsIgnoreCase(slot.activePath, activePath) ||
+        frameIndex >= AnimationFrameCount(*cached) ||
+        !AnimationFrameInPlaybackWindow(*cached, slot.animFrameIndex, slot.animDirection, frameIndex)) {
+        if (slot.activeAnimated && StringEqualsIgnoreCase(slot.activePath, activePath)) {
+            ++slot.animFrameStaleDropCount;
+        }
+        LeaveCriticalSection(&g_hookLock);
+        loaded->Release();
+        return false;
+    }
+    ID3D12Resource* stored = StoreAnimationFrameResourceLocked(slot, *cached, frameIndex, loaded, uploadSize, sourceBytes, loadMs);
+    if (stored && outResource) {
+        *outResource = stored;
+    }
+    LeaveCriticalSection(&g_hookLock);
+    return stored != nullptr;
+}
+
+size_t AnimationStepPreviewIndex(const CachedAnimation& cached, size_t frameIndex, int direction, size_t steps) {
+    const size_t frameCount = AnimationFrameCount(cached);
+    if (frameCount == 0) {
+        return 0;
+    }
+    if (frameIndex >= frameCount) {
+        frameIndex = 0;
+    }
+    if (steps == 0 || cached.loopMode == AnimationLoopMode::Hold) {
+        return frameIndex;
+    }
+    if (cached.loopMode == AnimationLoopMode::Once) {
+        return std::min(frameCount - 1, frameIndex + steps);
+    }
+    if (cached.loopMode != AnimationLoopMode::PingPong || frameCount < 3) {
+        return (frameIndex + steps) % frameCount;
+    }
+
+    int previewDirection = direction >= 0 ? 1 : -1;
+    size_t previewFrame = frameIndex;
+    for (size_t i = 0; i < steps; ++i) {
+        if (previewDirection >= 0) {
+            if (previewFrame + 1 >= frameCount) {
+                previewDirection = -1;
+                --previewFrame;
+            } else {
+                ++previewFrame;
+            }
+        } else {
+            if (previewFrame == 0) {
+                previewDirection = 1;
+                ++previewFrame;
+            } else {
+                --previewFrame;
+            }
+        }
+    }
+    return previewFrame;
+}
+
+size_t AnimationStepPreviewIndexWithDirection(const CachedAnimation& cached, size_t frameIndex, int& direction, size_t steps) {
+    const size_t frameCount = AnimationFrameCount(cached);
+    if (frameCount == 0) {
+        direction = 1;
+        return 0;
+    }
+    if (frameIndex >= frameCount) {
+        frameIndex = 0;
+        direction = 1;
+    }
+    if (steps == 0 || cached.loopMode == AnimationLoopMode::Hold) {
+        return frameIndex;
+    }
+    if (cached.loopMode == AnimationLoopMode::Once) {
+        return std::min(frameCount - 1, frameIndex + steps);
+    }
+    if (cached.loopMode != AnimationLoopMode::PingPong || frameCount < 3) {
+        return (frameIndex + steps) % frameCount;
+    }
+
+    size_t previewFrame = frameIndex;
+    for (size_t i = 0; i < steps; ++i) {
+        if (direction >= 0) {
+            if (previewFrame + 1 >= frameCount) {
+                direction = -1;
+                --previewFrame;
+            } else {
+                ++previewFrame;
+            }
+        } else {
+            if (previewFrame == 0) {
+                direction = 1;
+                ++previewFrame;
+            } else {
+                --previewFrame;
+            }
+        }
+    }
+    return previewFrame;
+}
+
+bool AnimationFrameInPlaybackWindow(const CachedAnimation& cached, size_t windowFrame, int windowDirection, size_t candidateFrame) {
+    const size_t frameCount = AnimationFrameCount(cached);
+    if (frameCount == 0 || candidateFrame >= frameCount) {
+        return false;
+    }
+    int direction = windowDirection >= 0 ? 1 : -1;
+    size_t frame = windowFrame < frameCount ? windowFrame : 0;
+    const size_t windowSteps = std::min(AnimationGpuSlotCapacity(cached), frameCount);
+    for (size_t step = 0; step < windowSteps; ++step) {
+        if (frame == candidateFrame) {
+            return true;
+        }
+        frame = AnimationStepPreviewIndexWithDirection(cached, frame, direction, 1);
+    }
+    return false;
+}
+
+double AnimationPlaybackPeriodMs(const CachedAnimation& cached, size_t startFrame, int startDirection) {
+    const size_t frameCount = AnimationFrameCount(cached);
+    if (frameCount == 0 || cached.loopMode == AnimationLoopMode::Hold || cached.loopMode == AnimationLoopMode::Once) {
+        return 0.0;
+    }
+
+    const size_t periodSteps = (cached.loopMode == AnimationLoopMode::PingPong && frameCount >= 3)
+        ? (frameCount * 2u - 2u)
+        : frameCount;
+    size_t frame = std::min(startFrame, frameCount - 1);
+    int direction = startDirection >= 0 ? 1 : -1;
+    double period = 0.0;
+    for (size_t i = 0; i < periodSteps; ++i) {
+        period += AnimationFrameDurationMs(cached, frame);
+        frame = AnimationStepPreviewIndexWithDirection(cached, frame, direction, 1);
+    }
+    return period;
+}
+
+size_t AnimationFrameAtElapsedMs(const CachedAnimation& cached,
+                                 size_t startFrame,
+                                 int startDirection,
+                                 ULONGLONG elapsedMs,
+                                 int& outDirection) {
+    const size_t frameCount = AnimationFrameCount(cached);
+    outDirection = startDirection >= 0 ? 1 : -1;
+    if (frameCount == 0) {
+        return 0;
+    }
+
+    size_t frame = std::min(startFrame, frameCount - 1);
+    if (cached.loopMode == AnimationLoopMode::Hold) {
+        return frame;
+    }
+
+    double remainingMs = static_cast<double>(elapsedMs);
+    const double periodMs = AnimationPlaybackPeriodMs(cached, frame, outDirection);
+    if (periodMs > 0.0) {
+        remainingMs = fmod(remainingMs, periodMs);
+    }
+
+    const size_t maxSteps = cached.loopMode == AnimationLoopMode::Once
+        ? frameCount
+        : std::max<size_t>(frameCount * 2u, 1u);
+    for (size_t step = 0; step < maxSteps; ++step) {
+        const double frameMs = AnimationFrameDurationMs(cached, frame);
+        if (remainingMs < frameMs) {
+            break;
+        }
+        remainingMs -= frameMs;
+        const size_t nextFrame = AnimationStepPreviewIndexWithDirection(cached, frame, outDirection, 1);
+        if (nextFrame == frame && cached.loopMode == AnimationLoopMode::Once) {
+            break;
+        }
+        frame = nextFrame;
+    }
+    return frame;
+}
+
+void QueueAnimationFrameLoadLocked(TextureSlot& slot,
+                                   const char* activePath,
+                                   size_t frameIndex,
+                                   uint32_t priority) {
+    if (!activePath || !activePath[0]) {
+        return;
+    }
+    CachedAnimation* cached = FindCachedAnimationLocked(slot, activePath);
+    if (!cached || frameIndex >= AnimationFrameCount(*cached)) {
+        return;
+    }
+    if (FindAnimationFrameResourceLocked(*cached, frameIndex, false)) {
+        return;
+    }
+    for (const AnimationLoadRequest& request : g_animationLoadRequests) {
+        if (request.slot == &slot &&
+            request.frameIndex == frameIndex &&
+            StringEqualsIgnoreCase(request.path, activePath)) {
+            return;
+        }
+    }
+    g_animationLoadRequests.push_back({ &slot, activePath, frameIndex, priority, GetTickCount64() });
+    ++slot.animFrameQueueCount;
+}
+
+void QueueAnimationWindowLocked(TextureSlot& slot,
+                                CachedAnimation& cached,
+                                size_t frameIndex,
+                                int direction,
+                                bool includeCurrent) {
+    if (slot.activePath.empty()) {
+        return;
+    }
+    if (slot.animQueuedWindowValid &&
+        slot.animQueuedWindowFrame == frameIndex &&
+        slot.animQueuedWindowDirection == direction) {
+        return;
+    }
+
+    const std::string activePath = slot.activePath;
+    const size_t dropped = RemoveAnimationLoadRequestsLocked(slot, activePath.c_str());
+    slot.animFrameStaleDropCount += static_cast<uint64_t>(dropped);
+
+    if (includeCurrent) {
+        QueueAnimationFrameLoadLocked(slot, activePath.c_str(), frameIndex, 0);
+    }
+    const size_t windowSteps = std::min(AnimationGpuSlotCapacity(cached), AnimationFrameCount(cached));
+    for (size_t step = 1; step < windowSteps; ++step) {
+        const size_t preloadIndex = AnimationStepPreviewIndex(cached, frameIndex, direction, step);
+        QueueAnimationFrameLoadLocked(slot, activePath.c_str(), preloadIndex, static_cast<uint32_t>(step));
+    }
+
+    slot.animQueuedWindowValid = true;
+    slot.animQueuedWindowFrame = frameIndex;
+    slot.animQueuedWindowDirection = direction;
+    if (g_animationWorkerEvent) {
+        SetEvent(g_animationWorkerEvent);
+    }
+}
+
+bool AnimationLoadRequestCurrentLocked(TextureSlot& slot, const AnimationLoadRequest& request) {
+    if (request.slot != &slot || !slot.activeAnimated || !StringEqualsIgnoreCase(slot.activePath, request.path)) {
+        return false;
+    }
+    CachedAnimation* cached = FindCachedAnimationLocked(slot, request.path);
+    if (!cached || request.frameIndex >= AnimationFrameCount(*cached)) {
+        return false;
+    }
+    if (FindAnimationFrameResourceLocked(*cached, request.frameIndex, false)) {
+        return false;
+    }
+    return AnimationFrameInPlaybackWindow(*cached, slot.animFrameIndex, slot.animDirection, request.frameIndex);
+}
+
+bool PopAnimationLoadRequest(AnimationLoadRequest& outRequest) {
+    EnterCriticalSection(&g_hookLock);
+    while (!g_animationLoadRequests.empty()) {
+        auto best = g_animationLoadRequests.begin();
+        for (auto it = g_animationLoadRequests.begin() + 1; it != g_animationLoadRequests.end(); ++it) {
+            if (it->priority < best->priority ||
+                (it->priority == best->priority && it->queuedTick < best->queuedTick)) {
+                best = it;
+            }
+        }
+
+        TextureSlot* slot = best->slot;
+        if (slot && AnimationLoadRequestCurrentLocked(*slot, *best)) {
+            outRequest = *best;
+            g_animationLoadRequests.erase(best);
+            LeaveCriticalSection(&g_hookLock);
+            return true;
+        }
+
+        if (slot) {
+            ++slot->animFrameStaleDropCount;
+        }
+        g_animationLoadRequests.erase(best);
+    }
+    LeaveCriticalSection(&g_hookLock);
+    return false;
+}
+
+DWORD WINAPI AnimationFrameLoaderThread(LPVOID) {
+    Log("[texture] animation frame loader thread started\n");
+    while (!g_animationWorkerStop.load()) {
+        WaitForSingleObject(g_animationWorkerEvent, 250);
+        if (g_animationWorkerStop.load()) {
+            break;
+        }
+
+        AnimationLoadRequest request{};
+        while (!g_animationWorkerStop.load() && PopAnimationLoadRequest(request)) {
+            ID3D12Device* device = g_device.load();
+            if (!device) {
+                break;
+            }
+            device->AddRef();
+            if (request.slot) {
+                EnsureAnimationFrameLoaded(*request.slot, request.path.c_str(), request.frameIndex, device);
+            }
+            device->Release();
+        }
+    }
+    Log("[texture] animation frame loader thread stopped\n");
+    return 0;
+}
+
+void StartAnimationFrameLoader() {
+    if (g_animationWorkerThread) {
+        return;
+    }
+    g_animationWorkerStop.store(false);
+    if (!g_animationWorkerEvent) {
+        g_animationWorkerEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    }
+    if (!g_animationWorkerEvent) {
+        Log("[texture] animation frame loader event create failed error=%lu\n", GetLastError());
+        return;
+    }
+    g_animationWorkerThread = CreateThread(nullptr, 0, AnimationFrameLoaderThread, nullptr, 0, nullptr);
+    if (!g_animationWorkerThread) {
+        Log("[texture] animation frame loader thread create failed error=%lu\n", GetLastError());
+    }
+}
+
+void StopAnimationFrameLoader() {
+    g_animationWorkerStop.store(true);
+    if (g_animationWorkerEvent) {
+        SetEvent(g_animationWorkerEvent);
+    }
+    if (g_animationWorkerThread) {
+        WaitForSingleObject(g_animationWorkerThread, 5000);
+        CloseHandle(g_animationWorkerThread);
+        g_animationWorkerThread = nullptr;
+    }
+    if (g_animationWorkerEvent) {
+        CloseHandle(g_animationWorkerEvent);
+        g_animationWorkerEvent = nullptr;
+    }
+}
+
+ID3D12Resource* EnsureAnimatedTextureResource(TextureSlot& slot, ID3D12Device* device) {
     if (!device) {
         device = g_device.load();
     }
@@ -1913,18 +2661,25 @@ ID3D12Resource* EnsureAnimatedMoonResource(ID3D12Device* device) {
     }
     if (CachedAnimation* cached = FindCachedAnimationLocked(slot, requestedPath)) {
         ActivateCachedAnimationLocked(slot, *cached);
-        SetTextureStatus(slot, "%s: cached animation %ux%u %zu frames", slot.displayName, cached->width, cached->height, cached->frames.size());
-        Log("[%s] animation cache hit path=%s frames=%zu %ux%u fmt=%s(%u) cached=%zu\n",
+        if (ID3D12Resource* readyFrame = FindAnimationFrameResourceLocked(*cached, slot.animFrameIndex)) {
+            slot.fileResource.store(readyFrame);
+            SetTextureStatus(slot, "%s: cached animation %ux%u %zu frames", slot.displayName, cached->width, cached->height, AnimationFrameCount(*cached));
+            LeaveCriticalSection(&g_hookLock);
+            return readyFrame;
+        }
+        SetTextureStatus(slot, "%s: cached animation metadata %ux%u %zu frames", slot.displayName, cached->width, cached->height, AnimationFrameCount(*cached));
+        CW_SKY_VERBOSE_LOG("[%s] animation cache hit path=%s frames=%zu %ux%u fmt=%s(%u) cached=%zu\n",
             slot.logTag,
             requestedPath.c_str(),
-            cached->frames.size(),
+            AnimationFrameCount(*cached),
             cached->width,
             cached->height,
             FormatName(cached->format),
             static_cast<unsigned>(cached->format),
             slot.animCache.size());
+        QueueAnimationWindowLocked(slot, *cached, slot.animFrameIndex, slot.animDirection, true);
         LeaveCriticalSection(&g_hookLock);
-        return cached->frames.empty() ? nullptr : cached->frames[0];
+        return nullptr;
     }
     LeaveCriticalSection(&g_hookLock);
 
@@ -1934,87 +2689,51 @@ ID3D12Resource* EnsureAnimatedMoonResource(ID3D12Device* device) {
     AnimationLoopMode loopMode = AnimationLoopMode::Forward;
     size_t startFrame = 0;
     bool randomStart = false;
-    if (!LoadAnimatedMoonFrameList(std::filesystem::path(requestedPath), framePaths, fps, frameDurationsMs, loopMode, startFrame, randomStart, true)) {
+    if (!LoadAnimatedTextureFrameList(std::filesystem::path(requestedPath), framePaths, fps, frameDurationsMs, loopMode, startFrame, randomStart, true)) {
         SetTextureStatus(slot, "%s: invalid animation frames", slot.displayName);
         Log("[%s] animation frame scan failed path=%s\n", slot.logTag, requestedPath.c_str());
         return nullptr;
     }
     CachedAnimation animation{};
     animation.path = requestedPath;
+    animation.framePaths = std::move(framePaths);
     animation.frameMs = 1000.0 / fps;
     animation.loopMode = loopMode;
     animation.startFrame = startFrame;
     animation.randomStart = randomStart;
     animation.frameDurationsMs = std::move(frameDurationsMs);
-    UINT64 totalUploadSize = 0;
 
-    for (size_t frameIndex = 0; frameIndex < framePaths.size(); ++frameIndex) {
-        SkyImageData image{};
-        char loadStatus[128] = {};
-        if (!LoadSkyImageFile(framePaths[frameIndex], image, loadStatus, sizeof(loadStatus))) {
-            SetTextureStatus(slot, "%s: frame load failed", slot.displayName);
-            Log("[%s] animation frame load failed index=%zu path=%s status=%s\n",
-                slot.logTag,
-                frameIndex,
-                framePaths[frameIndex].c_str(),
-                loadStatus);
-            ReleaseAnimationResources(animation);
-            return nullptr;
-        }
-
-        const UINT mipCount = static_cast<UINT>(image.mipLevels.size());
-        if (frameIndex == 0) {
-            animation.format = image.format;
-            animation.mips = mipCount;
-            animation.width = image.width;
-            animation.height = image.height;
-        } else if (animation.format != image.format ||
-                   animation.mips != mipCount ||
-                   animation.width != image.width ||
-                   animation.height != image.height) {
-            SetTextureStatus(slot, "%s: mixed animation frame format", slot.displayName);
-            Log("[%s] animation frame mismatch index=%zu path=%s got=%ux%u mips=%u fmt=%s(%u) expected=%ux%u mips=%u fmt=%s(%u)\n",
-                slot.logTag,
-                frameIndex,
-                framePaths[frameIndex].c_str(),
-                image.width,
-                image.height,
-                mipCount,
-                FormatName(image.format),
-                static_cast<unsigned>(image.format),
-                animation.width,
-                animation.height,
-                animation.mips,
-                FormatName(animation.format),
-                static_cast<unsigned>(animation.format));
-            ReleaseAnimationResources(animation);
-            return nullptr;
-        }
-
-        UINT uploadedMips = 0;
-        UINT64 uploadSize = 0;
-        ID3D12Resource* frame = CreateTextureResourceFromImage(slot, device, image, framePaths[frameIndex], uploadedMips, uploadSize);
-        if (!frame) {
-            ReleaseAnimationResources(animation);
-            return nullptr;
-        }
-        totalUploadSize += uploadSize;
-        animation.frames.push_back(frame);
+    SkyImageData firstFrameImage{};
+    char loadStatus[128] = {};
+    const ULONGLONG metadataStartTick = GetTickCount64();
+    if (animation.framePaths.empty() ||
+        !LoadSkyImageFile(animation.framePaths[0], firstFrameImage, loadStatus, sizeof(loadStatus))) {
+        SetTextureStatus(slot, "%s: frame load failed", slot.displayName);
+        Log("[%s] animation frame load failed index=0 path=%s status=%s\n",
+            slot.logTag,
+            animation.framePaths.empty() ? "" : animation.framePaths[0].c_str(),
+            loadStatus);
+        return nullptr;
     }
+    const DWORD metadataLoadMs = static_cast<DWORD>(std::min<ULONGLONG>(GetTickCount64() - metadataStartTick, MAXDWORD));
+    animation.format = firstFrameImage.format;
+    animation.mips = static_cast<UINT>(firstFrameImage.mipLevels.size());
+    animation.width = firstFrameImage.width;
+    animation.height = firstFrameImage.height;
+    const UINT64 estimatedSourceBytes = ImageSourceBytes(firstFrameImage) * static_cast<UINT64>(animation.framePaths.size());
 
     EnterCriticalSection(&g_hookLock);
     if (!slot.selectedAnimated || !StringEqualsIgnoreCase(slot.selectedPath, requestedPath)) {
-        Log("[%s] discard loaded animation because selection changed path=%s current=%s\n", slot.logTag, requestedPath.c_str(), slot.selectedPath.c_str());
+        CW_SKY_VERBOSE_LOG("[%s] discard loaded animation because selection changed path=%s current=%s\n", slot.logTag, requestedPath.c_str(), slot.selectedPath.c_str());
         LeaveCriticalSection(&g_hookLock);
-        ReleaseAnimationResources(animation);
         return nullptr;
     }
     if (CachedAnimation* cached = FindCachedAnimationLocked(slot, requestedPath)) {
-        ReleaseAnimationResources(animation);
         ActivateCachedAnimationLocked(slot, *cached);
-        SetTextureStatus(slot, "%s: cached animation %ux%u %zu frames", slot.displayName, cached->width, cached->height, cached->frames.size());
+        SetTextureStatus(slot, "%s: cached animation metadata %ux%u %zu frames", slot.displayName, cached->width, cached->height, AnimationFrameCount(*cached));
+        QueueAnimationWindowLocked(slot, *cached, slot.animFrameIndex, slot.animDirection, true);
         LeaveCriticalSection(&g_hookLock);
-        return cached->frames.empty() ? nullptr : cached->frames[0];
+        return nullptr;
     }
 
     slot.animCache.push_back(std::move(animation));
@@ -2027,11 +2746,11 @@ ID3D12Resource* EnsureAnimatedMoonResource(ID3D12Device* device) {
         LeaveCriticalSection(&g_hookLock);
         return nullptr;
     }
-    SetTextureStatus(slot, "%s: loaded animation %ux%u %zu frames", slot.displayName, cached->width, cached->height, cached->frames.size());
-    Log("[%s] runtime animation ready path=%s frames=%zu %ux%u mips=%u fps=%.3f loop=%s start=%zu random=%u fmt=%s(%u) uploadSize=%llu cached=%zu\n",
+    SetTextureStatus(slot, "%s: loaded animation metadata %ux%u %zu frames", slot.displayName, cached->width, cached->height, AnimationFrameCount(*cached));
+    Log("[%s] runtime animation metadata ready path=%s frames=%zu %ux%u mips=%u fps=%.3f loop=%s start=%zu random=%u fmt=%s(%u) gpuSlots=%zu estimatedSource=%.2f MiB metadataLoadMs=%lu scan=first-frame cached=%zu\n",
         slot.logTag,
         requestedPath.c_str(),
-        cached->frames.size(),
+        AnimationFrameCount(*cached),
         cached->width,
         cached->height,
         cached->mips,
@@ -2041,12 +2760,14 @@ ID3D12Resource* EnsureAnimatedMoonResource(ID3D12Device* device) {
         cached->randomStart ? 1u : 0u,
         FormatName(cached->format),
         static_cast<unsigned>(cached->format),
-        static_cast<unsigned long long>(totalUploadSize),
+        AnimationGpuSlotCapacity(*cached),
+        BytesToMiB(estimatedSourceBytes),
+        metadataLoadMs,
         slot.animCache.size());
 
-    ID3D12Resource* firstFrame = cached->frames.empty() ? nullptr : cached->frames[0];
+    QueueAnimationWindowLocked(slot, *cached, slot.animFrameIndex, slot.animDirection, true);
     LeaveCriticalSection(&g_hookLock);
-    return firstFrame;
+    return nullptr;
 }
 
 ID3D12Resource* EnsureFileResource(TextureSlot& slot, ID3D12Device* device) {
@@ -2073,7 +2794,7 @@ ID3D12Resource* EnsureFileResource(TextureSlot& slot, ID3D12Device* device) {
     if (CachedTexture* cached = FindCachedTextureLocked(slot, requestedPath)) {
         ActivateCachedTextureLocked(slot, *cached);
         SetTextureStatus(slot, "%s: cached %ux%u", slot.displayName, cached->width, cached->height);
-        Log("[%s] cache hit path=%s res=%p %ux%u fmt=%s(%u) cached=%zu\n",
+        CW_SKY_VERBOSE_LOG("[%s] cache hit path=%s res=%p %ux%u fmt=%s(%u) cached=%zu\n",
             slot.logTag,
             requestedPath.c_str(),
             cached->resource,
@@ -2104,7 +2825,7 @@ ID3D12Resource* EnsureFileResource(TextureSlot& slot, ID3D12Device* device) {
 
     EnterCriticalSection(&g_hookLock);
     if (!StringEqualsIgnoreCase(slot.selectedPath, requestedPath)) {
-        Log("[%s] discard loaded texture because selection changed path=%s current=%s\n", slot.logTag, requestedPath.c_str(), slot.selectedPath.c_str());
+        CW_SKY_VERBOSE_LOG("[%s] discard loaded texture because selection changed path=%s current=%s\n", slot.logTag, requestedPath.c_str(), slot.selectedPath.c_str());
         texture->Release();
         LeaveCriticalSection(&g_hookLock);
         return nullptr;
@@ -2113,7 +2834,7 @@ ID3D12Resource* EnsureFileResource(TextureSlot& slot, ID3D12Device* device) {
         texture->Release();
         ActivateCachedTextureLocked(slot, *cached);
         SetTextureStatus(slot, "%s: cached %ux%u", slot.displayName, cached->width, cached->height);
-        Log("[%s] cache won race path=%s res=%p %ux%u fmt=%s(%u) cached=%zu\n",
+        CW_SKY_VERBOSE_LOG("[%s] cache won race path=%s res=%p %ux%u fmt=%s(%u) cached=%zu\n",
             slot.logTag,
             requestedPath.c_str(),
             cached->resource,
@@ -2130,16 +2851,13 @@ ID3D12Resource* EnsureFileResource(TextureSlot& slot, ID3D12Device* device) {
     ActivateCachedTextureLocked(slot, slot.cache.back());
     EnforceCacheLimitLocked(slot);
     SetTextureStatus(slot, "%s: loaded %ux%u mips=%u", slot.displayName, image.width, image.height, mipCount);
-    Log("[%s] runtime texture ready res=%p %ux%u mips=%u fmt=%s(%u) uploadSize=%llu cached=%zu\n",
+    Log("[%s] runtime texture ready %ux%u mips=%u fmt=%s(%u)\n",
         slot.logTag,
-        texture,
         image.width,
         image.height,
         mipCount,
         FormatName(image.format),
-        static_cast<unsigned>(image.format),
-        static_cast<unsigned long long>(uploadSize),
-        slot.cache.size());
+        static_cast<unsigned>(image.format));
 
     LeaveCriticalSection(&g_hookLock);
     return texture;
@@ -2301,27 +3019,35 @@ void ApplyMilkywayTexturePath(const char* path) {
     ApplyTexturePath(g_milkywaySlot, path);
 }
 
-void ApplyMoonAnimationPath(const char* path) {
+void ApplyAnimationPath(TextureSlot& slot, const char* path) {
     if (!g_hookLockReady.load()) {
         return;
     }
     if (!path || !path[0]) {
-        ClearMoonTextureSelection();
+        ClearTextureSelection(slot);
         return;
     }
 
     EnterCriticalSection(&g_hookLock);
-    g_moonSlot.selectedPath = path;
-    g_moonSlot.selectedAnimated = true;
-    DeactivateFileResourceLocked(g_moonSlot);
-    SetTextureStatus(g_moonSlot, "%s: loading selected animation", g_moonSlot.displayName);
+    slot.selectedPath = path;
+    slot.selectedAnimated = true;
+    DeactivateFileResourceLocked(slot);
+    SetTextureStatus(slot, "%s: loading selected animation", slot.displayName);
     Log("[%s] selected animation path=%s trackedBindings=%zu ready=%u proof=%s\n",
-        g_moonSlot.logTag,
-        g_moonSlot.selectedPath.c_str(),
-        g_moonSlot.bindings.size(),
-        TextureSwapReadyLocked(g_moonSlot) ? 1u : 0u,
-        MoonProofNameLocked());
+        slot.logTag,
+        slot.selectedPath.c_str(),
+        slot.bindings.size(),
+        TextureSwapReadyLocked(slot) ? 1u : 0u,
+        slot.useProof ? MoonProofNameLocked() : "n/a");
     LeaveCriticalSection(&g_hookLock);
+}
+
+void ApplyMoonAnimationPath(const char* path) {
+    ApplyAnimationPath(g_moonSlot, path);
+}
+
+void ApplyMilkywayAnimationPath(const char* path) {
+    ApplyAnimationPath(g_milkywaySlot, path);
 }
 bool IsNativeResourceLocked(TextureSlot& slot, ID3D12Resource* resource) {
     if (!resource) {
@@ -2375,10 +3101,14 @@ void PromoteContentProvenTextureLocked(TextureSlot& slot, ID3D12Resource* resour
     if (!resource) {
         return;
     }
+#if !defined(CW_VERBOSE_SKY_TEXTURE) && !defined(CW_DEV_BUILD)
+    (void)hash;
+    (void)rowPitch;
+#endif
 
     const bool replacingCandidate = slot.primaryNativeResource && slot.primaryNativeResource != resource;
     if (replacingCandidate) {
-        Log("[%s] content proof replacing previous candidate old=%p new=%p\n",
+        CW_SKY_VERBOSE_LOG("[%s] content proof replacing previous candidate old=%p new=%p\n",
             slot.logTag,
             slot.primaryNativeResource,
             resource);
@@ -2387,12 +3117,14 @@ void PromoteContentProvenTextureLocked(TextureSlot& slot, ID3D12Resource* resour
 
     if (replacingCandidate || !slot.contentProofHit) {
         slot.contentProofHit = true;
-        Log("[%s] content proof matched hash=0x%llX expected=0x%llX rowPitch=%u via %s res=%p\n",
+        Log("[%s] content proof matched via %s\n",
+            slot.logTag,
+            tag ? tag : "native-copy");
+        CW_SKY_VERBOSE_LOG("[%s] content proof details hash=0x%llX expected=0x%llX rowPitch=%u res=%p\n",
             slot.logTag,
             static_cast<unsigned long long>(hash),
             static_cast<unsigned long long>(slot.expectedTopMipHash),
             rowPitch,
-            tag ? tag : "native-copy",
             resource);
     }
 
@@ -2412,7 +3144,7 @@ void TrackNativeResourceLocked(TextureSlot& slot, ID3D12Resource* resource, cons
         const uint32_t rejectIndex = slot.rejectLogCount.fetch_add(1);
         if (rejectIndex < 4) {
             D3D12_RESOURCE_DESC desc = resource->GetDesc();
-            Log("[%s] ignored extra native texture-like resource from %s res=%p %llux%u mips=%u fmt=%s(%u) locked=%p\n",
+            CW_SKY_VERBOSE_LOG("[%s] ignored extra native texture-like resource from %s res=%p %llux%u mips=%u fmt=%s(%u) locked=%p\n",
                 slot.logTag,
                 tag,
                 resource,
@@ -2423,7 +3155,7 @@ void TrackNativeResourceLocked(TextureSlot& slot, ID3D12Resource* resource, cons
                 static_cast<unsigned>(desc.Format),
                 slot.primaryNativeResource);
         } else if (rejectIndex == 4) {
-            Log("[%s] extra native texture-like resource log cap reached\n", slot.logTag);
+            CW_SKY_VERBOSE_LOG("[%s] extra native texture-like resource log cap reached\n", slot.logTag);
         }
         return;
     }
@@ -2432,7 +3164,7 @@ void TrackNativeResourceLocked(TextureSlot& slot, ID3D12Resource* resource, cons
         resource->AddRef();
         slot.primaryNativeResource = resource;
         slot.nativeLocked.store(true);
-        Log("[%s] native texture locked res=%p via %s\n", slot.logTag, resource, tag);
+        CW_SKY_VERBOSE_LOG("[%s] native texture locked res=%p via %s\n", slot.logTag, resource, tag);
         if (slot.useProof) {
             UpdateMoonProofStateLocked("native-locked");
         }
@@ -2447,7 +3179,7 @@ void TrackNativeResourceLocked(TextureSlot& slot, ID3D12Resource* resource, cons
     const uint32_t index = slot.candidateLogCount.fetch_add(1);
     if (index < 16) {
         D3D12_RESOURCE_DESC desc = resource->GetDesc();
-        Log("[%s] native resource from %s res=%p %llux%u mips=%u fmt=%s(%u) candidates=%zu\n",
+        CW_SKY_VERBOSE_LOG("[%s] native resource from %s res=%p %llux%u mips=%u fmt=%s(%u) candidates=%zu\n",
             slot.logTag,
             tag,
             resource,
@@ -2535,7 +3267,7 @@ void TrackPendingSourceSrvLocked(TextureSlot& slot,
 
     const uint32_t index = slot.pendingDescriptorLogCount.fetch_add(1);
     if (index < 8) {
-        Log("[%s] pending source SRV %s res=%p desc=0x%llX fmt=%s(%u) pending=%zu\n",
+        CW_SKY_VERBOSE_LOG("[%s] pending source SRV %s res=%p desc=0x%llX fmt=%s(%u) pending=%zu\n",
             slot.logTag,
             tag,
             nativeResource,
@@ -2544,7 +3276,7 @@ void TrackPendingSourceSrvLocked(TextureSlot& slot,
             static_cast<unsigned>(desc->Format),
             slot.pendingBindings.size());
     } else if (index == 8) {
-        Log("[%s] pending source SRV log cap reached\n", slot.logTag);
+        CW_SKY_VERBOSE_LOG("[%s] pending source SRV log cap reached\n", slot.logTag);
     }
 }
 
@@ -2564,7 +3296,7 @@ void TrackBindingLocked(TextureSlot& slot,
         static bool loggedMilkywayCap = false;
         bool& loggedCap = slot.useProof ? loggedMoonCap : loggedMilkywayCap;
         if (!loggedCap) {
-            Log("[%s] tracked descriptor cap reached (%zu)\n", slot.logTag, slot.bindings.size());
+            CW_SKY_VERBOSE_LOG("[%s] tracked descriptor cap reached (%zu)\n", slot.logTag, slot.bindings.size());
             loggedCap = true;
         }
         return;
@@ -2614,7 +3346,7 @@ void TrackBindingLocked(TextureSlot& slot,
 
     const uint32_t index = slot.descriptorLogCount.fetch_add(1);
     if (index < 12 || isNew) {
-        Log("[%s] descriptor %s desc=0x%llX copied=%u fmt=%s(%u) bindings=%zu\n",
+        CW_SKY_VERBOSE_LOG("[%s] descriptor %s desc=0x%llX copied=%u fmt=%s(%u) bindings=%zu\n",
             slot.logTag,
             tag,
             static_cast<unsigned long long>(dest.ptr),
@@ -2623,7 +3355,7 @@ void TrackBindingLocked(TextureSlot& slot,
             desc ? static_cast<unsigned>(desc->Format) : 0u,
             slot.bindings.size());
     } else if (index == 12) {
-        Log("[%s] descriptor log cap reached\n", slot.logTag);
+        CW_SKY_VERBOSE_LOG("[%s] descriptor log cap reached\n", slot.logTag);
     }
 }
 
@@ -2647,7 +3379,7 @@ void AdoptPendingBindingsLocked(TextureSlot& slot, ID3D12Resource* provenResourc
     slot.pendingBindings.clear();
 
     if (adopted > 0) {
-        Log("[%s] adopted %zu pending source SRV(s) after content proof\n", slot.logTag, adopted);
+        CW_SKY_VERBOSE_LOG("[%s] adopted %zu pending source SRV(s) after content proof\n", slot.logTag, adopted);
     }
 }
 
@@ -2712,19 +3444,19 @@ void MaybeTrackCopiedDescriptor(TextureSlot& slot,
             if (slot.rewriteAllOnCopy) {
                 const int rewritten = RewriteTrackedDescriptorsLocked(slot, fileTexture);
                 SetTextureStatus(slot, "%s: selected live (%zu descriptors)", slot.displayName, slot.bindings.size());
-                Log("[%s] auto rewrite after %s rewritten=%d file=%p\n", slot.logTag, tag, rewritten, fileTexture);
+                CW_SKY_VERBOSE_LOG("[%s] auto rewrite after %s rewritten=%d file=%p\n", slot.logTag, tag, rewritten, fileTexture);
             }
         }
 
         const uint32_t index = slot.descriptorCopyLogCount.fetch_add(1);
         if (index < 4) {
-            Log("[%s] %s copied descriptor src=0x%llX dst=0x%llX\n",
+            CW_SKY_VERBOSE_LOG("[%s] %s copied descriptor src=0x%llX dst=0x%llX\n",
                 slot.logTag,
                 tag,
                 static_cast<unsigned long long>(source.ptr),
                 static_cast<unsigned long long>(dest.ptr));
         } else if (index == 4) {
-            Log("[%s] descriptor copy log cap reached\n", slot.logTag);
+            CW_SKY_VERBOSE_LOG("[%s] descriptor copy log cap reached\n", slot.logTag);
         }
     }
     LeaveCriticalSection(&g_hookLock);
@@ -2845,7 +3577,7 @@ void TryProveTextureFromNativeCopy(TextureSlot& slot,
     if (!trackedNativeCandidate) {
         const uint32_t count = slot.contentRejectLogCount.fetch_add(1);
         if (count < 4) {
-            Log("[%s] content proof skipped untracked native-sized copy dest=%p %llux%u mips=%u fmt=%s(%u)\n",
+            CW_SKY_VERBOSE_LOG("[%s] content proof skipped untracked native-sized copy dest=%p %llux%u mips=%u fmt=%s(%u)\n",
                 slot.logTag,
                 dst->pResource,
                 static_cast<unsigned long long>(dstDesc.Width),
@@ -2869,7 +3601,7 @@ void TryProveTextureFromNativeCopy(TextureSlot& slot,
         const uint32_t count = slot.contentRejectLogCount.fetch_add(1);
         if (count < 4) {
             D3D12_RESOURCE_DESC srcDesc = src->pResource->GetDesc();
-            Log("[%s] content proof skipped non-upload source=%p dim=%u width=%llu\n",
+            CW_SKY_VERBOSE_LOG("[%s] content proof skipped non-upload source=%p dim=%u width=%llu\n",
                 slot.logTag,
                 src->pResource,
                 static_cast<unsigned>(srcDesc.Dimension),
@@ -2883,7 +3615,7 @@ void TryProveTextureFromNativeCopy(TextureSlot& slot,
     if (!TryHashPlacedTextureUpload(slot, src->pResource, src->PlacedFootprint, &hash, &hr)) {
         const uint32_t count = slot.contentRejectLogCount.fetch_add(1);
         if (count < 8) {
-            Log("[%s] content proof native map failed hr=0x%08X source=%p dest=%p offset=%llu rowPitch=%u\n",
+            CW_SKY_VERBOSE_LOG("[%s] content proof native map failed hr=0x%08X source=%p dest=%p offset=%llu rowPitch=%u\n",
                 slot.logTag,
                 static_cast<unsigned>(hr),
                 src->pResource,
@@ -2897,7 +3629,7 @@ void TryProveTextureFromNativeCopy(TextureSlot& slot,
     if (slot.expectedTopMipHash == 0) {
         const uint32_t count = slot.contentRejectLogCount.fetch_add(1);
         if (count < 6) {
-            Log("[%s] content proof observed hash=0x%llX dest=%p offset=%llu rowPitch=%u (not enforced yet)\n",
+            CW_SKY_VERBOSE_LOG("[%s] content proof observed hash=0x%llX dest=%p offset=%llu rowPitch=%u (not enforced yet)\n",
                 slot.logTag,
                 static_cast<unsigned long long>(hash),
                 dst->pResource,
@@ -2913,7 +3645,7 @@ void TryProveTextureFromNativeCopy(TextureSlot& slot,
     if (hash != slot.expectedTopMipHash) {
         const uint32_t count = slot.contentRejectLogCount.fetch_add(1);
         if (count < 12) {
-            Log("[%s] content proof rejected hash=0x%llX expected=0x%llX dest=%p offset=%llu rowPitch=%u\n",
+            CW_SKY_VERBOSE_LOG("[%s] content proof rejected hash=0x%llX expected=0x%llX dest=%p offset=%llu rowPitch=%u\n",
                 slot.logTag,
                 static_cast<unsigned long long>(hash),
                 static_cast<unsigned long long>(slot.expectedTopMipHash),
@@ -2921,7 +3653,7 @@ void TryProveTextureFromNativeCopy(TextureSlot& slot,
                 static_cast<unsigned long long>(src->PlacedFootprint.Offset),
                 src->PlacedFootprint.Footprint.RowPitch);
         } else if (count == 12) {
-            Log("[%s] content proof reject log cap reached\n", slot.logTag);
+            CW_SKY_VERBOSE_LOG("[%s] content proof reject log cap reached\n", slot.logTag);
         }
         return;
     }
@@ -2966,7 +3698,7 @@ void TryInstallCommandListHooks(ID3D12GraphicsCommandList* list) {
     }
 
     void** vtable = *reinterpret_cast<void***>(list);
-    Log("[moon-main] installing ID3D12GraphicsCommandList hooks list=%p vtable=%p\n", list, vtable);
+    CW_SKY_VERBOSE_LOG("[moon-main] installing ID3D12GraphicsCommandList hooks list=%p vtable=%p\n", list, vtable);
     if (!HookVtableEntry(vtable, 16, reinterpret_cast<void*>(&HookCopyTextureRegion), reinterpret_cast<void**>(&g_realCopyTextureRegion), "CopyTextureRegion")) {
         g_commandListHooksInstalled.store(false);
     }
@@ -3170,7 +3902,7 @@ void STDMETHODCALLTYPE HookCreateShaderResourceView(ID3D12Device* self,
     if (hitSlot && active) {
         __try {
             fileResource = hitSlot->selectedAnimated
-                ? EnsureAnimatedMoonResource(self)
+                ? EnsureAnimatedTextureResource(*hitSlot, self)
                 : EnsureFileResource(*hitSlot, self);
         } __except (LogSkyExceptionFilter("HookCreateShaderResourceView/EnsureFileResource", GetExceptionInformation())) {
             fileResource = nullptr;
@@ -3291,13 +4023,13 @@ bool HookVtableEntry(void** vtable, int index, void* detour, void** original, co
         return false;
     }
 
-    Log("[moon-main] hooked %s index=%d target=%p\n", name, index, vtable[index]);
+    CW_SKY_VERBOSE_LOG("[moon-main] hooked %s index=%d target=%p\n", name, index, vtable[index]);
     return true;
 }
 
 void InstallDeviceHooksBody(ID3D12Device* device) {
     if (g_device.load()) {
-        Log("[moon-main] InstallDeviceHooks skipped, device already captured\n");
+        CW_SKY_VERBOSE_LOG("[moon-main] InstallDeviceHooks skipped, device already captured\n");
         return;
     }
 
@@ -3307,7 +4039,8 @@ void InstallDeviceHooksBody(ID3D12Device* device) {
     }
 
     void** vtable = *reinterpret_cast<void***>(device);
-    Log("[moon-main] installing ID3D12Device hooks device=%p vtable=%p\n", device, vtable);
+    Log("[moon-main] D3D12 device hooks installing\n");
+    CW_SKY_VERBOSE_LOG("[moon-main] installing ID3D12Device hooks device=%p vtable=%p\n", device, vtable);
 
     device->AddRef();
     g_device.store(device);
@@ -3321,34 +4054,35 @@ void InstallDeviceHooksBody(ID3D12Device* device) {
     ID3D12Device4* device4 = nullptr;
     if (SUCCEEDED(device->QueryInterface(__uuidof(ID3D12Device4), reinterpret_cast<void**>(&device4))) && device4) {
         void** vtable4 = *reinterpret_cast<void***>(device4);
-        Log("[moon-main] ID3D12Device4=%p vtable=%p\n", device4, vtable4);
+        CW_SKY_VERBOSE_LOG("[moon-main] ID3D12Device4=%p vtable=%p\n", device4, vtable4);
         HookVtableEntry(vtable4, 53, reinterpret_cast<void*>(&HookCreateCommittedResource1), reinterpret_cast<void**>(&g_realCreateCommittedResource1), "CreateCommittedResource1");
         device4->Release();
     } else {
-        Log("[moon-main] ID3D12Device4 unavailable\n");
+        CW_SKY_VERBOSE_LOG("[moon-main] ID3D12Device4 unavailable\n");
     }
 
     ID3D12Device8* device8 = nullptr;
     if (SUCCEEDED(device->QueryInterface(__uuidof(ID3D12Device8), reinterpret_cast<void**>(&device8))) && device8) {
         void** vtable8 = *reinterpret_cast<void***>(device8);
-        Log("[moon-main] ID3D12Device8=%p vtable=%p\n", device8, vtable8);
+        CW_SKY_VERBOSE_LOG("[moon-main] ID3D12Device8=%p vtable=%p\n", device8, vtable8);
         HookVtableEntry(vtable8, 69, reinterpret_cast<void*>(&HookCreateCommittedResource2), reinterpret_cast<void**>(&g_realCreateCommittedResource2), "CreateCommittedResource2");
         device8->Release();
     } else {
-        Log("[moon-main] ID3D12Device8 unavailable\n");
+        CW_SKY_VERBOSE_LOG("[moon-main] ID3D12Device8 unavailable\n");
     }
 
     ID3D12Device10* device10 = nullptr;
     if (SUCCEEDED(device->QueryInterface(__uuidof(ID3D12Device10), reinterpret_cast<void**>(&device10))) && device10) {
         void** vtable10 = *reinterpret_cast<void***>(device10);
-        Log("[moon-main] ID3D12Device10=%p vtable=%p\n", device10, vtable10);
+        CW_SKY_VERBOSE_LOG("[moon-main] ID3D12Device10=%p vtable=%p\n", device10, vtable10);
         HookVtableEntry(vtable10, 76, reinterpret_cast<void*>(&HookCreateCommittedResource3), reinterpret_cast<void**>(&g_realCreateCommittedResource3), "CreateCommittedResource3");
         device10->Release();
     } else {
-        Log("[moon-main] ID3D12Device10 unavailable\n");
+        CW_SKY_VERBOSE_LOG("[moon-main] ID3D12Device10 unavailable\n");
     }
 
     SetTextureStatus(g_moonSlot, "Moon texture: device hooks installed");
+    Log("[moon-main] D3D12 device hooks ready\n");
 }
 
 void InstallDeviceHooks(ID3D12Device* device) {
@@ -3366,7 +4100,7 @@ HRESULT WINAPI HookD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL minimu
         LogFingerprintSummary(*slot);
     }
     HRESULT hr = g_realD3D12CreateDevice(adapter, minimumFeatureLevel, riid, device);
-    Log("[moon-main] D3D12CreateDevice adapter=%p feature=0x%X hr=0x%08X device=%p\n",
+    CW_SKY_VERBOSE_LOG("[moon-main] D3D12CreateDevice adapter=%p feature=0x%X hr=0x%08X device=%p\n",
         adapter,
         static_cast<unsigned>(minimumFeatureLevel),
         static_cast<unsigned>(hr),
@@ -3399,17 +4133,17 @@ DWORD MoonHookBootstrapThreadBody() {
 
     void* createDevice = reinterpret_cast<void*>(GetProcAddress(d3d12, "D3D12CreateDevice"));
     g_d3d12CreateDeviceTarget = createDevice;
-    Log("[moon-main] d3d12=%p D3D12CreateDevice=%p\n", d3d12, createDevice);
+    CW_SKY_VERBOSE_LOG("[moon-main] d3d12=%p D3D12CreateDevice=%p\n", d3d12, createDevice);
     if (!createDevice) {
         SetTextureStatus(g_moonSlot, "Moon texture: D3D12CreateDevice not found");
         return 0;
     }
 
     MH_STATUS createHook = MH_CreateHook(createDevice, reinterpret_cast<void*>(&HookD3D12CreateDevice), reinterpret_cast<void**>(&g_realD3D12CreateDevice));
-    Log("[moon-main] D3D12CreateDevice hook create=%d\n", static_cast<int>(createHook));
+    CW_SKY_VERBOSE_LOG("[moon-main] D3D12CreateDevice hook create=%d\n", static_cast<int>(createHook));
     if (createHook == MH_OK || createHook == MH_ERROR_ALREADY_CREATED) {
         MH_STATUS enableHook = MH_EnableHook(createDevice);
-        Log("[moon-main] D3D12CreateDevice hook enable=%d\n", static_cast<int>(enableHook));
+        CW_SKY_VERBOSE_LOG("[moon-main] D3D12CreateDevice hook enable=%d\n", static_cast<int>(enableHook));
         if (enableHook == MH_OK || enableHook == MH_ERROR_ENABLED) {
             g_d3d12CreateDeviceHooked.store(true);
             SetTextureStatus(g_moonSlot, "Moon texture: D3D12 hook installed, waiting for moon");
@@ -3420,7 +4154,7 @@ DWORD MoonHookBootstrapThreadBody() {
 }
 
 DWORD WINAPI MoonHookBootstrapThread(LPVOID) {
-    Log("[moon-main] hook bootstrap thread entered\n");
+    CW_SKY_VERBOSE_LOG("[moon-main] hook bootstrap thread entered\n");
     __try {
         return MoonHookBootstrapThreadBody();
     } __except (LogSkyExceptionFilter("MoonHookBootstrapThread", GetExceptionInformation())) {
@@ -3432,15 +4166,16 @@ DWORD WINAPI MoonHookBootstrapThread(LPVOID) {
 void StartIntegratedMoonHook() {
     bool expected = false;
     if (!g_hookThreadStarted.compare_exchange_strong(expected, true)) {
-        Log("[moon-main] hook bootstrap thread already started\n");
+        CW_SKY_VERBOSE_LOG("[moon-main] hook bootstrap thread already started\n");
         return;
     }
 
     g_hookShuttingDown.store(false);
-    Log("[moon-main] initializing hook critical section\n");
+    CW_SKY_VERBOSE_LOG("[moon-main] initializing hook critical section\n");
     InitializeCriticalSection(&g_hookLock);
     g_hookLockReady.store(true);
-    Log("[moon-main] creating hook bootstrap thread\n");
+    StartAnimationFrameLoader();
+    CW_SKY_VERBOSE_LOG("[moon-main] creating hook bootstrap thread\n");
 
     HANDLE thread = CreateThread(nullptr, 0, MoonHookBootstrapThread, nullptr, 0, nullptr);
     if (thread) {
@@ -3457,6 +4192,7 @@ void ReleaseMoonHookResources() {
     }
 
     g_hookShuttingDown.store(true);
+    StopAnimationFrameLoader();
     ID3D12CommandQueue* uploadQueue = g_uploadQueue.exchange(nullptr);
     ID3D12Device* device = g_device.exchange(nullptr);
 
@@ -3495,7 +4231,7 @@ void ReleaseMoonHookResources() {
 
 void SkyTextureOnInitDevice(ID3D12Device* device) {
     if (!device) return;
-    Log("[moon-main] ReShade init_device fallback device=%p\n", device);
+    CW_SKY_VERBOSE_LOG("[moon-main] ReShade init_device fallback device=%p\n", device);
     InstallDeviceHooks(device);
 }
 
@@ -3506,93 +4242,84 @@ void SkyTextureOnPresent() {
 
     __try {
         const ULONGLONG now = GetTickCount64();
-        bool needsLoad = false;
+        std::array<TextureSlot*, sizeof(g_textureSlots) / sizeof(g_textureSlots[0])> loadSlots{};
+        size_t loadCount = 0;
         EnterCriticalSection(&g_hookLock);
-        if (g_moonSlot.selectedAnimated && !g_moonSlot.selectedPath.empty() &&
-            (!g_moonSlot.activeAnimated || !g_moonSlot.fileResource.load() ||
-             !StringEqualsIgnoreCase(g_moonSlot.activePath, g_moonSlot.selectedPath))) {
-            needsLoad = true;
+        for (TextureSlot* slot : g_textureSlots) {
+            if (slot->selectedAnimated && !slot->selectedPath.empty() &&
+                (!slot->activeAnimated ||
+                 !StringEqualsIgnoreCase(slot->activePath, slot->selectedPath))) {
+                if (loadCount < loadSlots.size()) {
+                    loadSlots[loadCount++] = slot;
+                }
+            }
         }
         LeaveCriticalSection(&g_hookLock);
 
-        if (needsLoad && !EnsureAnimatedMoonResource(g_device.load())) {
-            return;
+        for (size_t i = 0; i < loadCount; ++i) {
+            EnsureAnimatedTextureResource(*loadSlots[i], g_device.load());
         }
 
         EnterCriticalSection(&g_hookLock);
-        TextureSlot& slot = g_moonSlot;
-        if (!slot.selectedAnimated || !slot.activeAnimated || slot.activePath.empty()) {
-            LeaveCriticalSection(&g_hookLock);
-            return;
-        }
+        for (TextureSlot* slotPtr : g_textureSlots) {
+            TextureSlot& slot = *slotPtr;
+            if (!slot.selectedAnimated || !slot.activeAnimated || slot.activePath.empty()) {
+                continue;
+            }
 
-        CachedAnimation* cached = FindCachedAnimationLocked(slot, slot.activePath);
-        if (!cached || cached->frames.empty() || !TextureSwapReadyLocked(slot)) {
-            LeaveCriticalSection(&g_hookLock);
-            return;
-        }
+            CachedAnimation* cached = FindCachedAnimationLocked(slot, slot.activePath);
+            if (!cached || AnimationFrameCount(*cached) == 0 || !TextureSwapReadyLocked(slot)) {
+                continue;
+            }
 
-        if (slot.animFrameIndex >= cached->frames.size()) {
-            slot.animFrameIndex = 0;
-        }
+            if (slot.animStartTick == 0) {
+                slot.animStartTick = now;
+            }
+            int desiredDirection = slot.animDirection;
+            const size_t desiredFrame = AnimationFrameAtElapsedMs(
+                *cached,
+                slot.animStartFrame,
+                slot.animStartDirection,
+                now - slot.animStartTick,
+                desiredDirection);
+            const bool frameChanged = desiredFrame != slot.animFrameIndex;
+            slot.animFrameIndex = desiredFrame;
+            slot.animDirection = desiredDirection;
 
-        if (!slot.animFrameApplied) {
-            ID3D12Resource* frame = cached->frames[slot.animFrameIndex];
+            ID3D12Resource* frame = FindAnimationFrameResourceLocked(*cached, slot.animFrameIndex);
+            if (!frame) {
+                ++slot.animFrameMissCount;
+                ++slot.animFrameSkipCount;
+                QueueAnimationWindowLocked(slot, *cached, slot.animFrameIndex, slot.animDirection, true);
+                LogAnimationDiagnosticsLocked(slot, *cached, slot.animFrameApplied ? "miss-keep-last" : "miss-wait-initial", !slot.animFrameApplied);
+                continue;
+            }
+
+            if (slot.animFrameApplied && slot.fileResource.load() == frame && !frameChanged) {
+                QueueAnimationWindowLocked(slot, *cached, slot.animFrameIndex, slot.animDirection, false);
+                LogAnimationDiagnosticsLocked(slot, *cached, nullptr);
+                continue;
+            }
+
             slot.fileResource.store(frame);
             const int rewritten = RewriteTrackedDescriptorsLocked(slot, frame);
-            slot.animFrameApplied = rewritten > 0;
+            if (rewritten > 0) {
+                slot.animRewriteCount += static_cast<uint64_t>(rewritten);
+            }
+            slot.animFrameApplied = rewritten > 0 || slot.animFrameApplied;
             slot.animLastTick = now;
+            static std::atomic<uint32_t> s_animAdvanceLogCount{ 0 };
+            const uint32_t logIndex = s_animAdvanceLogCount.fetch_add(1);
+            if (logIndex < 8) {
+                CW_SKY_VERBOSE_LOG("[%s] animation applied frame=%zu rewritten=%d absolute=1\n", slot.logTag, slot.animFrameIndex, rewritten);
+            } else if (logIndex == 8) {
+                CW_SKY_VERBOSE_LOG("[%s] animation advance log cap reached\n", slot.logTag);
+            }
             if (rewritten > 0) {
                 SetTextureStatus(slot, "%s: animation live (%zu descriptors)", slot.displayName, slot.bindings.size());
-                Log("[%s] animation initial frame applied frame=%zu rewritten=%d\n", slot.logTag, slot.animFrameIndex, rewritten);
             }
-            LeaveCriticalSection(&g_hookLock);
-            return;
-        }
-
-        if (slot.animLastTick == 0) {
-            slot.animLastTick = now;
-            LeaveCriticalSection(&g_hookLock);
-            return;
-        }
-
-        const ULONGLONG elapsed = now - slot.animLastTick;
-        double remainingMs = static_cast<double>(elapsed);
-        size_t steps = 0;
-        bool reachedEnd = false;
-        const size_t maxSteps = std::max<size_t>(1, cached->frames.size() * 2u);
-        while (steps < maxSteps) {
-            const double currentFrameMs = AnimationFrameDurationMs(*cached, slot.animFrameIndex);
-            if (remainingMs < currentFrameMs) {
-                break;
-            }
-            remainingMs -= currentFrameMs;
-            if (!AdvanceAnimationFrameLocked(slot, *cached, 1)) {
-                reachedEnd = true;
-                break;
-            }
-            ++steps;
-        }
-
-        if (steps == 0) {
-            if (reachedEnd) {
-                slot.animLastTick = now;
-            }
-            LeaveCriticalSection(&g_hookLock);
-            return;
-        }
-
-        const double carryMs = std::min(remainingMs, 60000.0);
-        slot.animLastTick = now - static_cast<ULONGLONG>(carryMs);
-        ID3D12Resource* frame = cached->frames[slot.animFrameIndex];
-        slot.fileResource.store(frame);
-        const int rewritten = RewriteTrackedDescriptorsLocked(slot, frame);
-        static std::atomic<uint32_t> s_animAdvanceLogCount{ 0 };
-        const uint32_t logIndex = s_animAdvanceLogCount.fetch_add(1);
-        if (logIndex < 8) {
-            Log("[%s] animation advanced frame=%zu steps=%zu rewritten=%d\n", slot.logTag, slot.animFrameIndex, steps, rewritten);
-        } else if (logIndex == 8) {
-            Log("[%s] animation advance log cap reached\n", slot.logTag);
+            QueueAnimationWindowLocked(slot, *cached, slot.animFrameIndex, slot.animDirection, false);
+            LogAnimationDiagnosticsLocked(slot, *cached, frameChanged ? "advance" : "initial", !slot.animFrameApplied);
         }
         LeaveCriticalSection(&g_hookLock);
     } __except (LogSkyExceptionFilter("SkyTextureOnPresent", GetExceptionInformation())) {
@@ -3604,18 +4331,18 @@ bool InitializeSkyTextureOverride(HMODULE module) {
         Log("[moon-main] InitializeSkyTextureOverride skipped: TextureSwitcher.Enabled=0\n");
         return false;
     }
-    Log("[moon-main] InitializeSkyTextureOverride enter module=%p\n", module);
+    CW_SKY_VERBOSE_LOG("[moon-main] InitializeSkyTextureOverride enter module=%p\n", module);
     StateLockGuard lock;
-    Log("[moon-main] InitializeSkyTextureOverride lock acquired\n");
+    CW_SKY_VERBOSE_LOG("[moon-main] InitializeSkyTextureOverride lock acquired\n");
     g_module = module;
     Log("[moon-main] resolving texture fingerprints\n");
     for (TextureSlot* slot : g_textureSlots) {
         ResolveFingerprintTargets(*slot);
     }
-    Log("[moon-main] starting integrated D3D12 texture hook\n");
+    Log("[moon-main] starting D3D12 texture hook\n");
     StartIntegratedMoonHook();
     SetTextureStatus(g_moonSlot, "Moon texture: integrated hook starting");
-    Log("[moon-main] integrated moon proof hook starting module=%p\n", module);
+    CW_SKY_VERBOSE_LOG("[moon-main] integrated moon proof hook starting module=%p\n", module);
     return true;
 }
 
@@ -3683,12 +4410,14 @@ void MilkywayTextureReload() {
     }
     std::string selectedName;
     std::string selectedPath;
+    bool selectedAnimated = false;
     {
         StateLockGuard lock;
         RefreshMilkywayTextureListLocked();
         if (const TextureOption* selected = SelectedMilkywayTextureLocked()) {
             selectedName = selected->name;
             selectedPath = selected->path;
+            selectedAnimated = selected->animated;
         }
     }
 
@@ -3696,10 +4425,18 @@ void MilkywayTextureReload() {
         Log("[milkyway-ui] reload selected %s (%s)\n", selectedName.c_str(), selectedPath.c_str());
         if (g_hookLockReady.load()) {
             EnterCriticalSection(&g_hookLock);
-            InvalidateCachedTextureLocked(g_milkywaySlot, selectedPath);
+            if (selectedAnimated) {
+                InvalidateCachedAnimationLocked(g_milkywaySlot, selectedPath);
+            } else {
+                InvalidateCachedTextureLocked(g_milkywaySlot, selectedPath);
+            }
             LeaveCriticalSection(&g_hookLock);
         }
-        ApplyMilkywayTexturePath(selectedPath.c_str());
+        if (selectedAnimated) {
+            ApplyMilkywayAnimationPath(selectedPath.c_str());
+        } else {
+            ApplyMilkywayTexturePath(selectedPath.c_str());
+        }
     } else {
         Log("[milkyway-ui] reload selected Native\n");
         ClearMilkywayTextureSelection();
@@ -3892,6 +4629,20 @@ bool MoonTextureOptionIsAnimated(int index) {
     return g_moonSlot.options[static_cast<size_t>(index - 1)].animated;
 }
 
+bool MilkywayTextureOptionIsAnimated(int index) {
+    if (!TextureSwitcherEnabled()) {
+        return false;
+    }
+    StateLockGuard lock;
+    if (!g_milkywaySlot.optionsScanned) {
+        RefreshMilkywayTextureListLocked();
+    }
+    if (index <= 0 || index > static_cast<int>(g_milkywaySlot.options.size())) {
+        return false;
+    }
+    return g_milkywaySlot.options[static_cast<size_t>(index - 1)].animated;
+}
+
 const char* MilkywayTextureOptionPack(int index) {
     if (!TextureSwitcherEnabled()) {
         return "";
@@ -4049,6 +4800,7 @@ void MilkywayTextureSelectOption(int index) {
     }
     std::string selectedName;
     std::string selectedPath;
+    bool selectedAnimated = false;
     {
         StateLockGuard lock;
         if (!g_milkywaySlot.optionsScanned) {
@@ -4066,12 +4818,17 @@ void MilkywayTextureSelectOption(int index) {
         if (const TextureOption* selected = SelectedMilkywayTextureLocked()) {
             selectedName = selected->name;
             selectedPath = selected->path;
+            selectedAnimated = selected->animated;
         }
     }
 
     if (!selectedPath.empty()) {
         Log("[milkyway-ui] selected %s (%s)\n", selectedName.c_str(), selectedPath.c_str());
-        ApplyMilkywayTexturePath(selectedPath.c_str());
+        if (selectedAnimated) {
+            ApplyMilkywayAnimationPath(selectedPath.c_str());
+        } else {
+            ApplyMilkywayTexturePath(selectedPath.c_str());
+        }
     } else {
         Log("[milkyway-ui] selected Native\n");
         ClearMilkywayTextureSelection();

@@ -15,6 +15,12 @@
 #include <d3d12.h>
 #include <cmath>
 #include <cstdio>
+#if defined(CW_DEV_BUILD)
+#include <cstdint>
+#include <cstring>
+#include <mutex>
+#include <unordered_set>
+#endif
 #include <string>
 
 using namespace overlay_internal;
@@ -23,6 +29,148 @@ namespace {
 
 HMODULE g_overlayModule = nullptr;
 bool g_overlayRegistered = false;
+
+#if defined(CW_DEV_BUILD)
+std::mutex g_shaderDumpMutex;
+std::unordered_set<uint64_t> g_dumpedShaders;
+
+const char* PipelineShaderStageName(reshade::api::pipeline_subobject_type type) {
+    switch (type) {
+    case reshade::api::pipeline_subobject_type::vertex_shader:
+        return "vs";
+    case reshade::api::pipeline_subobject_type::pixel_shader:
+        return "ps";
+    case reshade::api::pipeline_subobject_type::compute_shader:
+        return "cs";
+    case reshade::api::pipeline_subobject_type::domain_shader:
+        return "ds";
+    case reshade::api::pipeline_subobject_type::hull_shader:
+        return "hs";
+    case reshade::api::pipeline_subobject_type::geometry_shader:
+        return "gs";
+    default:
+        return nullptr;
+    }
+}
+
+uint64_t HashShaderBlob(reshade::api::pipeline_subobject_type type, const void* data, size_t size) {
+    constexpr uint64_t kFnvOffset = 14695981039346656037ull;
+    constexpr uint64_t kFnvPrime = 1099511628211ull;
+
+    uint64_t hash = kFnvOffset;
+    hash ^= static_cast<uint64_t>(type);
+    hash *= kFnvPrime;
+
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= kFnvPrime;
+    }
+    return hash;
+}
+
+bool BuildShaderDumpDir(char* outDir, size_t outSize) {
+    if (!outDir || outSize == 0 || !g_overlayModule) {
+        return false;
+    }
+
+    char modulePath[MAX_PATH] = {};
+    if (!GetModuleFileNameA(g_overlayModule, modulePath, static_cast<DWORD>(sizeof(modulePath)))) {
+        return false;
+    }
+
+    char* slash = strrchr(modulePath, '\\');
+    if (!slash) {
+        return false;
+    }
+    *slash = '\0';
+
+    char rootDir[MAX_PATH] = {};
+    sprintf_s(rootDir, "%s\\CrimsonWeather", modulePath);
+    CreateDirectoryA(rootDir, nullptr);
+
+    sprintf_s(outDir, outSize, "%s\\shader_dump", rootDir);
+    CreateDirectoryA(outDir, nullptr);
+    return true;
+}
+
+void DumpShaderBlob(reshade::api::pipeline_subobject_type type,
+                    const reshade::api::shader_desc& shader,
+                    const char* dumpDir) {
+    const char* stageName = PipelineShaderStageName(type);
+    if (!stageName || !shader.code || shader.code_size == 0 || !dumpDir || !dumpDir[0]) {
+        return;
+    }
+
+    const uint64_t hash = HashShaderBlob(type, shader.code, shader.code_size);
+    if (!g_dumpedShaders.insert(hash).second) {
+        return;
+    }
+
+    char binPath[MAX_PATH] = {};
+    sprintf_s(binPath, "%s\\%s_%016llX.bin", dumpDir, stageName,
+              static_cast<unsigned long long>(hash));
+
+    HANDLE file = CreateFileA(binPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        Log("[dev-shader] failed to create dump for %s hash=0x%016llX err=%lu\n",
+            stageName, static_cast<unsigned long long>(hash), GetLastError());
+        return;
+    }
+
+    DWORD written = 0;
+    const DWORD sizeToWrite = shader.code_size > MAXDWORD
+        ? MAXDWORD
+        : static_cast<DWORD>(shader.code_size);
+    const BOOL ok = WriteFile(file, shader.code, sizeToWrite, &written, nullptr);
+    CloseHandle(file);
+
+    if (ok && written == sizeToWrite) {
+        Log("[dev-shader] dumped %s hash=0x%016llX size=%zu\n",
+            stageName, static_cast<unsigned long long>(hash), shader.code_size);
+    } else {
+        Log("[dev-shader] incomplete dump for %s hash=0x%016llX size=%zu written=%lu err=%lu\n",
+            stageName, static_cast<unsigned long long>(hash), shader.code_size,
+            written, GetLastError());
+    }
+}
+
+static void OnReShadeInitPipeline(reshade::api::device* device,
+                                  reshade::api::pipeline_layout,
+                                  uint32_t subobjectCount,
+                                  const reshade::api::pipeline_subobject* subobjects,
+                                  reshade::api::pipeline) {
+    if (!device || device->get_api() != reshade::api::device_api::d3d12 || !subobjects) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_shaderDumpMutex);
+
+    char dumpDir[MAX_PATH] = {};
+    bool dumpDirReady = false;
+    for (uint32_t i = 0; i < subobjectCount; ++i) {
+        const reshade::api::pipeline_subobject& subobject = subobjects[i];
+        if (!PipelineShaderStageName(subobject.type) || !subobject.data || subobject.count == 0) {
+            continue;
+        }
+
+        if (!dumpDirReady) {
+            dumpDirReady = BuildShaderDumpDir(dumpDir, sizeof(dumpDir));
+            if (!dumpDirReady) {
+                Log("[dev-shader] shader dump unavailable: cannot resolve dump directory\n");
+                return;
+            }
+        }
+
+        const auto* shaders = static_cast<const reshade::api::shader_desc*>(subobject.data);
+        for (uint32_t shaderIndex = 0; shaderIndex < subobject.count; ++shaderIndex) {
+            DumpShaderBlob(subobject.type, shaders[shaderIndex], dumpDir);
+        }
+    }
+}
+#endif
+
 bool DrawStartupGate() {
     const AddonStartupState state = g_addonStartupState.load();
     if (state == AddonStartupState::Ready) {
@@ -419,14 +567,18 @@ bool InitializeOverlayBridge(HMODULE module) {
         return false;
     }
 
+    g_overlayModule = module;
+
     reshade::register_overlay(MOD_NAME, &DrawOverlay);
 
     reshade::register_event<reshade::addon_event::init_device>(&OnReShadeInitDevice);
     reshade::register_event<reshade::addon_event::present>(&OnReShadePresent);
     reshade::register_event<reshade::addon_event::reshade_begin_effects>(&OnReShadeBeginEffects);
     reshade::register_event<reshade::addon_event::reshade_set_uniform_value>(&OnReShadeSetUniformValue);
+#if defined(CW_DEV_BUILD)
+    reshade::register_event<reshade::addon_event::init_pipeline>(&OnReShadeInitPipeline);
+#endif
 
-    g_overlayModule = module;
     g_overlayRegistered = true;
     return true;
 }
@@ -440,6 +592,9 @@ void ShutdownOverlayBridge() {
     reshade::unregister_event<reshade::addon_event::init_device>(&OnReShadeInitDevice);
     reshade::unregister_event<reshade::addon_event::reshade_begin_effects>(&OnReShadeBeginEffects);
     reshade::unregister_event<reshade::addon_event::reshade_set_uniform_value>(&OnReShadeSetUniformValue);
+#if defined(CW_DEV_BUILD)
+    reshade::unregister_event<reshade::addon_event::init_pipeline>(&OnReShadeInitPipeline);
+#endif
 
     reshade::unregister_overlay(MOD_NAME, &DrawOverlay);
     reshade::unregister_addon(g_overlayModule);

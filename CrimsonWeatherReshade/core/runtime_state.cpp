@@ -80,6 +80,26 @@ void RemoveIniSectionByName(const char* path, const char* sectionName) {
     }
 }
 
+bool IniKeyExists(const char* path, const char* sectionName, const char* keyName) {
+    if (!path || !path[0] || !sectionName || !sectionName[0] || !keyName || !keyName[0]) {
+        return false;
+    }
+
+    char section[8192] = {};
+    const DWORD len = GetPrivateProfileSectionA(sectionName, section, static_cast<DWORD>(sizeof(section)), path);
+    if (len == 0) {
+        return false;
+    }
+
+    const size_t keyLen = strlen(keyName);
+    for (const char* entry = section; *entry; entry += strlen(entry) + 1) {
+        if (_strnicmp(entry, keyName, keyLen) == 0 && entry[keyLen] == '=') {
+            return true;
+        }
+    }
+    return false;
+}
+
 void WriteDefaultConfig(const char* path) {
     if (!path || !path[0]) {
         return;
@@ -111,6 +131,7 @@ void WriteDefaultConfig(const char* path) {
     WritePrivateProfileStringA("Updater", "Enabled", "1", path);
     WritePrivateProfileStringA("Updater", "AutoDownload", "0", path);
     WritePrivateProfileStringA("TextureSwitcher", "Enabled", "1", path);
+    WritePrivateProfileStringA("TextureSwitcher", "AnimatedTextureGpuSlots", "12", path);
     WritePrivateProfileStringA("RealGameTime", "DayScale", "1.0000", path);
     WritePrivateProfileStringA("RealGameTime", "NightScale", "1.0000", path);
 #else
@@ -141,7 +162,7 @@ void PatchMissingConfigKeys(const char* path) {
     if (GetPrivateProfileStringA("General", "ToastNotification", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("General", "ToastNotification", "1", path);
     }
-    if (GetPrivateProfileStringA("General", "HotkeyToggleEffect", "", buf, sizeof(buf), path) == 0) {
+    if (!IniKeyExists(path, "General", "HotkeyToggleEffect")) {
         WritePrivateProfileStringA("General", "HotkeyToggleEffect", "F10", path);
     }
     if (GetPrivateProfileStringA("General", "ExtendedSliderRange", "", buf, sizeof(buf), path) == 0) {
@@ -154,7 +175,7 @@ void PatchMissingConfigKeys(const char* path) {
             "F1-F12, INSERT, DELETE, HOME, END, PGUP, PGDN, or single letter A-Z",
             path);
     }
-    if (GetPrivateProfileStringA("Hotkeys", "ControllerToggleEffect", "", buf, sizeof(buf), path) == 0) {
+    if (!IniKeyExists(path, "Hotkeys", "ControllerToggleEffect")) {
         WritePrivateProfileStringA("Hotkeys", "ControllerToggleEffect", "dpad_down+a", path);
     }
     if (GetPrivateProfileStringA("Hotkeys", "_ControllerHotkeyOptions", "", buf, sizeof(buf), path) == 0) {
@@ -193,6 +214,11 @@ void PatchMissingConfigKeys(const char* path) {
     }
     if (GetPrivateProfileStringA("TextureSwitcher", "Enabled", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("TextureSwitcher", "Enabled", "1", path);
+    }
+    if (GetPrivateProfileStringA("TextureSwitcher", "AnimatedTextureGpuSlots", "", buf, sizeof(buf), path) == 0) {
+        char legacyGpuSlots[64] = {};
+        GetPrivateProfileStringA("TextureSwitcher", "AnimatedMoonGpuSlots", "12", legacyGpuSlots, sizeof(legacyGpuSlots), path);
+        WritePrivateProfileStringA("TextureSwitcher", "AnimatedTextureGpuSlots", legacyGpuSlots, path);
     }
     if (GetPrivateProfileStringA("RealGameTime", "DayScale", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("RealGameTime", "DayScale", "1.0000", path);
@@ -611,8 +637,11 @@ void BuildIniPath(char* outPath, size_t outSize) {
 }
 
 int KeyNameToVK(const char* name) {
-    if (!name || !name[0]) {
+    if (!name) {
         return VK_F10;
+    }
+    if (!name[0]) {
+        return 0;
     }
     if (!_stricmp(name, "F1")) return VK_F1;
     if (!_stricmp(name, "F2")) return VK_F2;
@@ -656,8 +685,11 @@ WORD ControllerTokenToMask(const char* token) {
 }
 
 WORD ParseControllerCombo(const char* text, WORD fallback) {
-    if (!text || !text[0]) {
+    if (!text) {
         return fallback;
+    }
+    if (!text[0]) {
+        return 0;
     }
 
     char copy[128] = {};
@@ -712,6 +744,12 @@ void LoadConfig(const char* dir) {
     g_cfg.updaterAutoDownload = atoi(buf) != 0;
     GetPrivateProfileStringA("TextureSwitcher", "Enabled", "1", buf, sizeof(buf), path);
     g_cfg.textureSwitcherEnabled = atoi(buf) != 0;
+    GetPrivateProfileStringA("TextureSwitcher", "AnimatedTextureGpuSlots", "", buf, sizeof(buf), path);
+    if (buf[0] == '\0') {
+        GetPrivateProfileStringA("TextureSwitcher", "AnimatedMoonGpuSlots", "12", buf, sizeof(buf), path);
+    }
+    g_cfg.textureSwitcherAnimatedTextureGpuSlots = min(120, max(4, atoi(buf)));
+    g_cfg.textureSwitcherAnimatedMoonGpuSlots = g_cfg.textureSwitcherAnimatedTextureGpuSlots;
     GetPrivateProfileStringA("RealGameTime", "DayScale", "1.0000", buf, sizeof(buf), path);
     g_cfg.realGameTimeDayScale = min(60.0f, max(0.01f, static_cast<float>(atof(buf))));
     g_realGameTimeDayScale.store(g_cfg.realGameTimeDayScale);

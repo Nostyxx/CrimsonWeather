@@ -30,6 +30,7 @@ int MilkywayTextureOptionCount();
 const char* MilkywayTextureOptionName(int index);
 const char* MilkywayTextureOptionLabel(int index);
 const char* MilkywayTextureOptionPack(int index);
+bool MilkywayTextureOptionIsAnimated(int index);
 int MilkywayTextureFindOptionByName(const char* name);
 int MilkywayTextureSelectedOption();
 void MilkywayTextureSelectOption(int index);

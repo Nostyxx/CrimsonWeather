@@ -73,7 +73,7 @@ DWORD WINAPI HotkeyThreadProc(void*) {
     bool controllerWasDown = false;
 
     while (WaitForSingleObject(g_hotkeyStopEvent, 16) == WAIT_TIMEOUT) {
-        const bool keyboardDown = (GetAsyncKeyState(g_cfg.effectToggleVK) & 0x8000) != 0;
+        const bool keyboardDown = g_cfg.effectToggleVK != 0 && (GetAsyncKeyState(g_cfg.effectToggleVK) & 0x8000) != 0;
         if (keyboardDown && !keyboardWasDown) {
             ToggleModEnabled();
             Log("[hotkey] effect toggle pressed (keyboard)\n");

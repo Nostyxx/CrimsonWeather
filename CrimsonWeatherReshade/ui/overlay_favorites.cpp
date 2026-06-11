@@ -790,11 +790,13 @@ void DrawFavoriteMilkywayTexture(
             for (int i = 0; i < MilkywayTextureOptionCount(); ++i) {
                 const char* optionName = MilkywayTextureOptionName(i);
                 const char* optionLabel = MilkywayTextureOptionLabel(i);
+                const bool animated = i > 0 && MilkywayTextureOptionIsAnimated(i);
                 const bool visible = i == 0
                     ? TextContainsNoCase("Native", g_favoriteMilkywayTextureFilter)
                     : (TextContainsNoCase(optionLabel, g_favoriteMilkywayTextureFilter) ||
                        TextContainsNoCase(optionName, g_favoriteMilkywayTextureFilter) ||
-                       TextContainsNoCase(MilkywayTextureOptionPack(i), g_favoriteMilkywayTextureFilter));
+                       TextContainsNoCase(MilkywayTextureOptionPack(i), g_favoriteMilkywayTextureFilter) ||
+                       (animated && TextContainsNoCase("anim", g_favoriteMilkywayTextureFilter)));
                 if (!visible) continue;
                 const char* optionPack = i > 0 ? MilkywayTextureOptionPack(i) : "";
                 const bool hasPack = optionPack && optionPack[0];
@@ -804,7 +806,9 @@ void DrawFavoriteMilkywayTexture(
                 }
                 ++visibleCount;
                 if (hasPack) ImGui::Indent(12.0f);
-                if (ImGui::Selectable(optionLabel, i == selected)) {
+                char display[256] = {};
+                sprintf_s(display, sizeof(display), "%s%s", optionLabel, animated ? " [ANIM]" : "");
+                if (ImGui::Selectable(display, i == selected)) {
                     selected = i;
                     if (detachedEdit) {
                         editData.milkywayTextureEnabled = i > 0;

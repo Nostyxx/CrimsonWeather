@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mod_metadata.h"
 #include "MinHook.h"
 
 #include <Windows.h>
@@ -16,25 +17,6 @@
 using std::max;
 using std::min;
 
-#if defined(CW_WIND_ONLY)
-#define MOD_NAME "Crimson Weather"
-#define MOD_DISPLAY_NAME "Crimson Weather (Wind only)"
-#define MOD_CONFIG_FILE "CrimsonWeather.WindOnly.ini"
-#define MOD_LOG_FILE "CrimsonWeather.WindOnly.log"
-#else
-#define MOD_NAME "Crimson Weather"
-#define MOD_DISPLAY_NAME MOD_NAME
-#define MOD_CONFIG_FILE "CrimsonWeather.ini"
-#define MOD_LOG_FILE "CrimsonWeather.log"
-#endif
-
-#define MOD_BASE_VERSION "0.7.1"
-#if defined(CW_DEV_BUILD)
-#define MOD_VERSION MOD_BASE_VERSION " DEV"
-#else
-#define MOD_VERSION MOD_BASE_VERSION
-#endif
-
 struct Config {
     bool logEnabled = true;
     bool autoStart = true;
@@ -44,6 +26,8 @@ struct Config {
     bool updaterEnabled = true;
     bool updaterAutoDownload = false;
     bool textureSwitcherEnabled = true;
+    int textureSwitcherAnimatedTextureGpuSlots = 12;
+    int textureSwitcherAnimatedMoonGpuSlots = 12;
     float realGameTimeDayScale = 1.0f;
     float realGameTimeNightScale = 1.0f;
     int effectToggleVK = VK_F10;

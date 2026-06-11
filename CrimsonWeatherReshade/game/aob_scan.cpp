@@ -2,7 +2,7 @@
 #include "runtime_shared.h"
 
 // AOB scan and hook installation
-#if defined(CW_VERBOSE_AOB)
+#if defined(CW_VERBOSE_AOB) || defined(CW_DEV_BUILD)
 #define CW_AOB_VERBOSE_LOG(...) Log(__VA_ARGS__)
 #else
 #define CW_AOB_VERBOSE_LOG(...) do {} while (0)
@@ -310,7 +310,7 @@ static uintptr_t PromoteToFunctionStart(uintptr_t addr, const char* name) {
     if (!addr) return 0;
     uintptr_t fn = FindFunctionStartViaUnwind(addr);
     if (fn && fn != addr) {
-        Log("[AOB] %s(entry) = %p <- %p\n", name, (void*)fn, (void*)addr);
+        CW_AOB_VERBOSE_LOG("[AOB] %s(entry) = %p <- %p\n", name, (void*)fn, (void*)addr);
         return fn;
     }
     return fn ? fn : addr;
@@ -1002,7 +1002,7 @@ static bool ResolveNativeToastBridgeAOB() {
             g_pNativeToastPush = reinterpret_cast<NativeToastPush_fn>(pushFn);
             g_pNativeToastReleaseString = reinterpret_cast<NativeToastReleaseString_fn>(releaseFn);
 
-            Log("[AOB] NativeToast root=%p outer=0x%X manager=0x%X create=%p push=%p release=%p\n",
+            CW_AOB_VERBOSE_LOG("[AOB] NativeToast root=%p outer=0x%X manager=0x%X create=%p push=%p release=%p\n",
                 (void*)g_pNativeToastRootGlobal,
                 (unsigned)outerOffset,
                 (unsigned)managerOffset,
@@ -1190,22 +1190,22 @@ static bool DiscoverTimeLayoutAOB() {
         g_tdCurrentB = g_tdLowerLimit - 0x8;
         g_addrTimeLowerHandler = FindFunctionStartViaUnwind(lowSite);
         g_addrTimeUpperHandler = FindFunctionStartViaUnwind(uppSite);
-        Log("[AOB] TimeLowerLimitStore = %p off=0x%X fn=%p\n",
+        CW_AOB_VERBOSE_LOG("[AOB] TimeLowerLimitStore = %p off=0x%X fn=%p\n",
             (void*)lowSite, (unsigned)lowOff, (void*)g_addrTimeLowerHandler);
-        Log("[AOB] TimeUpperLimitStore = %p off=0x%X fn=%p\n",
+        CW_AOB_VERBOSE_LOG("[AOB] TimeUpperLimitStore = %p off=0x%X fn=%p\n",
             (void*)uppSite, (unsigned)uppOff, (void*)g_addrTimeUpperHandler);
     }
 
     ptrdiff_t envGetEntity = 0, envGetTime = 0, entSetTime = 0;
     g_addrTimeDebugHandler = FindTimeDebugHandlerAOB(envGetEntity, envGetTime, entSetTime);
     if (!g_addrTimeDebugHandler) {
-        Log("[AOB] TimeAOB: using default vtable offsets (envGetEntity=0x%X envGetTime=0x%X entSetTime=0x%X)\n",
+        CW_AOB_VERBOSE_LOG("[AOB] TimeAOB: using default vtable offsets (envGetEntity=0x%X envGetTime=0x%X entSetTime=0x%X)\n",
             (unsigned)g_tdEnvGetEntity, (unsigned)g_tdEnvGetTime, (unsigned)g_tdEntSetTime);
     } else {
         g_tdEnvGetEntity = envGetEntity;
         g_tdEnvGetTime = envGetTime;
         g_tdEntSetTime = entSetTime;
-        Log("[AOB] TimeDebugHandler = %p (envGetEntity=0x%X envGetTime=0x%X entSetTime=0x%X)\n",
+        CW_AOB_VERBOSE_LOG("[AOB] TimeDebugHandler = %p (envGetEntity=0x%X envGetTime=0x%X entSetTime=0x%X)\n",
             (void*)g_addrTimeDebugHandler,
             (unsigned)g_tdEnvGetEntity, (unsigned)g_tdEnvGetTime, (unsigned)g_tdEntSetTime);
     }
@@ -1220,7 +1220,7 @@ static bool DiscoverTimeLayoutAOB() {
     }
 
     g_timeLayoutReady.store(true);
-    Log("[AOB] TimeLayout ready lower=0x%X upper=0x%X curA=0x%X curB=0x%X\n",
+    CW_AOB_VERBOSE_LOG("[AOB] TimeLayout ready lower=0x%X upper=0x%X curA=0x%X curB=0x%X\n",
         (unsigned)g_tdLowerLimit, (unsigned)g_tdUpperLimit,
         (unsigned)g_tdCurrentA, (unsigned)g_tdCurrentB);
     return true;
@@ -1245,7 +1245,7 @@ bool InstallHook(void*t,void*d,void**tr,const char*n,bool req){
             req?"E":"W",n,MH_StatusToString(enableStatus),(int)enableStatus,t);
         return!req;}
     RegisterRuntimeMinHook(RuntimeHookIdFromName(n), t, d);
-    Log("[+] Hooked %s at %p\n",n,t);return true;}
+    CW_AOB_VERBOSE_LOG("[+] Hooked %s at %p\n",n,t);return true;}
 
 static void** FindVtableSlotForTarget(uintptr_t target) {
     if (!target) return nullptr;
@@ -1379,7 +1379,7 @@ static bool InstallWeatherTickVtableHook(uintptr_t target) {
         reinterpret_cast<void*>(&Hooked_WeatherTick),
         slot,
         reinterpret_cast<void*>(g_pOriginalTick));
-    Log("[+] Vtable-hooked WeatherTick at %p\n", slot);
+    CW_AOB_VERBOSE_LOG("[+] Vtable-hooked WeatherTick at %p\n", slot);
     return true;
 }
 
@@ -1411,7 +1411,7 @@ bool RunAOBScan(){
         Log("[E] AOB: GetDustIntensity not found\n");
         return false;
     }
-    Log("[AOB] GetDustIntensity(sig) = %p\n", (void*)windOnlyAddrGetDust);
+    CW_AOB_VERBOSE_LOG("[AOB] GetDustIntensity(sig) = %p\n", (void*)windOnlyAddrGetDust);
 
     InstallHook((void*)windOnlyAddrGetDust, (void*)&Hooked_GetDustIntensity,
                 (void**)&g_pOrigGetDustIntensity, "GetDustIntensity", false);
@@ -1432,23 +1432,23 @@ bool RunAOBScan(){
         tick=ScanModule("48 8B C4 53 48 81 EC B0 00 00 00 80 3D");
     }
     if(!tick){Log("[E] AOB: WeatherTick not found\n");return false;}
-    Log("[AOB] WeatherTick = %p\n",(void*)tick);
+    CW_AOB_VERBOSE_LOG("[AOB] WeatherTick = %p\n",(void*)tick);
 
     // Anchor 2: GetRainIntensity
     uintptr_t rain=ScanModule("48 8B 51 50 4C 8B D1");
     if(!rain){Log("[E] AOB: GetRainIntensity not found\n");return false;}
-    Log("[AOB] GetRainIntensity = %p\n",(void*)rain);
+    CW_AOB_VERBOSE_LOG("[AOB] GetRainIntensity = %p\n",(void*)rain);
 
     uintptr_t addrNativeLightningScheduler = ResolveNativeLightningScheduler(tick, rain);
     if (addrNativeLightningScheduler) {
-        Log("[AOB] NativeLightningScheduler = %p\n", (void*)addrNativeLightningScheduler);
+        CW_AOB_VERBOSE_LOG("[AOB] NativeLightningScheduler = %p\n", (void*)addrNativeLightningScheduler);
     } else {
         Log("[W] NativeLightningScheduler not found (thunder bridge unavailable)\n");
     }
 
     g_pWeatherEffectGateByte = ResolveWeatherEffectGateByte(tick);
     if (g_pWeatherEffectGateByte) {
-        Log("[AOB] WeatherEffectGateByte = %p\n", g_pWeatherEffectGateByte);
+        CW_AOB_VERBOSE_LOG("[AOB] WeatherEffectGateByte = %p\n", g_pWeatherEffectGateByte);
     } else {
         Log("[W] WeatherEffectGateByte not found (thunder bridge will stay passive)\n");
     }
@@ -1468,7 +1468,7 @@ bool RunAOBScan(){
             CW_AOB_VERBOSE_LOG("[AOB] %s: Tick+0x%X is 0x%02X, using fallback resolver\n",n,(uint32_t)off,
                 *reinterpret_cast<uint8_t*>(site));return 0;}
         uintptr_t t=ReadCall(site);
-        Log("[AOB] %s = %p (Tick+0x%X)\n",n,(void*)t,(uint32_t)off);
+        CW_AOB_VERBOSE_LOG("[AOB] %s = %p (Tick+0x%X)\n",n,(void*)t,(uint32_t)off);
         return t;};
 
     uintptr_t addrProcessRain  = EC(0x0AF,"ProcessRainState");
@@ -1486,7 +1486,7 @@ bool RunAOBScan(){
             );
         }
         if (addrGetSnow) {
-            Log("[AOB] GetSnowIntensity(sig) = %p\n", (void*)addrGetSnow);
+            CW_AOB_VERBOSE_LOG("[AOB] GetSnowIntensity(sig) = %p\n", (void*)addrGetSnow);
         }
     }
     if (!addrGetDust) {
@@ -1499,7 +1499,7 @@ bool RunAOBScan(){
             );
         }
         if (addrGetDust) {
-            Log("[AOB] GetDustIntensity(sig) = %p\n", (void*)addrGetDust);
+            CW_AOB_VERBOSE_LOG("[AOB] GetDustIntensity(sig) = %p\n", (void*)addrGetDust);
         }
     }
     if (!addrProcessWind) {
@@ -1516,14 +1516,14 @@ bool RunAOBScan(){
         }
         if (addrProcessWind) {
             addrProcessWind = PromoteToFunctionStart(addrProcessWind, "ProcessWindState");
-            Log("[AOB] ProcessWindState(sig) = %p\n", (void*)addrProcessWind);
+            CW_AOB_VERBOSE_LOG("[AOB] ProcessWindState(sig) = %p\n", (void*)addrProcessWind);
         } else {
             Log("[W] ProcessWindState not found (No Wind may be limited)\n");
         }
     }
     uintptr_t addrPlayWeatherSoundEvent = ResolveWeatherSoundEventPlayer(addrProcessWind);
     if (addrPlayWeatherSoundEvent) {
-        Log("[AOB] PlayWeatherSoundEvent = %p\n", (void*)addrPlayWeatherSoundEvent);
+        CW_AOB_VERBOSE_LOG("[AOB] PlayWeatherSoundEvent = %p\n", (void*)addrPlayWeatherSoundEvent);
     } else {
         Log("[W] PlayWeatherSoundEvent not found (thunder audio unavailable)\n");
     }
@@ -1531,7 +1531,7 @@ bool RunAOBScan(){
 
     uintptr_t addrLoadSoundBank = ResolveLoadSoundBank();
     if (addrLoadSoundBank) {
-        Log("[AOB] LoadSoundBank = %p\n", (void*)addrLoadSoundBank);
+        CW_AOB_VERBOSE_LOG("[AOB] LoadSoundBank = %p\n", (void*)addrLoadSoundBank);
     } else {
         Log("[W] LoadSoundBank not found (thunder audio bank preload unavailable)\n");
     }
@@ -1539,7 +1539,7 @@ bool RunAOBScan(){
 
     uintptr_t addrAkLoadBankById = ResolveAkLoadBankById();
     if (addrAkLoadBankById) {
-        Log("[AOB] AK::LoadBankById = %p\n", (void*)addrAkLoadBankById);
+        CW_AOB_VERBOSE_LOG("[AOB] AK::LoadBankById = %p\n", (void*)addrAkLoadBankById);
     } else {
         Log("[W] AK::LoadBankById not found (thunder audio bank direct preload unavailable)\n");
     }
@@ -1547,7 +1547,7 @@ bool RunAOBScan(){
 
     uintptr_t addrAkPostEventById = ResolveAkPostEventById();
     if (addrAkPostEventById) {
-        Log("[AOB] AK::PostEventById = %p\n", (void*)addrAkPostEventById);
+        CW_AOB_VERBOSE_LOG("[AOB] AK::PostEventById = %p\n", (void*)addrAkPostEventById);
     } else {
         Log("[W] AK::PostEventById not found (thunder audio direct post unavailable)\n");
     }
@@ -1555,7 +1555,7 @@ bool RunAOBScan(){
 
     g_pSoundManager = ResolveSoundManagerGlobalFromWeatherSoundPlayer(addrPlayWeatherSoundEvent);
     if (g_pSoundManager) {
-        Log("[AOB] SoundManager = %p -> %p\n", (void*)g_pSoundManager, (void*)*g_pSoundManager);
+        CW_AOB_VERBOSE_LOG("[AOB] SoundManager = %p -> %p\n", (void*)g_pSoundManager, (void*)*g_pSoundManager);
     } else {
         Log("[W] SoundManager global not found (thunder audio bank preload unavailable)\n");
     }
@@ -1567,7 +1567,7 @@ bool RunAOBScan(){
             "4C 8B DC 49 89 5B 08 49 89 6B 10 49 89 73 18 57 48 83 EC 40 49 8B F1 48 8B F9 49 8B 00 4C 8B 10"
         );
         if (addrActivate) {
-            Log("[AOB] ActivateEffect(sig) = %p\n", (void*)addrActivate);
+            CW_AOB_VERBOSE_LOG("[AOB] ActivateEffect(sig) = %p\n", (void*)addrActivate);
         }
     }
     if (!addrSetIntensity) {
@@ -1575,7 +1575,7 @@ bool RunAOBScan(){
             "89 54 24 10 53 48 83 EC 30 83 79 0C 00 48 8B D9 C5 F8 29 74 24 20"
         );
         if (addrSetIntensity) {
-            Log("[AOB] SetIntensity(sig) = %p\n", (void*)addrSetIntensity);
+            CW_AOB_VERBOSE_LOG("[AOB] SetIntensity(sig) = %p\n", (void*)addrSetIntensity);
         }
     }
     uintptr_t addrWindPack = 0;
@@ -1591,7 +1591,7 @@ bool RunAOBScan(){
         if (cRainSite) FindDirectCallToTargetInRange(cRainSite + 5, 0x40, addrGetDust, &cDustSite);
         uintptr_t cRain = cRainSite ? ReadCall(cRainSite) : 0;
         uintptr_t cDust = cDustSite ? ReadCall(cDustSite) : 0;
-        Log("[AOB] CloudPack = %p\n", (void*)addrCloudPack);
+        CW_AOB_VERBOSE_LOG("[AOB] CloudPack = %p\n", (void*)addrCloudPack);
         if (!cRain || cRain != rain || (addrGetDust && (!cDust || cDust != addrGetDust))) {
             Log("[W] CloudPack call validation mismatch rain=%p/%p dust=%p/%p\n",
                 (void*)cRain, (void*)rain, (void*)cDust, (void*)addrGetDust);
@@ -1633,7 +1633,7 @@ bool RunAOBScan(){
         }
     }
     if (addrWindPack) {
-        Log("[AOB] WindPack = %p\n", (void*)addrWindPack);
+        CW_AOB_VERBOSE_LOG("[AOB] WindPack = %p\n", (void*)addrWindPack);
     } else {
         Log("[W] WindPack not found (cloud speed pack override limited)\n");
     }
@@ -1665,7 +1665,7 @@ bool RunAOBScan(){
         );
     }
     if (addrSceneFrameUpdate) {
-        Log("[AOB] SceneFrameUpdate = %p\n", (void*)addrSceneFrameUpdate);
+        CW_AOB_VERBOSE_LOG("[AOB] SceneFrameUpdate = %p\n", (void*)addrSceneFrameUpdate);
     } else {
         Log("[W] SceneFrameUpdate not found (celestial direction override unavailable)\n");
     }
@@ -1678,7 +1678,7 @@ bool RunAOBScan(){
         );
     }
     if (addrPPLayerUpdate) {
-        Log("[AOB] PostProcessLayerUpdate = %p\n", (void*)addrPPLayerUpdate);
+        CW_AOB_VERBOSE_LOG("[AOB] PostProcessLayerUpdate = %p\n", (void*)addrPPLayerUpdate);
     } else {
         Log("[W] PostProcessLayerUpdate not found (fog xref resolver disabled)\n");
     }
@@ -1687,7 +1687,7 @@ bool RunAOBScan(){
     if (addrPPLayerUpdate) {
         uintptr_t xrefs[32] = {};
         size_t nX = FindCallsitesTo(addrPPLayerUpdate, xrefs, 32);
-        Log("[AOB] PostProcessLayerUpdate xrefs=%u\n", (unsigned)nX);
+        CW_AOB_VERBOSE_LOG("[AOB] PostProcessLayerUpdate xrefs=%u\n", (unsigned)nX);
         for (size_t i = 0; i < nX && i < 8; ++i) {
             CW_AOB_VERBOSE_LOG("[AOB]   xref[%u] call@%p\n", (unsigned)i, (void*)xrefs[i]);
         }
@@ -1698,7 +1698,7 @@ bool RunAOBScan(){
                 uintptr_t wfUW = FindFunctionStartViaUnwind(callSite);
                 if (wfUW && LooksLikeWeatherFrameUpdate(wfUW)) {
                     addrWeatherFrameUpdate = wfUW;
-                    Log("[AOB] WeatherFrameUpdate(unwind) = %p (from call@%p)\n",
+                    CW_AOB_VERBOSE_LOG("[AOB] WeatherFrameUpdate(unwind) = %p (from call@%p)\n",
                         (void*)wfUW, (void*)callSite);
                 } else if (callSite > 0x316) {
                     uintptr_t wf = callSite - 0x316; // known relation in current family
@@ -1706,14 +1706,14 @@ bool RunAOBScan(){
                     ReadBytesSafe(wf, wb, sizeof(wb));
                     if (LooksLikeWeatherFrameUpdate(wf)) {
                         addrWeatherFrameUpdate = wf;
-                        Log("[AOB] WeatherFrameUpdate(xref) = %p (from ppCall-0x316)\n", (void*)wf);
+                        CW_AOB_VERBOSE_LOG("[AOB] WeatherFrameUpdate(xref) = %p (from ppCall-0x316)\n", (void*)wf);
                     } else {
                         Log("[W] WeatherFrameUpdate(xref) mismatch at %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X; trying backward scan\n",
                             (void*)wf, wb[0], wb[1], wb[2], wb[3], wb[4], wb[5], wb[6], wb[7], wb[8], wb[9], wb[10], wb[11]);
                         uintptr_t wfBack = FindFuncStartByPrologueBack(callSite, 0x800);
                         if (wfBack) {
                             addrWeatherFrameUpdate = wfBack;
-                            Log("[AOB] WeatherFrameUpdate(backscan) = %p (from call@%p)\n",
+                            CW_AOB_VERBOSE_LOG("[AOB] WeatherFrameUpdate(backscan) = %p (from call@%p)\n",
                                 (void*)wfBack, (void*)callSite);
                         } else if (wb[0] == 0x48 && wb[1] == 0x8B && wb[2] == 0xC4) {
                             addrWeatherFrameUpdate = wf;
@@ -1735,7 +1735,7 @@ bool RunAOBScan(){
                     LooksLikeAtmosFogBlend(forcedCand) ? 1 : 0);
                 if (LooksLikeAtmosFogBlend(forcedCand)) {
                     addrAtmosFogBlend = forcedCand;
-                    Log("[AOB] AtmosFogBlend(xref-fixed) = %p (ppCall-0x6E)\n", (void*)forcedCand);
+                    CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend(xref-fixed) = %p (ppCall-0x6E)\n", (void*)forcedCand);
                     break;
                 }
             }
@@ -1758,7 +1758,7 @@ bool RunAOBScan(){
                     LooksLikeAtmosFogBlend(cand) ? 1 : 0);
                 if (LooksLikeAtmosFogBlend(cand)) {
                     addrAtmosFogBlend = cand;
-                    Log("[AOB] AtmosFogBlend(xref) = %p (ppCall-%d at %p)\n",
+                    CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend(xref) = %p (ppCall-%d at %p)\n",
                         (void*)cand, d, (void*)fogSite);
                     break;
                 }
@@ -1768,11 +1768,11 @@ bool RunAOBScan(){
                 if (forcedCand) {
                     addrAtmosFogBlend = forcedCand;
                     fogForcedUsed = true;
-                    Log("[AOB] AtmosFogBlend(fallback) = %p\n", (void*)forcedCand);
+                    CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend(fallback) = %p\n", (void*)forcedCand);
                 } else if (nearestCand) {
                     addrAtmosFogBlend = nearestCand;
                     fogForcedUsed = true;
-                    Log("[AOB] AtmosFogBlend(fallback) = %p\n", (void*)nearestCand);
+                    CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend(fallback) = %p\n", (void*)nearestCand);
                 }
             }
         }
@@ -1791,13 +1791,13 @@ bool RunAOBScan(){
         );
     }
     if (addrWeatherFrameUpdate) {
-        Log("[AOB] WeatherFrameUpdate = %p\n", (void*)addrWeatherFrameUpdate);
+        CW_AOB_VERBOSE_LOG("[AOB] WeatherFrameUpdate = %p\n", (void*)addrWeatherFrameUpdate);
     } else {
         Log("[W] WeatherFrameUpdate not found (fog-frame force disabled)\n");
     }
     g_addrWeatherFrameUpdateResolved = addrWeatherFrameUpdate;
     if (addrAtmosFogBlend) {
-        Log("[AOB] AtmosFogBlend = %p\n", (void*)addrAtmosFogBlend);
+        CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend = %p\n", (void*)addrAtmosFogBlend);
     } else {
         Log("[W] AtmosFogBlend not found (fog direct override disabled)\n");
     }
@@ -1807,7 +1807,7 @@ bool RunAOBScan(){
     if(*reinterpret_cast<uint8_t*>(envSite)==0x48){
         g_pEnvManager=reinterpret_cast<uintptr_t*>(ReadRIP7(envSite));
         envManagerValidated = IsReadableAddress(reinterpret_cast<uintptr_t>(g_pEnvManager), sizeof(uintptr_t));
-        Log("[AOB] g_EnvManagerPtr = %p\n",(void*)g_pEnvManager);}
+        CW_AOB_VERBOSE_LOG("[AOB] g_EnvManagerPtr = %p\n",(void*)g_pEnvManager);}
     if(!envManagerValidated){
         uintptr_t envGlobalSite = ScanModule(
             "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 40 48 8B 88 D8 0E 00 00"
@@ -1820,7 +1820,7 @@ bool RunAOBScan(){
         if(envGlobalSite){
             g_pEnvManager=reinterpret_cast<uintptr_t*>(ReadRIP7(envGlobalSite));
             envManagerValidated = IsReadableAddress(reinterpret_cast<uintptr_t>(g_pEnvManager), sizeof(uintptr_t));
-            Log("[AOB] g_EnvManagerPtr(sig) = %p\n",(void*)g_pEnvManager);
+            CW_AOB_VERBOSE_LOG("[AOB] g_EnvManagerPtr(sig) = %p\n",(void*)g_pEnvManager);
         }}
 
     // g_NullSentinel from ProcessRainState
@@ -1835,7 +1835,7 @@ bool RunAOBScan(){
                 if (nullSentinelValidated) {
                     nullSentinelValidated = TryReadIntSafe(g_pNullSentinel, &sentinelValue);
                 }
-                Log("[AOB] g_NullSentinel = %p (=0x%08X)\n",
+                CW_AOB_VERBOSE_LOG("[AOB] g_NullSentinel = %p (=0x%08X)\n",
                     (void*)g_pNullSentinel,(uint32_t)(g_pNullSentinel? sentinelValue:0));
                 break;}}
     if(!nullSentinelValidated){
@@ -1849,7 +1849,7 @@ bool RunAOBScan(){
             if(nullSentinelValidated){
                 nullSentinelValidated = TryReadIntSafe(g_pNullSentinel, &sentinelValue);
             }
-            Log("[AOB] g_NullSentinel(sig) = %p (=0x%08X)\n",
+            CW_AOB_VERBOSE_LOG("[AOB] g_NullSentinel(sig) = %p (=0x%08X)\n",
                 (void*)g_pNullSentinel,(uint32_t)(g_pNullSentinel? sentinelValue:0));
         }}
 
@@ -1889,27 +1889,27 @@ bool RunAOBScan(){
     }
 #endif
     if (addrMinimapRegionLabels) {
-        Log("[AOB] MinimapRegionLabels = %p\n", (void*)addrMinimapRegionLabels);
+        CW_AOB_VERBOSE_LOG("[AOB] MinimapRegionLabels = %p\n", (void*)addrMinimapRegionLabels);
     } else {
         Log("[W] MinimapRegionLabels not found (game HUD region ID resolver disabled)\n");
     }
     if (addrMinimapGameTimeUpdate) {
-        Log("[AOB] MinimapGameTimeUpdate = %p\n", (void*)addrMinimapGameTimeUpdate);
+        CW_AOB_VERBOSE_LOG("[AOB] MinimapGameTimeUpdate = %p\n", (void*)addrMinimapGameTimeUpdate);
     } else {
         Log("[W] MinimapGameTimeUpdate not found (game HUD time source disabled)\n");
     }
     if (addrGameTimeUpdate) {
-        Log("[AOB] GameTimeUpdate = %p\n", (void*)addrGameTimeUpdate);
+        CW_AOB_VERBOSE_LOG("[AOB] GameTimeUpdate = %p\n", (void*)addrGameTimeUpdate);
     } else {
         Log("[W] GameTimeUpdate not found (real in-game time controls disabled)\n");
     }
     if (addrGameTimeGetter) {
-        Log("[AOB] GameTimeGetter = %p\n", (void*)addrGameTimeGetter);
+        CW_AOB_VERBOSE_LOG("[AOB] GameTimeGetter = %p\n", (void*)addrGameTimeGetter);
     } else {
         Log("[W] GameTimeGetter not found (real in-game time controls disabled)\n");
     }
     if (addrGameFieldInfoResolver) {
-        Log("[AOB] GameFieldInfoResolver = %p\n", (void*)addrGameFieldInfoResolver);
+        CW_AOB_VERBOSE_LOG("[AOB] GameFieldInfoResolver = %p\n", (void*)addrGameFieldInfoResolver);
     } else {
         Log("[W] GameFieldInfoResolver not found (native time writeback disabled)\n");
     }
@@ -1919,7 +1919,7 @@ bool RunAOBScan(){
     g_pGameFieldInfoResolver = reinterpret_cast<GameFieldInfoResolver_fn>(addrGameFieldInfoResolver);
     g_pOrigAtmosFogBlend = reinterpret_cast<AtmosFogBlend_fn>(addrAtmosFogBlend);
     if (g_pOrigAtmosFogBlend) {
-        Log("[AOB] AtmosFogBlend helper ready (callable, not directly hooked)\n");
+        CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend helper ready\n");
     }
 
     if (EnableWeatherTickHook()) {

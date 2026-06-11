@@ -2,7 +2,7 @@
 
 ReShade `.addon64` weather-control mod for `CrimsonDesert.exe`.
 
-Current stable release: `0.7.1`.
+Current stable release: `0.7.2`.
 
 The current main branch is the ReShade addon rewrite. The older DXGI/ImGui build is kept on the `legacy` branch.
 
@@ -165,6 +165,7 @@ AutoDownload=0
 
 [TextureSwitcher]
 Enabled=1
+AnimatedTextureGpuSlots=12
 
 [RealGameTime]
 DayScale=1.0000
@@ -173,7 +174,7 @@ NightScale=1.0000
 
 `AutoSaved=1` automatically saves edits to the currently selected preset shortly after the active UI interaction ends. It does not create new preset files; use `Create Preset` or `Save As` first.
 
-`ToastNotification=0` disables the in-game toast messages shown by Crimson Weather. `TextureSwitcher` and `Updater` can also be disabled independently by setting their `Enabled` value to `0`. `Updater AutoDownload=1` changes the update button from opening Nexus Mods to installing the downloaded `.addon64` directly into the game `bin64` folder; the new add-on is used after restarting Crimson Desert.
+`ToastNotification=0` disables the in-game toast messages shown by Crimson Weather. `TextureSwitcher` and `Updater` can also be disabled independently by setting their `Enabled` value to `0`. `TextureSwitcher AnimatedTextureGpuSlots` controls how many frames each animated sky texture may keep resident on the GPU at once; the default is `12`, valid values are clamped to `4..120`, and higher values trade more VRAM for less frame streaming. The old `AnimatedMoonGpuSlots` key is still accepted as a legacy fallback. `Updater AutoDownload=1` changes the update button from opening Nexus Mods to installing the downloaded `.addon64` directly into the game `bin64` folder; the new add-on is used after restarting Crimson Desert.
 
 WindOnly uses `CrimsonWeather.WindOnly.ini` and stores its wind multiplier under `[Wind]`. DEV uses `CrimsonWeather.DEV.ini`.
 

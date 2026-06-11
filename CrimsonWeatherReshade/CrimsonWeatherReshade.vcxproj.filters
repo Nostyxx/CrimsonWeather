@@ -36,6 +36,9 @@
     <ClInclude Include="include\community_service.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\mod_metadata.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\community_ui.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -131,5 +134,10 @@
     <ClCompile Include="preset\preset_service.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="CrimsonWeatherReshade.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
   </ItemGroup>
 </Project>
