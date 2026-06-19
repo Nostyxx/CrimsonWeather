@@ -1810,11 +1810,12 @@ void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventCont
 
 namespace {
 
-constexpr uintptr_t kGameClockBaseMsRva = 0x6075608;
-constexpr uintptr_t kGameClockElapsedBaseMsRva = 0x5F60968;
-constexpr uintptr_t kGameClockAccumUsRva = 0x5F60960;
-constexpr uintptr_t kGameClockSnapshotPrimaryRva = 0x5D3FF98;
-constexpr uintptr_t kGameClockSnapshotTlsRva = 0x5D3FFB8;
+constexpr uintptr_t kGameClockBaseMsRva = 0x616C998;
+constexpr uintptr_t kGameClockElapsedBaseMsRva = 0x6056CC8;
+constexpr uintptr_t kGameClockAccumUsRva = 0x6056CB8;
+constexpr uintptr_t kGameClockSnapshotPrimaryRva = 0x5E354A8;
+constexpr uintptr_t kGameClockSnapshotTlsRva = 0x5E354C8;
+constexpr uintptr_t kGameClockFieldEnabledOffset = 0x61;
 constexpr unsigned long long kNativeClockDayMs = 0x4819080ull;
 constexpr unsigned long long kNativeClockDawnBendMs = 0x5265C0ull;
 constexpr unsigned long long kNativeClockNightBendMs = 0x42F2AC0ull;
@@ -2216,7 +2217,7 @@ bool ResolveGameTimeFieldStorage(unsigned char* source, long long& outStorage, u
         }
 
         const long long fieldInfo = g_pGameFieldInfoResolver(&outAreaId);
-        if (!fieldInfo || !*reinterpret_cast<unsigned char*>(fieldInfo + 0x64)) {
+        if (!fieldInfo || !*reinterpret_cast<unsigned char*>(fieldInfo + kGameClockFieldEnabledOffset)) {
             return false;
         }
         outStorage = fieldInfo + 0x40;
@@ -2281,7 +2282,7 @@ bool ProbeGameTimeFieldStorage(unsigned char* source,
             }
             return false;
         }
-        if (!*reinterpret_cast<unsigned char*>(fieldInfo + 0x64)) {
+        if (!*reinterpret_cast<unsigned char*>(fieldInfo + kGameClockFieldEnabledOffset)) {
             if (outReason) {
                 *outReason = "field-disabled";
             }
