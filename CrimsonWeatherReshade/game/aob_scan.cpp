@@ -105,7 +105,6 @@ const char* RuntimeHookLabel(RuntimeHookId id) {
     case RuntimeHookId::FogSet4: return "FogSet4";
     case RuntimeHookId::MinimapRegionLabels: return "MinimapRegionLabels";
     case RuntimeHookId::MinimapGameTimeUpdate: return "MinimapGameTimeUpdate";
-    case RuntimeHookId::GameTimeUpdate: return "GameTimeUpdate";
     case RuntimeHookId::GameTimeGetter: return "GameTimeGetter";
     default: return "Unknown";
     }
@@ -135,8 +134,6 @@ static const char* RuntimeHookKind(RuntimeHookId id) {
         return "Region";
     case RuntimeHookId::MinimapGameTimeUpdate:
         return "HUD time";
-    case RuntimeHookId::GameTimeUpdate:
-        return "Game time";
     case RuntimeHookId::GameTimeGetter:
         return "Game time";
     default:
@@ -264,6 +261,7 @@ static bool ParsePattern(const char* pattern, uint8_t* bytes, uint8_t* mask, siz
 }
 
 static bool ReadBytesSafe(uintptr_t addr, uint8_t* out, size_t n);
+static bool IsWritableAddress(uintptr_t addr, size_t bytes);
 
 static uintptr_t ScanModule(const char*pat){
     uint8_t bytes[256],mask[256];size_t len=0;
@@ -302,6 +300,62 @@ static uintptr_t ReadRIP7(uintptr_t a){
     return a+7+*reinterpret_cast<int32_t*>(a+3);}
 static uintptr_t ReadRIP6(uintptr_t a){
     return a+6+*reinterpret_cast<int32_t*>(a+2);}
+
+static bool DiscoverGameClockLayout(uintptr_t getter) {
+    g_addrGameClockSnapshotPrimary = 0;
+    g_addrGameClockSnapshotTls = 0;
+    g_gameClockFieldStorageOffset = 0;
+    g_gameClockFieldEnabledOffset = 0;
+    if (!getter) return false;
+
+    uint8_t code[0x100] = {};
+    if (!ReadBytesSafe(getter, code, sizeof(code))) return false;
+
+    uintptr_t snapshotLoads[2] = {};
+    size_t snapshotCount = 0;
+    for (size_t i = 0; i + 8 <= sizeof(code); ++i) {
+        if (!g_gameClockFieldEnabledOffset &&
+            code[i] == 0x80 && code[i + 1] == 0x78 && code[i + 3] == 0x00) {
+            g_gameClockFieldEnabledOffset = code[i + 2];
+        }
+        if (!g_gameClockFieldStorageOffset && i + 5 <= sizeof(code) &&
+            code[i] == 0xC5 && code[i + 1] == 0xFC && code[i + 2] == 0x10 && code[i + 3] == 0x40) {
+            g_gameClockFieldStorageOffset = code[i + 4];
+        }
+        if (snapshotCount < 2 &&
+            code[i] == 0xC5 && code[i + 1] == 0xFC && code[i + 2] == 0x10 && code[i + 3] == 0x05) {
+            const auto displacement = *reinterpret_cast<const int32_t*>(code + i + 4);
+            snapshotLoads[snapshotCount++] = getter + i + 8 + displacement;
+        }
+    }
+
+    if (snapshotCount == 2 && snapshotLoads[0] != snapshotLoads[1] &&
+        IsWritableAddress(snapshotLoads[0], 0x20) &&
+        IsWritableAddress(snapshotLoads[1], 0x20)) {
+        // The getter tests the TLS flag before these loads: TLS first, primary second.
+        g_addrGameClockSnapshotTls = snapshotLoads[0];
+        g_addrGameClockSnapshotPrimary = snapshotLoads[1];
+    }
+
+    const bool ready = g_addrGameClockSnapshotPrimary && g_addrGameClockSnapshotTls &&
+        g_gameClockFieldStorageOffset && g_gameClockFieldEnabledOffset;
+    if (ready) {
+        Log("[real-time] layout getter=%p snapshots={primary=%p tls=%p} field={storage=0x%X enabled=0x%X}\n",
+            reinterpret_cast<void*>(getter),
+            reinterpret_cast<void*>(g_addrGameClockSnapshotPrimary),
+            reinterpret_cast<void*>(g_addrGameClockSnapshotTls),
+            g_gameClockFieldStorageOffset,
+            g_gameClockFieldEnabledOffset);
+    } else {
+        Log("[W] Real game clock layout discovery failed getter=%p snapshots={primary=%p tls=%p} field={storage=0x%X enabled=0x%X}\n",
+            reinterpret_cast<void*>(getter),
+            reinterpret_cast<void*>(g_addrGameClockSnapshotPrimary),
+            reinterpret_cast<void*>(g_addrGameClockSnapshotTls),
+            g_gameClockFieldStorageOffset,
+            g_gameClockFieldEnabledOffset);
+    }
+    return ready;
+}
 uintptr_t FindFunctionStartViaUnwind(uintptr_t pc);
 static bool ReadBytesSafe(uintptr_t addr, uint8_t* out, size_t n);
 static bool FindDirectCallToTargetInRange(uintptr_t start, size_t len, uintptr_t target, uintptr_t* outSite = nullptr);
@@ -518,6 +572,20 @@ static bool IsReadableAddress(uintptr_t addr, size_t bytes) {
     const uintptr_t regionStart = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
     const uintptr_t regionEnd = regionStart + mbi.RegionSize;
     return addr >= regionStart && (addr + bytes) <= regionEnd;
+}
+
+static bool IsWritableAddress(uintptr_t addr, size_t bytes) {
+    if (!addr || bytes == 0) return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_GUARD) != 0) return false;
+    const DWORD prot = mbi.Protect & 0xFFu;
+    const bool writable = prot == PAGE_READWRITE || prot == PAGE_WRITECOPY ||
+        prot == PAGE_EXECUTE_READWRITE || prot == PAGE_EXECUTE_WRITECOPY;
+    if (!writable) return false;
+    const uintptr_t regionStart = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    const uintptr_t regionEnd = regionStart + mbi.RegionSize;
+    return addr >= regionStart && bytes <= regionEnd - addr;
 }
 
 static bool LooksLikeFunctionEntry(uintptr_t addr) {
@@ -1866,14 +1934,9 @@ bool RunAOBScan(){
         "48 8D AC 24 ?? ?? FF FF 48 81 EC ?? 03 00 00 4C 8B F9 "
         "48 83 B9 ?? 03 00 00 00 0F 84"
     );
-    uintptr_t addrGameTimeUpdate = 0;
     uintptr_t addrGameTimeGetter = 0;
     uintptr_t addrGameFieldInfoResolver = 0;
 #if !defined(CW_WIND_ONLY)
-    addrGameTimeUpdate = ScanModule(
-        "48 8B C4 48 89 58 10 48 89 68 18 48 89 70 20 57 41 56 41 57 "
-        "48 81 EC ?? ?? 00 00 C5 F8 29 70 ?? C5 F8 29 78"
-    );
     addrGameTimeGetter = ScanModule(
         "48 89 5C 24 10 57 48 83 EC 60 48 8B 01 48 8B FA "
         "48 8D 54 24 70 48 8B D9 FF 50 58 B8 FF FF 00 00"
@@ -1887,6 +1950,10 @@ bool RunAOBScan(){
             "0F B7 39 48 8B 1D ?? ?? ?? ?? 3B 7B ??"
         );
     }
+    if (addrGameTimeGetter && !DiscoverGameClockLayout(addrGameTimeGetter)) {
+        addrGameTimeGetter = 0;
+        addrGameFieldInfoResolver = 0;
+    }
 #endif
     if (addrMinimapRegionLabels) {
         CW_AOB_VERBOSE_LOG("[AOB] MinimapRegionLabels = %p\n", (void*)addrMinimapRegionLabels);
@@ -1897,11 +1964,6 @@ bool RunAOBScan(){
         CW_AOB_VERBOSE_LOG("[AOB] MinimapGameTimeUpdate = %p\n", (void*)addrMinimapGameTimeUpdate);
     } else {
         Log("[W] MinimapGameTimeUpdate not found (game HUD time source disabled)\n");
-    }
-    if (addrGameTimeUpdate) {
-        CW_AOB_VERBOSE_LOG("[AOB] GameTimeUpdate = %p\n", (void*)addrGameTimeUpdate);
-    } else {
-        Log("[W] GameTimeUpdate not found (real in-game time controls disabled)\n");
     }
     if (addrGameTimeGetter) {
         CW_AOB_VERBOSE_LOG("[AOB] GameTimeGetter = %p\n", (void*)addrGameTimeGetter);
@@ -1971,10 +2033,6 @@ bool RunAOBScan(){
         if(addrMinimapGameTimeUpdate)
             InstallHook((void*)addrMinimapGameTimeUpdate,(void*)&Hooked_MinimapGameTimeUpdate,
                         (void**)&g_pOrigMinimapGameTimeUpdate,"MinimapGameTimeUpdate",false);
-    }
-    if (EnableGameTimeHooks() && addrGameTimeUpdate) {
-        InstallHook((void*)addrGameTimeUpdate, (void*)&Hooked_GameTimeUpdate,
-                    (void**)&g_pOrigGameTimeUpdate, "GameTimeUpdate", false);
     }
     if (EnableGameTimeHooks() && addrGameTimeGetter) {
         InstallHook((void*)addrGameTimeGetter, (void*)&Hooked_GameTimeGetter,
@@ -2122,12 +2180,6 @@ bool RunAOBScan(){
         minimapGameTimeInstalled ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
         addrMinimapGameTimeUpdate,
         minimapGameTimeInstalled ? "game HUD time hook installed" : "game HUD time hook unavailable");
-
-    const bool gameTimeUpdateInstalled = addrGameTimeUpdate && g_pOrigGameTimeUpdate;
-    SetAobTargetHealth(AobTargetId::GameTimeUpdate,
-        gameTimeUpdateInstalled ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
-        addrGameTimeUpdate,
-        gameTimeUpdateInstalled ? "real game clock hook installed" : "real game clock unavailable");
 
     const bool gameTimeGetterInstalled = addrGameTimeGetter && g_pOrigGameTimeGetter;
     SetAobTargetHealth(AobTargetId::GameTimeGetter,

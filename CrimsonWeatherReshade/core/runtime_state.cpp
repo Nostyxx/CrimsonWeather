@@ -468,8 +468,6 @@ const char* AobTargetLabel(AobTargetId id) {
         return "MinimapRegionLabels";
     case AobTargetId::MinimapGameTimeUpdate:
         return "MinimapGameTimeUpdate";
-    case AobTargetId::GameTimeUpdate:
-        return "GameTimeUpdate";
     case AobTargetId::GameTimeGetter:
         return "GameTimeGetter";
     default:

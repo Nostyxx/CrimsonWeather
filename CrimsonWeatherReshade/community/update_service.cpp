@@ -19,6 +19,7 @@
 namespace {
 
 constexpr unsigned long long kUpdateCheckIntervalSeconds = 24ull * 60ull * 60ull;
+constexpr unsigned long long kFailedUpdateRetrySeconds = 5ull * 60ull;
 constexpr size_t kMaxUpdateResponseBytes = 48ull * 1024ull;
 constexpr size_t kMaxAddonDownloadBytes = 128ull * 1024ull * 1024ull;
 constexpr const char* kUpdateChannel = "stable";
@@ -31,6 +32,7 @@ std::atomic<bool> g_updateChecking{ false };
 std::atomic<bool> g_updateDownloading{ false };
 std::atomic<bool> g_updateCleanupDone{ false };
 std::atomic<unsigned long long> g_lastUpdateCheck{ 0 };
+std::atomic<bool> g_lastUpdateCheckSucceeded{ false };
 
 std::string TrimCopy(const std::string& value) {
     size_t start = 0;
@@ -273,6 +275,7 @@ void CheckWorker() {
     info.state = info.updateAvailable ? UpdateCheckState::UpdateAvailable : UpdateCheckState::Latest;
     info.status = info.updateAvailable ? "Update available" : "Latest";
     g_lastUpdateCheck.store(static_cast<unsigned long long>(std::time(nullptr)));
+    g_lastUpdateCheckSucceeded.store(true);
     SetUpdateInfo(info);
     g_updateChecking.store(false);
 }
@@ -394,7 +397,10 @@ void UpdateService_Tick() {
     }
     const unsigned long long now = static_cast<unsigned long long>(std::time(nullptr));
     const unsigned long long last = g_lastUpdateCheck.load();
-    if (last == 0 || now > last + kUpdateCheckIntervalSeconds) {
+    const unsigned long long interval = g_lastUpdateCheckSucceeded.load()
+        ? kUpdateCheckIntervalSeconds
+        : kFailedUpdateRetrySeconds;
+    if (last == 0 || now > last + interval) {
         UpdateService_RequestCheck(false);
     }
 #endif
@@ -410,7 +416,10 @@ void UpdateService_RequestCheck(bool force) {
     }
     const unsigned long long now = static_cast<unsigned long long>(std::time(nullptr));
     const unsigned long long last = g_lastUpdateCheck.load();
-    if (!force && last != 0 && now <= last + kUpdateCheckIntervalSeconds) {
+    const unsigned long long interval = g_lastUpdateCheckSucceeded.load()
+        ? kUpdateCheckIntervalSeconds
+        : kFailedUpdateRetrySeconds;
+    if (!force && last != 0 && now <= last + interval) {
         return;
     }
     bool expected = false;
@@ -418,6 +427,7 @@ void UpdateService_RequestCheck(bool force) {
         return;
     }
     g_lastUpdateCheck.store(now);
+    g_lastUpdateCheckSucceeded.store(false);
     SetStatus(UpdateCheckState::Checking, "Checking for updates...");
     std::thread([]() {
         CheckWorker();

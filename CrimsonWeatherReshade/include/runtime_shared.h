@@ -173,7 +173,6 @@ typedef void(__fastcall* WeatherFrameUpdate_fn)(long long* self, float dt);
 typedef void(__fastcall* ProcessWindState_fn)(long long self);
 typedef void(__fastcall* WindPack_fn)(long long* windNodePtr, float* packedOut);
 typedef void*(__fastcall* SceneFrameUpdate_fn)(long long self, long long context);
-typedef long long(__fastcall* GameTimeUpdate_fn)(long long self, long long eventContext, long long* timeContext, long long outTime);
 typedef long long(__fastcall* GameTimeGetter_fn)(unsigned char* source, long long outTime);
 typedef long long(__fastcall* GameFieldInfoResolver_fn)(unsigned short* areaId);
 typedef void(__fastcall* NativeLightningScheduler_fn)(long long self);
@@ -215,9 +214,12 @@ inline WeatherFrameUpdate_fn g_pOrigWeatherFrameUpdate = nullptr;
 inline ProcessWindState_fn g_pOrigProcessWindState = nullptr;
 inline WindPack_fn g_pOrigWindPack = nullptr;
 inline SceneFrameUpdate_fn g_pOrigSceneFrameUpdate = nullptr;
-inline GameTimeUpdate_fn g_pOrigGameTimeUpdate = nullptr;
 inline GameTimeGetter_fn g_pOrigGameTimeGetter = nullptr;
 inline GameFieldInfoResolver_fn g_pGameFieldInfoResolver = nullptr;
+inline uintptr_t g_addrGameClockSnapshotPrimary = 0;
+inline uintptr_t g_addrGameClockSnapshotTls = 0;
+inline uint32_t g_gameClockFieldStorageOffset = 0;
+inline uint32_t g_gameClockFieldEnabledOffset = 0;
 inline NativeLightningScheduler_fn g_pNativeLightningScheduler = nullptr;
 inline PlayWeatherSoundEvent_fn g_pPlayWeatherSoundEvent = nullptr;
 inline LoadSoundBank_fn g_pLoadSoundBank = nullptr;
@@ -302,7 +304,6 @@ enum class AobTargetId : uint8_t {
     NativeToast,
     MinimapRegionLabels,
     MinimapGameTimeUpdate,
-    GameTimeUpdate,
     GameTimeGetter,
     Count
 };
@@ -351,7 +352,6 @@ enum class RuntimeHookId : uint8_t {
     FogSet4,
     MinimapRegionLabels,
     MinimapGameTimeUpdate,
-    GameTimeUpdate,
     GameTimeGetter,
     Count
 };
@@ -758,7 +758,6 @@ void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut);
 void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context);
 long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short areaId, unsigned short subAreaId);
 void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventContext);
-long long __fastcall Hooked_GameTimeUpdate(long long self, long long eventContext, long long* timeContext, long long outTime);
 long long __fastcall Hooked_GameTimeGetter(unsigned char* source, long long outTime);
 void __fastcall Hooked_WeatherTick(long long self, float dt);
 void ResetGameTimeProbeStats();

@@ -12,6 +12,8 @@ struct CommunityHttpResponse {
     int statusCode = 0;
     std::string body;
     std::string error;
+    unsigned long transportErrorCode = 0;
+    std::string transportStage;
 };
 
 bool CommunityHttp_Request(

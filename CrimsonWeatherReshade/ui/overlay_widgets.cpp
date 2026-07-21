@@ -285,7 +285,7 @@ bool DustHookReady() { return HookReady(RuntimeHookId::GetDustIntensity); }
 bool WindPackReady() { return HookReady(RuntimeHookId::WindPack); }
 bool SceneFrameReady() { return HookReady(RuntimeHookId::SceneFrameUpdate); }
 bool WeatherFrameReady() { return HookReady(RuntimeHookId::WeatherFrameUpdate); }
-bool RealGameTimeReady() { return HookReady(RuntimeHookId::GameTimeUpdate) && HookReady(RuntimeHookId::GameTimeGetter); }
+bool RealGameTimeReady() { return HookReady(RuntimeHookId::GameTimeGetter); }
 
 bool DrawResetButton(const char* id) {
     ImGui::SameLine();
