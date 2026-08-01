@@ -209,6 +209,8 @@ void DrawTimeControls() {
         }
         LogTimeUiAction("time-mode", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
         manualTimeEditChanged = true;
+        g_cfg.realGameTimeEnabled = g_realGameTimeEnabled.load();
+        SaveGeneralConfig();
         GUI_SetStatus(visualTimeOverride ? "Visual Time Override enabled" :
             (realGameTime ? "Real In-Game Time controls selected" : "Native time selected"));
     }

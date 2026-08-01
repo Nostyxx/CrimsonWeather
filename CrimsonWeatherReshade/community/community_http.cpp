@@ -225,16 +225,15 @@ bool CommunityHttp_Request(
     for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
         if (CommunityHttp_RequestOnce(requestMethod, url, headers, body, outResponse)) {
             if (attempt > 1) {
-                Log("[http] request recovered method=%s url=%s attempts=%d\n",
-                    requestMethod, url.c_str(), attempt);
+                Log("[http] request recovered method=%s attempts=%d\n",
+                    requestMethod, attempt);
             }
             return true;
         }
 
         const bool retry = attempt < maxAttempts && IsTransientWinHttpError(outResponse.transportErrorCode);
-        Log("[http] request failed method=%s url=%s stage=%s error=%lu attempt=%d/%d retry=%u\n",
+        Log("[http] request failed method=%s stage=%s error=%lu attempt=%d/%d retry=%u\n",
             requestMethod,
-            url.c_str(),
             outResponse.transportStage.empty() ? "unknown" : outResponse.transportStage.c_str(),
             outResponse.transportErrorCode,
             attempt,

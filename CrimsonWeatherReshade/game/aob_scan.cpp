@@ -522,18 +522,37 @@ static uintptr_t ResolveAkPostEventById() {
     );
 }
 
-static bool LooksLikeSceneFrameUpdate(uintptr_t f) {
+static bool DiscoverSceneFrameLayout(uintptr_t f) {
     if (!f) return false;
     __try {
         const uint8_t* p = reinterpret_cast<const uint8_t*>(f);
-        const uint8_t sceneMemcpy[] = {
-            0x48, 0x8B, 0x8B, 0x30, 0x04, 0x00, 0x00,
-            0x41, 0xB8, 0xC0, 0x0A, 0x00, 0x00,
-            0x48, 0x8B, 0x93, 0x28, 0x04, 0x00, 0x00,
-            0x48, 0x8B, 0x49, 0x60, 0xE8
-        };
-        for (size_t i = 0; i + sizeof(sceneMemcpy) <= 0x280; ++i) {
-            if (memcmp(p + i, sceneMemcpy, sizeof(sceneMemcpy)) == 0) return true;
+        for (size_t i = 0; i + 25 <= 0x280; ++i) {
+            if (p[i] != 0x48 || p[i + 1] != 0x8B || p[i + 2] != 0x8B ||
+                p[i + 7] != 0x41 || p[i + 8] != 0xB8 ||
+                p[i + 13] != 0x48 || p[i + 14] != 0x8B || p[i + 15] != 0x93 ||
+                p[i + 20] != 0x48 || p[i + 21] != 0x8B ||
+                p[i + 22] != 0x49 || p[i + 23] != 0x60 || p[i + 24] != 0xE8) {
+                continue;
+            }
+
+            const auto ownerOffset = *reinterpret_cast<const int32_t*>(p + i + 3);
+            const auto copyBytes = *reinterpret_cast<const uint32_t*>(p + i + 9);
+            const auto sourceOffset = *reinterpret_cast<const int32_t*>(p + i + 16);
+            if (sourceOffset <= 0 || ownerOffset <= 0 ||
+                sourceOffset >= 0x2000 || ownerOffset >= 0x2000 ||
+                copyBytes < 0x100 || copyBytes > 0x10000 ||
+                abs(ownerOffset - sourceOffset) > 0x20) {
+                continue;
+            }
+
+            g_sceneFrameSourceOffset = sourceOffset;
+            g_sceneFrameOwnerOffset = ownerOffset;
+            CW_AOB_VERBOSE_LOG(
+                "[AOB] SceneFrame layout source=0x%X owner=0x%X copyBytes=0x%X\n",
+                static_cast<uint32_t>(sourceOffset),
+                static_cast<uint32_t>(ownerOffset),
+                copyBytes);
+            return true;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -1468,8 +1487,13 @@ bool RunAOBScan(){
 
 #if defined(CW_WIND_ONLY)
     uintptr_t windOnlyAddrGetDust = ScanModule(
-        "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
+        "48 8B 41 58 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
     );
+    if (!windOnlyAddrGetDust) {
+        windOnlyAddrGetDust = ScanModule(
+            "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
+        );
+    }
     if (!windOnlyAddrGetDust) {
         windOnlyAddrGetDust = ScanModule(
             "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
@@ -1503,7 +1527,14 @@ bool RunAOBScan(){
     CW_AOB_VERBOSE_LOG("[AOB] WeatherTick = %p\n",(void*)tick);
 
     // Anchor 2: GetRainIntensity
-    uintptr_t rain=ScanModule("48 8B 51 50 4C 8B D1");
+    uintptr_t rain=ScanModule(
+        "48 8B 51 58 4C 8B D1 48 85 D2 B9 40 00 00 00 "
+        "48 8D 42 18 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 "
+        "4D 8D 81 6C 01 00 00"
+    );
+    if(!rain){
+        rain=ScanModule("48 8B 51 50 4C 8B D1");
+    }
     if(!rain){Log("[E] AOB: GetRainIntensity not found\n");return false;}
     CW_AOB_VERBOSE_LOG("[AOB] GetRainIntensity = %p\n",(void*)rain);
 
@@ -1546,8 +1577,13 @@ bool RunAOBScan(){
     addrProcessWind = PromoteToFunctionStart(addrProcessWind, "ProcessWindState");
     if (!addrGetSnow) {
         addrGetSnow = ScanModule(
-            "48 8B 51 50 4C 8B D1 48 85 D2 B9 40 00 00 00 48 8D 42 18 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 4D 8D 81 68 01 00 00"
+            "48 8B 51 58 4C 8B D1 48 85 D2 B9 40 00 00 00 48 8D 42 18 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 4D 8D 81 68 01 00 00"
         );
+        if (!addrGetSnow) {
+            addrGetSnow = ScanModule(
+                "48 8B 51 50 4C 8B D1 48 85 D2 B9 40 00 00 00 48 8D 42 18 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 4D 8D 81 68 01 00 00"
+            );
+        }
         if (!addrGetSnow) {
             addrGetSnow = ScanModule(
                 "48 8B 51 50 4C 8B D1 48 85 D2 B9 40 00 00 00 48 8D 42 18 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 4D 8D 81 50 01 00 00"
@@ -1559,8 +1595,13 @@ bool RunAOBScan(){
     }
     if (!addrGetDust) {
         addrGetDust = ScanModule(
-            "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
+            "48 8B 41 58 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
         );
+        if (!addrGetDust) {
+            addrGetDust = ScanModule(
+                "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
+            );
+        }
         if (!addrGetDust) {
             addrGetDust = ScanModule(
                 "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
@@ -1707,6 +1748,8 @@ bool RunAOBScan(){
     }
     uintptr_t addrSceneFrameUpdate = 0;
     uintptr_t addrSceneAtmosphereFrame = 0;
+    g_sceneFrameSourceOffset = 0;
+    g_sceneFrameOwnerOffset = 0;
     if (addrWindPack) {
         uintptr_t windPackXrefs[8] = {};
         size_t nWindPackXrefs = FindCallsitesTo(addrWindPack, windPackXrefs, 8);
@@ -1720,7 +1763,7 @@ bool RunAOBScan(){
                 uintptr_t candidate = FindFunctionStartViaUnwind(frameXrefs[j]);
                 if (!candidate || candidate == atmosphereFrame) continue;
                 if (!FindDirectCallToTargetInRange(candidate, 0x280, atmosphereFrame, nullptr)) continue;
-                if (LooksLikeSceneFrameUpdate(candidate)) {
+                if (DiscoverSceneFrameLayout(candidate)) {
                     addrSceneFrameUpdate = candidate;
                     addrSceneAtmosphereFrame = atmosphereFrame;
                 }
@@ -1731,6 +1774,10 @@ bool RunAOBScan(){
         addrSceneFrameUpdate = ScanModule(
             "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 70 B8 01 00 00 00 48 8B FA 2B 81 EC 02 00 00 48 8B D9"
         );
+    }
+    if (addrSceneFrameUpdate && !DiscoverSceneFrameLayout(addrSceneFrameUpdate)) {
+        Log("[W] SceneFrameUpdate layout validation failed\n");
+        addrSceneFrameUpdate = 0;
     }
     if (addrSceneFrameUpdate) {
         CW_AOB_VERBOSE_LOG("[AOB] SceneFrameUpdate = %p\n", (void*)addrSceneFrameUpdate);
@@ -1939,8 +1986,14 @@ bool RunAOBScan(){
 #if !defined(CW_WIND_ONLY)
     addrGameTimeGetter = ScanModule(
         "48 89 5C 24 10 57 48 83 EC 60 48 8B 01 48 8B FA "
-        "48 8D 54 24 70 48 8B D9 FF 50 58 B8 FF FF 00 00"
+        "48 8D 54 24 70 48 8B D9 FF 50 50 B8 FF FF 00 00"
     );
+    if (!addrGameTimeGetter) {
+        addrGameTimeGetter = ScanModule(
+            "48 89 5C 24 10 57 48 83 EC 60 48 8B 01 48 8B FA "
+            "48 8D 54 24 70 48 8B D9 FF 50 58 B8 FF FF 00 00"
+        );
+    }
     if (addrGameTimeGetter) {
         addrGameFieldInfoResolver = ReadFirstDirectCallInRange(addrGameTimeGetter, 0x20, 0x50);
     }

@@ -132,6 +132,20 @@ DWORD WINAPI StartThread(void*) {
     }
 
 #if !defined(CW_WIND_ONLY)
+    if (g_cfg.realGameTimeEnabled) {
+        if (RuntimeHookEnabled(RuntimeHookId::GameTimeGetter)) {
+            g_realGameTimeEnabled.store(true);
+            g_realGameTimeSetMinuteRequest.store(-1);
+            g_realGameTimeDayDeltaRequest.store(0);
+            g_timeApplyRequest.store(true);
+            Log("[startup] real-time: restored enabled dayScale=x%.4f nightScale=x%.4f\n",
+                g_realGameTimeDayScale.load(),
+                g_realGameTimeNightScale.load());
+        } else {
+            Log("[W] Real In-Game Time was enabled in config but GameTimeGetter is unavailable; activation skipped\n");
+        }
+    }
+
     StartupSetStep(StartupStepId::Presets, 4, "Preparing presets");
     Log("[startup] runtime: preparing presets\n");
     Preset_ArmAutoApplyRemembered();

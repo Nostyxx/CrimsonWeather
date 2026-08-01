@@ -365,9 +365,9 @@ TextureFingerprintTarget g_moonFingerprintTargets[] = {
     },
     {
         "MoonTextureWorkerLoop",
-        "48 89 5C 24 20 56 57 41 56 48 83 EC 20 48 8B F9 "
-        "48 8D 4C 24 50 E8 ?? ?? ?? ?? 44 0F B6 B7 08 03 00 00 "
-        "41 80 FE FF 0F 84 ?? ?? ?? ?? 48 8B 4F 10 B2 03 E8",
+        "40 53 56 57 41 56 48 83 EC 38 48 8B F9 "
+        "48 8D 4C 24 70 E8 ?? ?? ?? ?? 44 0F B6 B7 08 03 00 00 "
+        "41 80 FE FF 0F 84 ?? ?? ?? ?? 48 8B 4F 10 C6 44 24 78 03",
         0,
         0x300
     },

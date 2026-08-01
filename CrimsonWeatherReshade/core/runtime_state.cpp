@@ -132,6 +132,7 @@ void WriteDefaultConfig(const char* path) {
     WritePrivateProfileStringA("Updater", "AutoDownload", "0", path);
     WritePrivateProfileStringA("TextureSwitcher", "Enabled", "1", path);
     WritePrivateProfileStringA("TextureSwitcher", "AnimatedTextureGpuSlots", "12", path);
+    WritePrivateProfileStringA("RealGameTime", "Enabled", "0", path);
     WritePrivateProfileStringA("RealGameTime", "DayScale", "1.0000", path);
     WritePrivateProfileStringA("RealGameTime", "NightScale", "1.0000", path);
 #else
@@ -219,6 +220,9 @@ void PatchMissingConfigKeys(const char* path) {
         char legacyGpuSlots[64] = {};
         GetPrivateProfileStringA("TextureSwitcher", "AnimatedMoonGpuSlots", "12", legacyGpuSlots, sizeof(legacyGpuSlots), path);
         WritePrivateProfileStringA("TextureSwitcher", "AnimatedTextureGpuSlots", legacyGpuSlots, path);
+    }
+    if (GetPrivateProfileStringA("RealGameTime", "Enabled", "", buf, sizeof(buf), path) == 0) {
+        WritePrivateProfileStringA("RealGameTime", "Enabled", "0", path);
     }
     if (GetPrivateProfileStringA("RealGameTime", "DayScale", "", buf, sizeof(buf), path) == 0) {
         WritePrivateProfileStringA("RealGameTime", "DayScale", "1.0000", path);
@@ -748,6 +752,8 @@ void LoadConfig(const char* dir) {
     }
     g_cfg.textureSwitcherAnimatedTextureGpuSlots = min(120, max(4, atoi(buf)));
     g_cfg.textureSwitcherAnimatedMoonGpuSlots = g_cfg.textureSwitcherAnimatedTextureGpuSlots;
+    GetPrivateProfileStringA("RealGameTime", "Enabled", "0", buf, sizeof(buf), path);
+    g_cfg.realGameTimeEnabled = atoi(buf) != 0;
     GetPrivateProfileStringA("RealGameTime", "DayScale", "1.0000", buf, sizeof(buf), path);
     g_cfg.realGameTimeDayScale = min(60.0f, max(0.01f, static_cast<float>(atof(buf))));
     g_realGameTimeDayScale.store(g_cfg.realGameTimeDayScale);
@@ -779,6 +785,7 @@ void SaveGeneralConfig() {
     WritePrivateProfileStringA("General", "ExtendedSliderRange", g_extendedSliderRange.load() ? "1" : "0", path);
 #if !defined(CW_WIND_ONLY)
     WritePrivateProfileStringA("Updater", "AutoDownload", g_cfg.updaterAutoDownload ? "1" : "0", path);
+    WritePrivateProfileStringA("RealGameTime", "Enabled", g_cfg.realGameTimeEnabled ? "1" : "0", path);
     char timeScale[32] = {};
     sprintf_s(timeScale, "%.4f", min(60.0f, max(0.01f, g_realGameTimeDayScale.load())));
     WritePrivateProfileStringA("RealGameTime", "DayScale", timeScale, path);
@@ -900,6 +907,7 @@ void ResetAllSliders() {
     g_timeProgressMatchLastMinute.store(-1);
     g_timeProgressMatchPendingMs.store(0);
     g_realGameTimeEnabled.store(false);
+    g_cfg.realGameTimeEnabled = false;
     g_realGameTimeDayScale.store(1.0f);
     g_realGameTimeNightScale.store(1.0f);
     g_cfg.realGameTimeDayScale = 1.0f;

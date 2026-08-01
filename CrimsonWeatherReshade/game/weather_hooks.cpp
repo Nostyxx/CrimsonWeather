@@ -1127,15 +1127,18 @@ static bool ApplySceneCelestialOverrides(float* scene) {
 
 void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context) {
     void* result = g_pOrigSceneFrameUpdate ? g_pOrigSceneFrameUpdate(self, context) : nullptr;
-    if (!g_modEnabled.load() || !self) return result;
+    if (!g_modEnabled.load() || !self ||
+        !g_sceneFrameSourceOffset || !g_sceneFrameOwnerOffset) {
+        return result;
+    }
 
     __try {
-        auto* sceneSource = *reinterpret_cast<float**>(self + 0x428);
+        auto* sceneSource = *reinterpret_cast<float**>(self + g_sceneFrameSourceOffset);
         if (sceneSource) {
             ApplySceneCelestialOverrides(sceneSource);
         }
 
-        auto* sceneOwner = *reinterpret_cast<uint8_t**>(self + 0x430);
+        auto* sceneOwner = *reinterpret_cast<uint8_t**>(self + g_sceneFrameOwnerOffset);
         if (!sceneOwner) {
             return result;
         }

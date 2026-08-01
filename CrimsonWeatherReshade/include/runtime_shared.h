@@ -28,6 +28,7 @@ struct Config {
     bool textureSwitcherEnabled = true;
     int textureSwitcherAnimatedTextureGpuSlots = 12;
     int textureSwitcherAnimatedMoonGpuSlots = 12;
+    bool realGameTimeEnabled = false;
     float realGameTimeDayScale = 1.0f;
     float realGameTimeNightScale = 1.0f;
     int effectToggleVK = VK_F10;
@@ -214,6 +215,8 @@ inline WeatherFrameUpdate_fn g_pOrigWeatherFrameUpdate = nullptr;
 inline ProcessWindState_fn g_pOrigProcessWindState = nullptr;
 inline WindPack_fn g_pOrigWindPack = nullptr;
 inline SceneFrameUpdate_fn g_pOrigSceneFrameUpdate = nullptr;
+inline ptrdiff_t g_sceneFrameSourceOffset = 0;
+inline ptrdiff_t g_sceneFrameOwnerOffset = 0;
 inline GameTimeGetter_fn g_pOrigGameTimeGetter = nullptr;
 inline GameFieldInfoResolver_fn g_pGameFieldInfoResolver = nullptr;
 inline uintptr_t g_addrGameClockSnapshotPrimary = 0;
