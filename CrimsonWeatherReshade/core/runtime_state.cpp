@@ -1286,6 +1286,10 @@ bool TryReadCurrentHourFromEntity(long long entity, float& outHour) {
 }
 
 void TickTimeControl() {
+    static unsigned int s_progressSetterWrites = 0;
+    static unsigned int s_progressLimitWrites = 0;
+    static unsigned long long s_progressDiagLastTick = 0;
+
     if (!g_timeLayoutReady.load()) {
         return;
     }
@@ -1414,7 +1418,6 @@ void TickTimeControl() {
                         targetHour = NormalizeHour24(targetHour + static_cast<float>(consumeMs) / static_cast<float>(kProgressMinuteMs * 60ull));
                         g_timeTargetHour.store(targetHour);
                         g_timeProgressLastTick.store(now);
-                        g_timeApplyRequest.store(true);
                     }
                 }
             }
@@ -1444,7 +1447,6 @@ void TickTimeControl() {
                     targetHour = NormalizeHour24(targetHour + addHours);
                     g_timeTargetHour.store(targetHour);
                     g_timeProgressLastTick.store(now);
-                    g_timeApplyRequest.store(true);
                 }
             }
         }
@@ -1458,23 +1460,67 @@ void TickTimeControl() {
 
     if (freeze) {
         const float frozenRaw = g_timeFrozenRaw.load();
-        const bool needApply =
-            !g_timeFreezeApplied.load() || applyNow || fabsf(frozenRaw - targetRaw) > 0.001f;
-        if (needApply) {
-            TrySetTimeRaw(entity, targetRaw);
+        const bool freezeApplied = g_timeFreezeApplied.load();
+        const bool targetChanged = fabsf(frozenRaw - targetRaw) > 0.000001f;
+        const bool needWrite = !freezeApplied || applyNow || targetChanged;
+        if (needWrite) {
+            // The native setter is for discrete jumps. Continuous progression only moves
+            // the clamp window so the game's own time update remains frame-coherent.
+            if (!freezeApplied || applyNow || !progressVisualTime) {
+                TrySetTimeRaw(entity, targetRaw);
+                if (progressVisualTime) {
+                    ++s_progressSetterWrites;
+                }
+            }
             __try {
                 At<float>(entity, g_tdLowerLimit) = targetRaw;
                 At<float>(entity, g_tdUpperLimit) = targetRaw;
                 g_timeFreezeApplied.store(true);
                 g_timeFrozenRaw.store(targetRaw);
+                if (progressVisualTime) {
+                    ++s_progressLimitWrites;
+                }
             } __except (EXCEPTION_EXECUTE_HANDLER) {
                 Log("[W] visual-time freeze write exception\n");
             }
+        }
+        if (progressVisualTime) {
+            const unsigned long long now = GetTickCount64();
+            if (!s_progressDiagLastTick) {
+                s_progressDiagLastTick = now;
+            } else if (now - s_progressDiagLastTick >= 10000) {
+                float lower = NAN;
+                float upper = NAN;
+                __try {
+                    lower = At<float>(entity, g_tdLowerLimit);
+                    upper = At<float>(entity, g_tdUpperLimit);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    lower = NAN;
+                    upper = NAN;
+                }
+                Log("[visual-time] progress health setterWrites=%u limitWrites=%u target=%.4f current=%.4f lower=%.4f upper=%.4f\n",
+                    s_progressSetterWrites,
+                    s_progressLimitWrites,
+                    targetHour,
+                    g_timeCurrentHour.load(),
+                    lower,
+                    upper);
+                s_progressSetterWrites = 0;
+                s_progressLimitWrites = 0;
+                s_progressDiagLastTick = now;
+            }
+        } else {
+            s_progressSetterWrites = 0;
+            s_progressLimitWrites = 0;
+            s_progressDiagLastTick = 0;
         }
         g_timeSetHoldTicks.store(0);
         return;
     }
 
+    s_progressSetterWrites = 0;
+    s_progressLimitWrites = 0;
+    s_progressDiagLastTick = 0;
     if (g_timeFreezeApplied.exchange(false)) {
         RestoreTimeLimitBaseline(entity);
     }

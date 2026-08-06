@@ -1217,8 +1217,15 @@ static uintptr_t FindTimeDebugHandlerAOB(ptrdiff_t& outEnvGetEntity,
         site = ScanModule(
             "48 8B 49 30 48 8B 01 FF 90 ?? ?? ?? ?? 48 8B 4B 30 0F 28 F0 48 8B 01 FF 50 ?? 0F 28 CE 48 8B C8 48 8B 10"
         );
-        if (!site) return 0;
     }
+    if (!site) {
+        site = ScanModule(
+            "48 8B 49 30 48 8B 01 FF 90 ?? ?? ?? ?? 48 8B 4B 30 "
+            "C5 FA 59 0D ?? ?? ?? ?? C5 F2 59 35 ?? ?? ?? ?? "
+            "48 8B 01 FF 50 ?? C5 F8 28 CE 48 8B C8 48 8B 10"
+        );
+    }
+    if (!site) return 0;
     uintptr_t fn = FindFunctionStartViaUnwind(site);
     if (!fn) return 0;
 
@@ -1254,12 +1261,16 @@ static bool DiscoverTimeLayoutAOB() {
     uintptr_t uppSite = ScanModule(
         "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B D8 03 00 00"
     );
-    if (!lowSite) lowSite = ScanModule("F3 0F 11 ?? CC 03 00 00");
-    if (!uppSite) uppSite = ScanModule("F3 0F 11 ?? D0 03 00 00");
-    if (!lowSite) lowSite = ScanModule("C5 FA 11 ?? D4 03 00 00");
-    if (!uppSite) uppSite = ScanModule("C5 FA 11 ?? D8 03 00 00");
-    if (!lowSite) lowSite = ScanModule("C5 FA 11 ?? CC 03 00 00");
-    if (!uppSite) uppSite = ScanModule("C5 FA 11 ?? D0 03 00 00");
+    if (!lowSite) {
+        lowSite = ScanModule(
+            "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B CC 03 00 00"
+        );
+    }
+    if (!uppSite) {
+        uppSite = ScanModule(
+            "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B D0 03 00 00"
+        );
+    }
     if (!lowSite || !uppSite) {
         Log("[W] TimeAOB: lower/upper limit stores not found\n");
         ok = false;

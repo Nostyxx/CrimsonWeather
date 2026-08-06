@@ -147,7 +147,7 @@ namespace TD {
     constexpr ptrdiff_t CURRENT_A_DEF = 0x3C8;
     constexpr ptrdiff_t CURRENT_B_DEF = 0x3C4;
     constexpr ptrdiff_t ENV_GET_ENTITY_DEF = 0x40;
-    constexpr ptrdiff_t ENV_GET_TIME_DEF = 0x1B8;
+    constexpr ptrdiff_t ENV_GET_TIME_DEF = 0x178;
     constexpr ptrdiff_t ENT_SET_TIME_DEF = 0x130;
 }
 
