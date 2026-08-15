@@ -357,16 +357,18 @@ TextureFingerprintTarget g_moonFingerprintTargets[] = {
     },
     {
         "MoonTextureWorkerUpdate",
-        "40 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 38 "
-        "48 8B E9 40 32 FF 40 88 BC 24 88 00 00 00 "
-        "0F B6 81 08 03 00 00 88 84 24 90 00 00 00 8B 99 20 03 00 00",
+        "40 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 48 "
+        "48 8B E9 32 C9 88 8C 24 98 00 00 00 4C 8B 3D ?? ?? ?? ?? "
+        "4C 89 BC 24 A8 00 00 00 0F B6 85 18 03 00 00 "
+        "88 84 24 A0 00 00 00 8B 9D 30 03 00 00",
         0,
         0x800
     },
     {
         "MoonTextureWorkerLoop",
-        "40 53 56 57 41 56 48 83 EC 38 48 8B F9 "
-        "48 8D 4C 24 70 E8 ?? ?? ?? ?? 44 0F B6 B7 08 03 00 00 "
+        "48 89 5C 24 10 55 56 57 41 56 41 57 48 83 EC 30 "
+        "48 8B F9 48 8D 4C 24 70 E8 ?? ?? ?? ?? "
+        "44 0F B6 B7 18 03 00 00 4C 8B 3D ?? ?? ?? ?? "
         "41 80 FE FF 0F 84 ?? ?? ?? ?? 48 8B 4F 10 C6 44 24 78 03",
         0,
         0x300
@@ -374,7 +376,7 @@ TextureFingerprintTarget g_moonFingerprintTargets[] = {
     {
         "MoonTextureThreadStart",
         "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 40 "
-        "65 48 8B 04 25 58 00 00 00 48 8B F9 B9 70 02 00 00 "
+        "65 48 8B 04 25 58 00 00 00 48 8B F9 B9 60 02 00 00 "
         "48 8B 10 48 8B 07 48 89 04 11 48 8D 4C 24 50 E8 ?? ?? ?? ??",
         0,
         0x200
@@ -391,9 +393,9 @@ TextureFingerprintTarget g_milkywayFingerprintTargets[] = {
     },
     {
         "MilkywayTextureLoaderCheck",
-        "30 48 8D 54 24 60 44 88 7C 24 28 4D 8B CE 44 8B C0 "
-        "4C 89 7C 24 20 48 8B CF 8B E8 E8 ?? ?? ?? ?? "
-        "0F B6 D8 3C 01 75 28 4C 39 3E 74 23",
+        "BE 0E 2B 00 00 45 33 C9 C6 44 24 20 00 8B D6 "
+        "48 8B CF E8 ?? ?? ?? ?? 0F B6 D8 3C 01 75 2E "
+        "4C 8B 84 24 C0 00 00 00 49 83 38 00 74 20",
         0,
         0x220
     },

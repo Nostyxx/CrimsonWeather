@@ -175,6 +175,9 @@ typedef void(__fastcall* ProcessWindState_fn)(long long self);
 typedef void(__fastcall* WindPack_fn)(long long* windNodePtr, float* packedOut);
 typedef void*(__fastcall* SceneFrameUpdate_fn)(long long self, long long context);
 typedef long long(__fastcall* GameTimeGetter_fn)(unsigned char* source, long long outTime);
+typedef long long(__fastcall* GameTimeSetter_fn)(long long manager, long long time,
+                                                 unsigned char silent, unsigned char context,
+                                                 unsigned char notify, int stageKey);
 typedef long long(__fastcall* GameFieldInfoResolver_fn)(unsigned short* areaId);
 typedef void(__fastcall* NativeLightningScheduler_fn)(long long self);
 typedef int(__fastcall* PlayWeatherSoundEvent_fn)(uint32_t eventId);
@@ -218,9 +221,13 @@ inline SceneFrameUpdate_fn g_pOrigSceneFrameUpdate = nullptr;
 inline ptrdiff_t g_sceneFrameSourceOffset = 0;
 inline ptrdiff_t g_sceneFrameOwnerOffset = 0;
 inline GameTimeGetter_fn g_pOrigGameTimeGetter = nullptr;
+inline GameTimeSetter_fn g_pGameTimeSetter = nullptr;
 inline GameFieldInfoResolver_fn g_pGameFieldInfoResolver = nullptr;
+inline uintptr_t* g_pGameTimeManagerRootGlobal = nullptr;
+inline ptrdiff_t g_gameTimeManagerOffset = 0;
 inline uintptr_t g_addrGameClockSnapshotPrimary = 0;
 inline uintptr_t g_addrGameClockSnapshotTls = 0;
+inline uint32_t g_gameClockTlsFlagOffset = 0;
 inline uint32_t g_gameClockFieldStorageOffset = 0;
 inline uint32_t g_gameClockFieldEnabledOffset = 0;
 inline NativeLightningScheduler_fn g_pNativeLightningScheduler = nullptr;

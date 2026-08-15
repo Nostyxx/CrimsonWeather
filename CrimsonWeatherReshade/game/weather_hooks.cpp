@@ -1814,6 +1814,8 @@ void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventCont
 namespace {
 
 constexpr unsigned short kNativeGameClockRate = 12;
+constexpr long long kNativeClockDayMs = 75600000ll;
+constexpr long long kNativeClockJumpThresholdMs = 300000ll;
 
 struct GameClockCalendar {
     int day = -1;
@@ -1873,6 +1875,48 @@ GameClockCalendar LinearMsToCalendar(long long linearMs) {
     return out;
 }
 
+long long CalendarToNativeClockTicks(const GameClockCalendar& cal) {
+    const long long extraDays = cal.hour >= 24 ? (cal.hour / 24) : 0;
+    const long long hour = cal.hour >= 24 ? (cal.hour % 24) : cal.hour;
+    const unsigned long long visualMs =
+        static_cast<unsigned long long>(cal.millisecond) +
+        1000ull * (static_cast<unsigned long long>(cal.second) +
+        60ull * (static_cast<unsigned long long>(cal.minute) +
+        60ull * static_cast<unsigned long long>(hour)));
+
+    unsigned long long withinDay = visualMs;
+    if (visualMs >= 10800000ull) {
+        withinDay = visualMs < 75600000ull
+            ? visualMs - 5400000ull
+            : (visualMs + 64800000ull) >> 1;
+    } else {
+        withinDay = visualMs >> 1;
+    }
+    return static_cast<long long>(withinDay +
+        static_cast<unsigned long long>(kNativeClockDayMs) *
+        static_cast<unsigned long long>(cal.day + extraDays));
+}
+
+GameClockCalendar NativeClockTicksToCalendar(long long clockTicks) {
+    GameClockCalendar out;
+    if (clockTicks < 0) {
+        clockTicks = 0;
+    }
+
+    const unsigned long long ticks = static_cast<unsigned long long>(clockTicks);
+    const unsigned long long withinDay = ticks % static_cast<unsigned long long>(kNativeClockDayMs);
+    out.day = static_cast<int>(ticks / static_cast<unsigned long long>(kNativeClockDayMs));
+    const unsigned long long visualMs = withinDay >= 5400000ull
+        ? (withinDay >= 70200000ull ? (2ull * withinDay) - 64800000ull : withinDay + 5400000ull)
+        : 2ull * withinDay;
+    const unsigned long long totalSeconds = visualMs / 1000ull;
+    out.hour = static_cast<int>((totalSeconds / 3600ull) % 24ull);
+    out.minute = static_cast<int>((totalSeconds / 60ull) % 60ull);
+    out.second = static_cast<int>(totalSeconds % 60ull);
+    out.millisecond = static_cast<int>(visualMs % 1000ull);
+    return out;
+}
+
 void WriteGameClockCalendarStruct(long long outTime, const GameClockCalendar& cal) {
     if (!outTime) {
         return;
@@ -1912,11 +1956,16 @@ void WriteGameClockSnapshotStruct(long long storage,
 
 struct SnapshotClockControllerState {
     SRWLOCK lock = SRWLOCK_INIT;
-    bool primaryModified = false;
-    bool tlsModified = false;
+    bool active = false;
+    bool anchorValid = false;
     uintptr_t lastStorage = 0;
-    unsigned short lastRate = 0;
+    long long virtualTick = 0;
+    long long lastNativeTick = 0;
+    long long lastTimestamp = 0;
+    double fractionalTicks = 0.0;
     float lastRequestedScale = 0.0f;
+    unsigned long long calls = 0;
+    unsigned long long lastHealthLogMs = 0;
 };
 
 SnapshotClockControllerState g_snapshotClockController;
@@ -1928,7 +1977,7 @@ bool CurrentGameClockUsesTlsSnapshot() {
             return false;
         }
         const auto gameTls = *reinterpret_cast<const unsigned char* const*>(tlsArray);
-        return gameTls && gameTls[0x1F2] != 0;
+        return gameTls && g_gameClockTlsFlagOffset && gameTls[g_gameClockTlsFlagOffset] != 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -1969,18 +2018,62 @@ bool ResolveCurrentGameClockSnapshot(unsigned char* source,
     return outStorage != 0;
 }
 
-unsigned short RequestedNativeClockRate(const GameClockCalendar& cal, float& outScale) {
+float RequestedGameClockScale(const GameClockCalendar& cal) {
     const bool isDay = cal.hour >= 3 && cal.hour < 19;
-    outScale = isDay ? g_realGameTimeDayScale.load() : g_realGameTimeNightScale.load();
-    outScale = min(60.0f, max(0.01f, outScale));
-    const long requested = std::lround(static_cast<double>(kNativeGameClockRate) * outScale);
-    return static_cast<unsigned short>(min<long>(0xFFFF, max<long>(1, requested)));
+    const float scale = isDay ? g_realGameTimeDayScale.load() : g_realGameTimeNightScale.load();
+    return min(60.0f, max(0.01f, scale));
 }
 
-bool ApplySnapshotGameClockController(unsigned char* source,
-                                      long long outTime,
-                                      GameClockCalendar& nativeCal) {
-    if (!outTime || !g_addrGameClockSnapshotPrimary || !g_addrGameClockSnapshotTls) {
+bool CommitVirtualGameClockToNative(unsigned char* source,
+                                    long long outTime,
+                                    const GameClockCalendar& nativeCal,
+                                    const GameClockCalendar& targetCal) {
+    if (!outTime || !g_pGameTimeSetter || !g_pGameTimeManagerRootGlobal ||
+        !g_gameTimeManagerOffset) {
+        return false;
+    }
+
+    __try {
+        const uintptr_t root = *g_pGameTimeManagerRootGlobal;
+        const uintptr_t manager = root
+            ? *reinterpret_cast<const uintptr_t*>(root + g_gameTimeManagerOffset)
+            : 0;
+        if (!manager) {
+            return false;
+        }
+
+        alignas(32) unsigned char committedClock[0x20] = {};
+        memcpy(committedClock, reinterpret_cast<const void*>(outTime), sizeof(committedClock));
+        const unsigned short nativeRate = *reinterpret_cast<const unsigned short*>(outTime + 0x16);
+        const long long timestamp = *reinterpret_cast<const long long*>(outTime + 0x18);
+        WriteGameClockSnapshotStruct(reinterpret_cast<long long>(committedClock), targetCal,
+            nativeRate ? nativeRate : kNativeGameClockRate, timestamp);
+
+        g_pGameTimeSetter(static_cast<long long>(manager),
+            reinterpret_cast<long long>(committedClock), 1, 0, 0, 0);
+        WriteGameClockCalendarStruct(outTime, targetCal);
+
+        unsigned char* managerSource = nullptr;
+        const auto sourceHolder = *reinterpret_cast<unsigned char***>(manager + 0x20);
+        if (sourceHolder) {
+            managerSource = *sourceHolder;
+        }
+        Log("[real-time] native-commit manager=%p source=%p managerSource=%p native=day %d %02d:%02d:%02d.%03d target=day %d %02d:%02d:%02d.%03d rate=%u timestamp=%lld\n",
+            reinterpret_cast<void*>(manager), source, managerSource,
+            nativeCal.day, nativeCal.hour, nativeCal.minute, nativeCal.second, nativeCal.millisecond,
+            targetCal.day, targetCal.hour, targetCal.minute, targetCal.second, targetCal.millisecond,
+            static_cast<unsigned>(nativeRate ? nativeRate : kNativeGameClockRate), timestamp);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool ApplyVirtualGameClockController(unsigned char* source,
+                                     long long outTime,
+                                     GameClockCalendar& nativeCal) {
+    if (!outTime || !g_addrGameClockSnapshotPrimary || !g_addrGameClockSnapshotTls ||
+        !g_gameClockTlsFlagOffset) {
         return false;
     }
 
@@ -1994,44 +2087,95 @@ bool ApplySnapshotGameClockController(unsigned char* source,
 
     AcquireSRWLockExclusive(&g_snapshotClockController.lock);
     bool modified = false;
+    bool commitOnExit = false;
+    GameClockCalendar commitNativeCal;
+    GameClockCalendar commitTargetCal;
     __try {
         const bool enabled = g_modEnabled.load() && g_realGameTimeEnabled.load();
         const long long timestamp = *reinterpret_cast<long long*>(outTime + 0x18);
-        unsigned short currentRate = *reinterpret_cast<unsigned short*>(outTime + 0x16);
-
-        bool* storageModified = nullptr;
-        if (!fieldStorage) {
-            storageModified = tlsStorage
-                ? &g_snapshotClockController.tlsModified
-                : &g_snapshotClockController.primaryModified;
-        }
 
         if (!enabled) {
-            if (storageModified && *storageModified) {
-                WriteGameClockSnapshotStruct(static_cast<long long>(storage), nativeCal,
-                    kNativeGameClockRate, timestamp);
-                WriteGameClockSnapshotStruct(outTime, nativeCal, kNativeGameClockRate, timestamp);
-                *storageModified = false;
-                Log("[real-time] snapshot restored source=%s storage=%p rate=%u day=%d %02d:%02d:%02d.%03d\n",
-                    tlsStorage ? "tls" : "primary",
-                    reinterpret_cast<void*>(storage),
-                    static_cast<unsigned>(kNativeGameClockRate),
-                    nativeCal.day, nativeCal.hour, nativeCal.minute, nativeCal.second, nativeCal.millisecond);
-                modified = true;
+            if (g_snapshotClockController.active) {
+                commitNativeCal = nativeCal;
+                commitTargetCal = NativeClockTicksToCalendar(g_snapshotClockController.virtualTick);
+                commitOnExit = true;
             }
+            g_snapshotClockController.active = false;
+            g_snapshotClockController.anchorValid = false;
             g_snapshotClockController.lastStorage = 0;
-            g_snapshotClockController.lastRate = 0;
+            g_snapshotClockController.fractionalTicks = 0.0;
             g_snapshotClockController.lastRequestedScale = 0.0f;
             __leave;
         }
 
+        // TLS is a separate simulation context that can lag the player clock by days.
+        if (tlsStorage) {
+            __leave;
+        }
+
+        const GameClockCalendar sourceCal = nativeCal;
+        const long long nativeTick = CalendarToNativeClockTicks(sourceCal);
+        if (!g_snapshotClockController.active || !g_snapshotClockController.anchorValid) {
+            g_snapshotClockController.active = true;
+            g_snapshotClockController.anchorValid = true;
+            g_snapshotClockController.virtualTick = nativeTick;
+            g_snapshotClockController.lastNativeTick = nativeTick;
+            g_snapshotClockController.lastTimestamp = timestamp;
+            g_snapshotClockController.fractionalTicks = 0.0;
+            g_snapshotClockController.lastStorage = storage;
+            Log("[real-time] controller activated source=%s storage=%p day=%d %02d:%02d:%02d.%03d timestamp=%lld\n",
+                fieldStorage ? "field" : "primary",
+                reinterpret_cast<void*>(storage),
+                sourceCal.day, sourceCal.hour, sourceCal.minute, sourceCal.second, sourceCal.millisecond,
+                timestamp);
+        }
+
+        if (!fieldStorage) {
+            const long long timestampDelta = timestamp >= g_snapshotClockController.lastTimestamp
+                ? timestamp - g_snapshotClockController.lastTimestamp
+                : 0;
+            const long long nativeDelta = nativeTick - g_snapshotClockController.lastNativeTick;
+            const long long expectedNativeDelta = timestampDelta * static_cast<long long>(kNativeGameClockRate);
+            const long long nativeCorrection = nativeDelta - expectedNativeDelta;
+
+            GameClockCalendar virtualCal = NativeClockTicksToCalendar(g_snapshotClockController.virtualTick);
+            const float requestedScale = RequestedGameClockScale(virtualCal);
+            const double scaledTicks =
+                static_cast<double>(expectedNativeDelta) * static_cast<double>(requestedScale) +
+                g_snapshotClockController.fractionalTicks;
+            const long long wholeTicks = static_cast<long long>(std::floor(scaledTicks));
+            g_snapshotClockController.fractionalTicks = scaledTicks - static_cast<double>(wholeTicks);
+            g_snapshotClockController.virtualTick = max(0ll,
+                g_snapshotClockController.virtualTick + wholeTicks);
+
+            if (llabs(nativeCorrection) >= kNativeClockJumpThresholdMs) {
+                g_snapshotClockController.virtualTick = max(0ll,
+                    g_snapshotClockController.virtualTick + nativeCorrection);
+                Log("[real-time] native clock jump synchronized delta=%lld correction=%lld native=day %d %02d:%02d:%02d.%03d\n",
+                    nativeDelta,
+                    nativeCorrection,
+                    sourceCal.day, sourceCal.hour, sourceCal.minute, sourceCal.second, sourceCal.millisecond);
+            }
+
+            g_snapshotClockController.lastNativeTick = nativeTick;
+            g_snapshotClockController.lastTimestamp = timestamp;
+
+            if (fabsf(g_snapshotClockController.lastRequestedScale - requestedScale) > 0.0001f) {
+                const unsigned long long writes = g_realGameTimeScaleWriteCount.fetch_add(1) + 1;
+                Log("[real-time] virtual-rate source=primary requested=x%.4f nativeRate=%u day=%d %02d:%02d writes=%llu\n",
+                    requestedScale,
+                    static_cast<unsigned>(kNativeGameClockRate),
+                    virtualCal.day, virtualCal.hour, virtualCal.minute,
+                    writes);
+                g_snapshotClockController.lastRequestedScale = requestedScale;
+            }
+        }
+
         int dayDelta = 0;
         int minuteRequest = -1;
-        if (!tlsStorage) {
-            dayDelta = g_realGameTimeDayDeltaRequest.exchange(0);
-            minuteRequest = g_realGameTimeSetMinuteRequest.exchange(-1);
-        }
-        GameClockCalendar target = nativeCal;
+        dayDelta = g_realGameTimeDayDeltaRequest.exchange(0);
+        minuteRequest = g_realGameTimeSetMinuteRequest.exchange(-1);
+        GameClockCalendar target = NativeClockTicksToCalendar(g_snapshotClockController.virtualTick);
         if (dayDelta != 0) {
             target.day = max(0, target.day + dayDelta);
         }
@@ -2042,61 +2186,53 @@ bool ApplySnapshotGameClockController(unsigned char* source,
             target.second = 0;
             target.millisecond = 0;
         }
-
-        float requestedScale = 1.0f;
-        const unsigned short desiredRate = RequestedNativeClockRate(target, requestedScale);
         const bool actionRequested = dayDelta != 0 || minuteRequest >= 0;
-        const bool rateChanged = !fieldStorage && currentRate != desiredRate;
-        if (!actionRequested && !rateChanged) {
-            __leave;
+        if (actionRequested) {
+            g_snapshotClockController.virtualTick = CalendarToNativeClockTicks(target);
+            g_snapshotClockController.fractionalTicks = 0.0;
         }
 
-        // Field overrides are fixed snapshots in the native getter. Actions remain valid,
-        // but changing their rate cannot make a fixed field advance.
-        const unsigned short committedRate = fieldStorage ? currentRate : desiredRate;
-        WriteGameClockSnapshotStruct(static_cast<long long>(storage), target,
-            committedRate ? committedRate : kNativeGameClockRate, timestamp);
-        WriteGameClockSnapshotStruct(outTime, target,
-            committedRate ? committedRate : kNativeGameClockRate, timestamp);
+        WriteGameClockCalendarStruct(outTime, target);
         nativeCal = target;
-        if (storageModified) {
-            *storageModified = true;
-        }
         modified = true;
 
         if (actionRequested) {
             const unsigned long long writes = g_realGameTimeWriteCount.fetch_add(1) + 1;
-            Log("[real-time] snapshot-action action=%s source=%s area=%u storage=%p target=day %d %02d:%02d:%02d.%03d rate=%u writes=%llu\n",
+            Log("[real-time] virtual-action action=%s source=%s area=%u target=day %d %02d:%02d:%02d.%03d writes=%llu\n",
                 dayDelta ? "day-step" : "clock-set",
-                fieldStorage ? "field" : (tlsStorage ? "tls" : "primary"),
+                fieldStorage ? "field" : "primary",
                 static_cast<unsigned>(areaId),
-                reinterpret_cast<void*>(storage),
                 target.day, target.hour, target.minute, target.second, target.millisecond,
-                static_cast<unsigned>(committedRate ? committedRate : kNativeGameClockRate),
                 writes);
         }
-        if (rateChanged &&
-            (g_snapshotClockController.lastStorage != storage ||
-             g_snapshotClockController.lastRate != desiredRate ||
-             fabsf(g_snapshotClockController.lastRequestedScale - requestedScale) > 0.0001f)) {
-            const unsigned long long writes = g_realGameTimeScaleWriteCount.fetch_add(1) + 1;
-            Log("[real-time] snapshot-rate source=%s storage=%p requested=x%.4f effective=x%.4f rate=%u nativeRate=%u day=%d %02d:%02d writes=%llu\n",
-                tlsStorage ? "tls" : "primary",
-                reinterpret_cast<void*>(storage),
-                requestedScale,
-                static_cast<float>(desiredRate) / static_cast<float>(kNativeGameClockRate),
-                static_cast<unsigned>(desiredRate),
-                static_cast<unsigned>(kNativeGameClockRate),
+
+        ++g_snapshotClockController.calls;
+        const unsigned long long now = GetTickCount64();
+        if (!g_snapshotClockController.lastHealthLogMs ||
+            now - g_snapshotClockController.lastHealthLogMs >= 10000ull) {
+            const float requestedScale = RequestedGameClockScale(target);
+            Log("[real-time] virtual-health source=%s native=day %d %02d:%02d virtual=day %d %02d:%02d scale=x%.4f calls=%llu\n",
+                fieldStorage ? "field" : "primary",
+                sourceCal.day, sourceCal.hour, sourceCal.minute,
                 target.day, target.hour, target.minute,
-                writes);
-            g_snapshotClockController.lastStorage = storage;
-            g_snapshotClockController.lastRate = desiredRate;
-            g_snapshotClockController.lastRequestedScale = requestedScale;
+                requestedScale,
+                g_snapshotClockController.calls);
+            g_snapshotClockController.lastHealthLogMs = now;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         modified = false;
+        commitOnExit = false;
     }
     ReleaseSRWLockExclusive(&g_snapshotClockController.lock);
+    if (commitOnExit) {
+        if (CommitVirtualGameClockToNative(source, outTime, commitNativeCal, commitTargetCal)) {
+            nativeCal = commitTargetCal;
+            modified = true;
+            Log("[real-time] controller deactivated; virtual clock committed to native storage\n");
+        } else {
+            Log("[W] Real game clock native commit failed; passthrough may return to the pre-override time\n");
+        }
+    }
     return modified;
 }
 
@@ -2284,7 +2420,7 @@ long long __fastcall Hooked_GameTimeGetter(unsigned char* source, long long outT
 
     GameClockCalendar nativeCal;
     if (ReadGameClockCalendarStruct(outTime, nativeCal)) {
-        ApplySnapshotGameClockController(source, outTime, nativeCal);
+        ApplyVirtualGameClockController(source, outTime, nativeCal);
         ApplyDevGameTimeOverride(source, outTime, nativeCal);
     }
     StoreGameTimeGetterSample(source, outTime);

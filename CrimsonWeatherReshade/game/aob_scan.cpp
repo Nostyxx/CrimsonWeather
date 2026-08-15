@@ -304,6 +304,7 @@ static uintptr_t ReadRIP6(uintptr_t a){
 static bool DiscoverGameClockLayout(uintptr_t getter) {
     g_addrGameClockSnapshotPrimary = 0;
     g_addrGameClockSnapshotTls = 0;
+    g_gameClockTlsFlagOffset = 0;
     g_gameClockFieldStorageOffset = 0;
     g_gameClockFieldEnabledOffset = 0;
     if (!getter) return false;
@@ -314,6 +315,13 @@ static bool DiscoverGameClockLayout(uintptr_t getter) {
     uintptr_t snapshotLoads[2] = {};
     size_t snapshotCount = 0;
     for (size_t i = 0; i + 8 <= sizeof(code); ++i) {
+        if (!g_gameClockTlsFlagOffset && i + 12 <= sizeof(code) &&
+            code[i] == 0xBA &&
+            code[i + 5] == 0x48 && code[i + 6] == 0x8B && code[i + 7] == 0x08 &&
+            code[i + 8] == 0x0F && code[i + 9] == 0xB6 &&
+            code[i + 10] == 0x04 && code[i + 11] == 0x0A) {
+            g_gameClockTlsFlagOffset = *reinterpret_cast<const uint32_t*>(code + i + 1);
+        }
         if (!g_gameClockFieldEnabledOffset &&
             code[i] == 0x80 && code[i + 1] == 0x78 && code[i + 3] == 0x00) {
             g_gameClockFieldEnabledOffset = code[i + 2];
@@ -338,19 +346,21 @@ static bool DiscoverGameClockLayout(uintptr_t getter) {
     }
 
     const bool ready = g_addrGameClockSnapshotPrimary && g_addrGameClockSnapshotTls &&
-        g_gameClockFieldStorageOffset && g_gameClockFieldEnabledOffset;
+        g_gameClockTlsFlagOffset && g_gameClockFieldStorageOffset && g_gameClockFieldEnabledOffset;
     if (ready) {
-        Log("[real-time] layout getter=%p snapshots={primary=%p tls=%p} field={storage=0x%X enabled=0x%X}\n",
+        Log("[real-time] layout getter=%p snapshots={primary=%p tls=%p} tlsFlag=0x%X field={storage=0x%X enabled=0x%X}\n",
             reinterpret_cast<void*>(getter),
             reinterpret_cast<void*>(g_addrGameClockSnapshotPrimary),
             reinterpret_cast<void*>(g_addrGameClockSnapshotTls),
+            g_gameClockTlsFlagOffset,
             g_gameClockFieldStorageOffset,
             g_gameClockFieldEnabledOffset);
     } else {
-        Log("[W] Real game clock layout discovery failed getter=%p snapshots={primary=%p tls=%p} field={storage=0x%X enabled=0x%X}\n",
+        Log("[W] Real game clock layout discovery failed getter=%p snapshots={primary=%p tls=%p} tlsFlag=0x%X field={storage=0x%X enabled=0x%X}\n",
             reinterpret_cast<void*>(getter),
             reinterpret_cast<void*>(g_addrGameClockSnapshotPrimary),
             reinterpret_cast<void*>(g_addrGameClockSnapshotTls),
+            g_gameClockTlsFlagOffset,
             g_gameClockFieldStorageOffset,
             g_gameClockFieldEnabledOffset);
     }
@@ -956,6 +966,58 @@ static size_t FindCallsitesTo(uintptr_t target, uintptr_t* out, size_t cap){
     return found;
 }
 
+static bool DiscoverGameClockCommitPath() {
+    g_pGameTimeSetter = nullptr;
+    g_pGameTimeManagerRootGlobal = nullptr;
+    g_gameTimeManagerOffset = 0;
+
+    const uintptr_t publishTail = ScanModule(
+        "BA ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 48 8B 08 "
+        "C4 C1 7C 10 07 80 3C 0A 00 74 ?? "
+        "C5 FC 11 05 ?? ?? ?? ?? EB ?? C5 FC 11 05 ?? ?? ?? ?? "
+        "49 8B D7 48 8B CF C5 F8 77 E8 ?? ?? ?? ??"
+    );
+    const uintptr_t setter = publishTail
+        ? PromoteToFunctionStart(publishTail, "GameTimeSetter")
+        : 0;
+    if (!setter) {
+        Log("[W] Real game clock setter publish path not found\n");
+        return false;
+    }
+
+    uintptr_t callsites[32] = {};
+    const size_t callsiteCount = FindCallsitesTo(setter, callsites, std::size(callsites));
+    for (size_t i = 0; i < callsiteCount; ++i) {
+        const uintptr_t callsite = callsites[i];
+        uint8_t code[11] = {};
+        if (callsite < 11 || !ReadBytesSafe(callsite - 11, code, sizeof(code))) continue;
+        if (code[0] != 0x48 || code[1] != 0x8B || code[2] != 0x0D ||
+            code[7] != 0x48 || code[8] != 0x8B || code[9] != 0x49) {
+            continue;
+        }
+
+        const int32_t displacement = *reinterpret_cast<const int32_t*>(code + 3);
+        const uintptr_t rootGlobal = callsite - 4 + displacement;
+        const ptrdiff_t managerOffset = static_cast<ptrdiff_t>(code[10]);
+        if (!rootGlobal || !managerOffset || !IsReadableAddress(rootGlobal, sizeof(uintptr_t))) {
+            continue;
+        }
+
+        g_pGameTimeSetter = reinterpret_cast<GameTimeSetter_fn>(setter);
+        g_pGameTimeManagerRootGlobal = reinterpret_cast<uintptr_t*>(rootGlobal);
+        g_gameTimeManagerOffset = managerOffset;
+        Log("[real-time] commit-path setter=%p managerRoot=%p managerOffset=0x%zX\n",
+            reinterpret_cast<void*>(setter),
+            reinterpret_cast<void*>(rootGlobal),
+            static_cast<size_t>(managerOffset));
+        return true;
+    }
+
+    Log("[W] Real game clock manager path not found setter=%p callsites=%zu\n",
+        reinterpret_cast<void*>(setter), callsiteCount);
+    return false;
+}
+
 static bool FindDirectCallToTargetInRange(uintptr_t start, size_t len, uintptr_t target, uintptr_t* outSite) {
     if (!start || !target || len < 5) return false;
     __try {
@@ -1089,6 +1151,39 @@ static bool ResolveNativeToastBridgeAOB() {
             g_pNativeToastPush = reinterpret_cast<NativeToastPush_fn>(pushFn);
             g_pNativeToastReleaseString = reinterpret_cast<NativeToastReleaseString_fn>(releaseFn);
 
+            CW_AOB_VERBOSE_LOG("[AOB] NativeToast root=%p outer=0x%X manager=0x%X create=%p push=%p release=%p\n",
+                (void*)g_pNativeToastRootGlobal,
+                (unsigned)outerOffset,
+                (unsigned)managerOffset,
+                (void*)createFn,
+                (void*)pushFn,
+                (void*)releaseFn);
+            return true;
+        }
+    }
+
+    // 1.18.00 emits the same create/push/release sequence, but resolves the
+    // toast manager after creating the message instead of keeping it in RBX.
+    uintptr_t latestSite = ScanModule(
+        "48 8B C8 E8 ?? ?? ?? ?? 48 89 44 24 ?? "
+        "48 8B 05 ?? ?? ?? ?? 48 8B 88 ?? ?? 00 00 "
+        "45 33 C0 48 8D 54 24 ?? 48 8B 89 ?? ?? 00 00 "
+        "E8 ?? ?? ?? ?? 90 48 8B 4C 24 ?? E8 ?? ?? ?? ??"
+    );
+    if (latestSite) {
+        const uintptr_t rootGlobal = ReadRIP7(latestSite + 13);
+        const uint32_t outerOffset = *reinterpret_cast<const uint32_t*>(latestSite + 23);
+        const uint32_t managerOffset = *reinterpret_cast<const uint32_t*>(latestSite + 38);
+        const uintptr_t createFn = ReadCall(latestSite + 3);
+        const uintptr_t pushFn = ReadCall(latestSite + 42);
+        const uintptr_t releaseFn = ReadCall(latestSite + 53);
+        if (rootGlobal && outerOffset && managerOffset && createFn && pushFn && releaseFn) {
+            g_pNativeToastRootGlobal = reinterpret_cast<void**>(rootGlobal);
+            g_nativeToastOuterOffset = outerOffset;
+            g_nativeToastManagerOffset = static_cast<ptrdiff_t>(managerOffset);
+            g_pNativeToastCreateString = reinterpret_cast<NativeToastCreateString_fn>(createFn);
+            g_pNativeToastPush = reinterpret_cast<NativeToastPush_fn>(pushFn);
+            g_pNativeToastReleaseString = reinterpret_cast<NativeToastReleaseString_fn>(releaseFn);
             CW_AOB_VERBOSE_LOG("[AOB] NativeToast root=%p outer=0x%X manager=0x%X create=%p push=%p release=%p\n",
                 (void*)g_pNativeToastRootGlobal,
                 (unsigned)outerOffset,
@@ -1256,11 +1351,21 @@ static bool DiscoverTimeLayoutAOB() {
     };
 
     uintptr_t lowSite = ScanModule(
-        "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B D4 03 00 00"
+        "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B C4 03 00 00"
     );
     uintptr_t uppSite = ScanModule(
-        "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B D8 03 00 00"
+        "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B C8 03 00 00"
     );
+    if (!lowSite) {
+        lowSite = ScanModule(
+        "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B D4 03 00 00"
+        );
+    }
+    if (!uppSite) {
+        uppSite = ScanModule(
+        "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B D8 03 00 00"
+        );
+    }
     if (!lowSite) {
         lowSite = ScanModule(
             "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B CC 03 00 00"
@@ -1539,10 +1644,17 @@ bool RunAOBScan(){
 
     // Anchor 2: GetRainIntensity
     uintptr_t rain=ScanModule(
-        "48 8B 51 58 4C 8B D1 48 85 D2 B9 40 00 00 00 "
+        "48 8B 51 60 4C 8B D1 48 85 D2 B9 40 00 00 00 "
         "48 8D 42 18 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 "
         "4D 8D 81 6C 01 00 00"
     );
+    if(!rain){
+        rain=ScanModule(
+            "48 8B 51 58 4C 8B D1 48 85 D2 B9 40 00 00 00 "
+            "48 8D 42 18 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 "
+            "4D 8D 81 6C 01 00 00"
+        );
+    }
     if(!rain){
         rain=ScanModule("48 8B 51 50 4C 8B D1");
     }
@@ -1783,6 +1895,11 @@ bool RunAOBScan(){
     }
     if (!addrSceneFrameUpdate) {
         addrSceneFrameUpdate = ScanModule(
+            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 70 B8 01 00 00 00 48 8B FA 2B 81 DC 02 00 00 48 8B D9"
+        );
+    }
+    if (!addrSceneFrameUpdate) {
+        addrSceneFrameUpdate = ScanModule(
             "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 70 B8 01 00 00 00 48 8B FA 2B 81 EC 02 00 00 48 8B D9"
         );
     }
@@ -1936,8 +2053,13 @@ bool RunAOBScan(){
         CW_AOB_VERBOSE_LOG("[AOB] g_EnvManagerPtr = %p\n",(void*)g_pEnvManager);}
     if(!envManagerValidated){
         uintptr_t envGlobalSite = ScanModule(
-            "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 40 48 8B 88 D8 0E 00 00"
+            "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 40 48 8B 88 F0 0E 00 00"
         );
+        if(!envGlobalSite){
+            envGlobalSite = ScanModule(
+            "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 40 48 8B 88 D8 0E 00 00"
+            );
+        }
         if(!envGlobalSite){
             envGlobalSite = ScanModule(
                 "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 40 48 8B 88 E0 0E 00 00"
@@ -1997,8 +2119,14 @@ bool RunAOBScan(){
 #if !defined(CW_WIND_ONLY)
     addrGameTimeGetter = ScanModule(
         "48 89 5C 24 10 57 48 83 EC 60 48 8B 01 48 8B FA "
-        "48 8D 54 24 70 48 8B D9 FF 50 50 B8 FF FF 00 00"
+        "48 8D 54 24 70 48 8B D9 FF 50 60 B8 FF FF 00 00"
     );
+    if (!addrGameTimeGetter) {
+        addrGameTimeGetter = ScanModule(
+        "48 89 5C 24 10 57 48 83 EC 60 48 8B 01 48 8B FA "
+        "48 8D 54 24 70 48 8B D9 FF 50 50 B8 FF FF 00 00"
+        );
+    }
     if (!addrGameTimeGetter) {
         addrGameTimeGetter = ScanModule(
             "48 89 5C 24 10 57 48 83 EC 60 48 8B 01 48 8B FA "
@@ -2014,7 +2142,8 @@ bool RunAOBScan(){
             "0F B7 39 48 8B 1D ?? ?? ?? ?? 3B 7B ??"
         );
     }
-    if (addrGameTimeGetter && !DiscoverGameClockLayout(addrGameTimeGetter)) {
+    if (addrGameTimeGetter &&
+        (!DiscoverGameClockLayout(addrGameTimeGetter) || !DiscoverGameClockCommitPath())) {
         addrGameTimeGetter = 0;
         addrGameFieldInfoResolver = 0;
     }
