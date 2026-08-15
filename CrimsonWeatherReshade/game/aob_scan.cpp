@@ -1597,24 +1597,43 @@ void RestoreRuntimePatches() {
     g_pWeatherTickVtableSlot = nullptr;
 }
 
+static uintptr_t ResolveDustIntensityTarget(uintptr_t weatherTick) {
+    if (weatherTick) {
+        const uintptr_t callsite = weatherTick + 0x4C9;
+        if (*reinterpret_cast<const uint8_t*>(callsite) == 0xE8) {
+            const uintptr_t target = ReadCall(callsite);
+            if (target) return target;
+        }
+    }
+
+    uintptr_t target = ScanModule(
+        "48 8B 41 58 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
+    );
+    if (!target) {
+        target = ScanModule(
+            "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
+        );
+    }
+    if (!target) {
+        target = ScanModule(
+            "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
+        );
+    }
+    return target;
+}
+
 bool RunAOBScan(){
     ClearRuntimeHealthState();
     ResetRuntimeHookControls();
 
 #if defined(CW_WIND_ONLY)
-    uintptr_t windOnlyAddrGetDust = ScanModule(
-        "48 8B 41 58 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
+    uintptr_t windOnlyWeatherTick = ScanModule(
+        "48 8B C4 53 48 81 EC ?? 00 00 00 C5 F2 58 81 C8 00 00 00"
     );
-    if (!windOnlyAddrGetDust) {
-        windOnlyAddrGetDust = ScanModule(
-            "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
-        );
+    if (!windOnlyWeatherTick) {
+        windOnlyWeatherTick = ScanModule("48 8B C4 53 48 81 EC B0 00 00 00 80 3D");
     }
-    if (!windOnlyAddrGetDust) {
-        windOnlyAddrGetDust = ScanModule(
-            "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
-        );
-    }
+    const uintptr_t windOnlyAddrGetDust = ResolveDustIntensityTarget(windOnlyWeatherTick);
     if (!windOnlyAddrGetDust) {
         Log("[E] AOB: GetDustIntensity not found\n");
         return false;
@@ -1695,7 +1714,7 @@ bool RunAOBScan(){
 
     uintptr_t addrProcessRain  = EC(0x0AF,"ProcessRainState");
     uintptr_t addrGetSnow      = EC(0x418,"GetSnowIntensity");
-    uintptr_t addrGetDust      = EC(0x4C9,"GetDustIntensity");
+    uintptr_t addrGetDust      = ResolveDustIntensityTarget(tick);
     uintptr_t addrProcessWind  = EC(0x0FE,"ProcessWindState");
     addrProcessWind = PromoteToFunctionStart(addrProcessWind, "ProcessWindState");
     if (!addrGetSnow) {
@@ -1716,23 +1735,8 @@ bool RunAOBScan(){
             CW_AOB_VERBOSE_LOG("[AOB] GetSnowIntensity(sig) = %p\n", (void*)addrGetSnow);
         }
     }
-    if (!addrGetDust) {
-        addrGetDust = ScanModule(
-            "48 8B 41 58 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
-        );
-        if (!addrGetDust) {
-            addrGetDust = ScanModule(
-                "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
-            );
-        }
-        if (!addrGetDust) {
-            addrGetDust = ScanModule(
-                "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
-            );
-        }
-        if (addrGetDust) {
-            CW_AOB_VERBOSE_LOG("[AOB] GetDustIntensity(sig) = %p\n", (void*)addrGetDust);
-        }
+    if (addrGetDust) {
+        CW_AOB_VERBOSE_LOG("[AOB] GetDustIntensity = %p\n", (void*)addrGetDust);
     }
     if (!addrProcessWind) {
         processWindFallbackUsed = true;
