@@ -181,12 +181,6 @@ typedef long long(__fastcall* GameTimeSetter_fn)(long long manager, long long ti
 typedef long long(__fastcall* GameFieldInfoResolver_fn)(unsigned short* areaId);
 typedef void(__fastcall* NativeLightningScheduler_fn)(long long self);
 typedef int(__fastcall* PlayWeatherSoundEvent_fn)(uint32_t eventId);
-struct NativeSoundResourceRef {
-    uint32_t id = 0;
-    uint32_t pad = 0;
-    uint64_t metadata = 0;
-};
-typedef char(__fastcall* LoadSoundBank_fn)(long long soundManager, NativeSoundResourceRef* bank, char immediate);
 typedef int(__fastcall* AkLoadBankById_fn)(uint32_t bankId, uint32_t memoryPoolId);
 typedef uint32_t(__fastcall* AkPostEventById_fn)(
     uint32_t eventId,
@@ -232,13 +226,11 @@ inline uint32_t g_gameClockFieldStorageOffset = 0;
 inline uint32_t g_gameClockFieldEnabledOffset = 0;
 inline NativeLightningScheduler_fn g_pNativeLightningScheduler = nullptr;
 inline PlayWeatherSoundEvent_fn g_pPlayWeatherSoundEvent = nullptr;
-inline LoadSoundBank_fn g_pLoadSoundBank = nullptr;
 inline AkLoadBankById_fn g_pAkLoadBankById = nullptr;
 inline AkPostEventById_fn g_pAkPostEventById = nullptr;
 inline MinimapRegionLabels_fn g_pOrigMinimapRegionLabels = nullptr;
 inline MinimapGameTimeUpdate_fn g_pOrigMinimapGameTimeUpdate = nullptr;
 inline uintptr_t* g_pEnvManager = nullptr;
-inline uintptr_t* g_pSoundManager = nullptr;
 inline uint8_t* g_pWeatherEffectGateByte = nullptr;
 inline int* g_pNullSentinel = nullptr;
 inline void** g_pWeatherTickVtableSlot = nullptr;

@@ -495,26 +495,6 @@ static uintptr_t ResolveWeatherSoundEventPlayer(uintptr_t processWind) {
     return 0;
 }
 
-static uintptr_t* ResolveSoundManagerGlobalFromWeatherSoundPlayer(uintptr_t weatherSoundPlayer) {
-    if (!weatherSoundPlayer) return nullptr;
-    for (uintptr_t a = weatherSoundPlayer; a + 12 < weatherSoundPlayer + 0x180; ++a) {
-        uint8_t b[12] = {};
-        if (!ReadBytesSafe(a, b, sizeof(b))) continue;
-        if (b[0] == 0x48 && b[1] == 0x8B && b[2] == 0x0D && b[7] == 0xE8) {
-            return reinterpret_cast<uintptr_t*>(ReadRIP7(a));
-        }
-    }
-    return nullptr;
-}
-
-static uintptr_t ResolveLoadSoundBank() {
-    return ScanModule(
-        "48 89 5C 24 08 48 89 74 24 18 57 48 81 EC 30 01 00 00 "
-        "41 0F B6 F0 48 8B F9 44 8B 0A 45 85 C9 0F 84 ?? ?? ?? ?? "
-        "48 8B 5A 08"
-    );
-}
-
 static uintptr_t ResolveAkLoadBankById() {
     return ScanModule(
         "48 89 5C 24 08 48 89 7C 24 10 55 48 8D 6C 24 A9 "
@@ -971,12 +951,21 @@ static bool DiscoverGameClockCommitPath() {
     g_pGameTimeManagerRootGlobal = nullptr;
     g_gameTimeManagerOffset = 0;
 
-    const uintptr_t publishTail = ScanModule(
+    uintptr_t publishTail = ScanModule(
         "BA ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 48 8B 08 "
         "C4 C1 7C 10 07 80 3C 0A 00 74 ?? "
         "C5 FC 11 05 ?? ?? ?? ?? EB ?? C5 FC 11 05 ?? ?? ?? ?? "
         "49 8B D7 48 8B CF C5 F8 77 E8 ?? ?? ?? ??"
     );
+    // 2.0.0 uses r12 for the incoming clock snapshot instead of r15.
+    if (!publishTail) {
+        publishTail = ScanModule(
+            "BA ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 48 8B 08 "
+            "C4 C1 7C 10 04 24 80 3C 0A 00 74 ?? "
+            "C5 FC 11 05 ?? ?? ?? ?? EB ?? C5 FC 11 05 ?? ?? ?? ?? "
+            "49 8B D4 49 8B CF C5 F8 77 E8 ?? ?? ?? ??"
+        );
+    }
     const uintptr_t setter = publishTail
         ? PromoteToFunctionStart(publishTail, "GameTimeSetter")
         : 0;
@@ -1011,6 +1000,34 @@ static bool DiscoverGameClockCommitPath() {
             reinterpret_cast<void*>(rootGlobal),
             static_cast<size_t>(managerOffset));
         return true;
+    }
+
+    // 2.0.0 reaches the setter through small day/time command wrappers. The
+    // manager is loaded from the engine root at +0x28 before those wrappers.
+    const uintptr_t managerSite = ScanModule(
+        "48 8B 05 ?? ?? ?? ?? 48 8B 58 28 48 8D 4D ?? E8 ?? ?? ?? ?? 8B 00"
+    );
+    if (managerSite) {
+        const uintptr_t rootGlobal = ReadRIP7(managerSite);
+        if (rootGlobal && IsReadableAddress(rootGlobal, sizeof(uintptr_t))) {
+            __try {
+                const uintptr_t root = *reinterpret_cast<const uintptr_t*>(rootGlobal);
+                if (root && IsReadableAddress(root + 0x28, sizeof(uintptr_t))) {
+                    const uintptr_t manager = *reinterpret_cast<const uintptr_t*>(root + 0x28);
+                    if (manager) {
+                        g_pGameTimeSetter = reinterpret_cast<GameTimeSetter_fn>(setter);
+                        g_pGameTimeManagerRootGlobal = reinterpret_cast<uintptr_t*>(rootGlobal);
+                        g_gameTimeManagerOffset = 0x28;
+                        Log("[real-time] commit-path setter=%p managerRoot=%p managerOffset=0x%X source=2.0 wrapper\n",
+                            reinterpret_cast<void*>(setter),
+                            reinterpret_cast<void*>(rootGlobal),
+                            static_cast<unsigned>(g_gameTimeManagerOffset));
+                        return true;
+                    }
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+        }
     }
 
     Log("[W] Real game clock manager path not found setter=%p callsites=%zu\n",
@@ -1374,6 +1391,24 @@ static bool DiscoverTimeLayoutAOB() {
     if (!uppSite) {
         uppSite = ScanModule(
             "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? 48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? C5 FB 5A C8 C5 FA 11 8B D0 03 00 00"
+        );
+    }
+    // 2.0.0 keeps the same environment-object dispatch, but moved the four
+    // visual-time floats down by 0x18 bytes.
+    if (!lowSite) {
+        lowSite = ScanModule(
+            "57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? "
+            "48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 "
+            "48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? "
+            "C5 FB 5A C8 C5 FA 11 8B B4 03 00 00"
+        );
+    }
+    if (!uppSite) {
+        uppSite = ScanModule(
+            "57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? "
+            "48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 "
+            "48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? "
+            "C5 FB 5A C8 C5 FA 11 8B B8 03 00 00"
         );
     }
     if (!lowSite || !uppSite) {
@@ -1765,14 +1800,6 @@ bool RunAOBScan(){
     }
     g_pPlayWeatherSoundEvent = reinterpret_cast<PlayWeatherSoundEvent_fn>(addrPlayWeatherSoundEvent);
 
-    uintptr_t addrLoadSoundBank = ResolveLoadSoundBank();
-    if (addrLoadSoundBank) {
-        CW_AOB_VERBOSE_LOG("[AOB] LoadSoundBank = %p\n", (void*)addrLoadSoundBank);
-    } else {
-        Log("[W] LoadSoundBank not found (thunder audio bank preload unavailable)\n");
-    }
-    g_pLoadSoundBank = reinterpret_cast<LoadSoundBank_fn>(addrLoadSoundBank);
-
     uintptr_t addrAkLoadBankById = ResolveAkLoadBankById();
     if (addrAkLoadBankById) {
         CW_AOB_VERBOSE_LOG("[AOB] AK::LoadBankById = %p\n", (void*)addrAkLoadBankById);
@@ -1788,13 +1815,6 @@ bool RunAOBScan(){
         Log("[W] AK::PostEventById not found (thunder audio direct post unavailable)\n");
     }
     g_pAkPostEventById = reinterpret_cast<AkPostEventById_fn>(addrAkPostEventById);
-
-    g_pSoundManager = ResolveSoundManagerGlobalFromWeatherSoundPlayer(addrPlayWeatherSoundEvent);
-    if (g_pSoundManager) {
-        CW_AOB_VERBOSE_LOG("[AOB] SoundManager = %p -> %p\n", (void*)g_pSoundManager, (void*)*g_pSoundManager);
-    } else {
-        Log("[W] SoundManager global not found (thunder audio bank preload unavailable)\n");
-    }
 
     uintptr_t addrActivate     = EC(0x2AA,"ActivateEffect");
     uintptr_t addrSetIntensity = EC(0x2CC,"SetIntensity");
@@ -1906,6 +1926,21 @@ bool RunAOBScan(){
         addrSceneFrameUpdate = ScanModule(
             "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 70 B8 01 00 00 00 48 8B FA 2B 81 EC 02 00 00 48 8B D9"
         );
+    }
+    if (!addrSceneFrameUpdate) {
+        // 2.0.0 keeps the scene constant-buffer copy but changed the frame prologue.
+        // Resolve the enclosing function from the verified primary-scene copy instead.
+        const uintptr_t sceneCopySite = ScanModule(
+            "48 8B 8B ?? ?? ?? ?? 41 B8 ?? ?? 00 00 "
+            "48 8B 93 ?? ?? ?? ?? 48 8B 49 60 E8 ?? ?? ?? ?? "
+            "48 8B 8B ?? ?? ?? ?? 48 8D 93 ?? ?? ?? ?? 41 B8"
+        );
+        if (sceneCopySite) {
+            const uintptr_t candidate = FindFunctionStartViaUnwind(sceneCopySite);
+            if (candidate && DiscoverSceneFrameLayout(candidate)) {
+                addrSceneFrameUpdate = candidate;
+            }
+        }
     }
     if (addrSceneFrameUpdate && !DiscoverSceneFrameLayout(addrSceneFrameUpdate)) {
         Log("[W] SceneFrameUpdate layout validation failed\n");

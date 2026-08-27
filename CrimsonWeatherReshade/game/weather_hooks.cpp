@@ -412,16 +412,7 @@ __m128 __fastcall Hooked_GetRainIntensity(long long ws) {
     if (g_noRain.load()) return PackScalar(0.0f);
     if (g_oRain.active.load())
         return PackScalar(g_oRain.value.load());
-    float baseRain = g_pOrigGetRainIntensity ? ExtractScalar(g_pOrigGetRainIntensity(ws)) : 0.0f;
-    if (baseRain > 0.01f) {
-        static ULONGLONG s_lastRainBaseLog = 0;
-        ULONGLONG now = GetTickCount64();
-        if (now - s_lastRainBaseLog > 1500) {
-            s_lastRainBaseLog = now;
-            Log("[rain] base weather rain=%.3f (override inactive)\n", baseRain);
-        }
-    }
-    return PackScalar(baseRain);
+    return g_pOrigGetRainIntensity ? g_pOrigGetRainIntensity(ws) : PackScalar(0.0f);
 }
 
 __m128 __fastcall Hooked_GetSnowIntensity(long long ws) {

@@ -599,7 +599,6 @@ bool RuntimeStartupHealthy(char* outReason, size_t outReasonSize) {
         RuntimeFeatureId::Rain,
         RuntimeFeatureId::Dust,
         RuntimeFeatureId::Snow,
-        RuntimeFeatureId::TimeControls,
         RuntimeFeatureId::CloudControls,
         RuntimeFeatureId::FogControls,
         RuntimeFeatureId::WindControls,

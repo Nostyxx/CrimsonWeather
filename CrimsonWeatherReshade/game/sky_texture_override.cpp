@@ -348,30 +348,23 @@ std::vector<AnimationLoadRequest> g_animationLoadRequests;
 TextureFingerprintTarget g_moonFingerprintTargets[] = {
     {
         "MoonTextureNodeApply",
-        "40 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 78 "
-        "48 8B FA 4C 8B F1 8B 81 60 01 00 00 45 32 E4 "
-        "44 88 A4 24 C0 00 00 00 48 8B D1 48 8D 8C 24 C8 00 00 00 "
-        "E8 ?? ?? ?? ?? 90 65 48 8B 04 25 58 00 00 00",
+        "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 "
+        "41 54 41 55 41 56 41 57 48 83 EC 20 49 8B E9 4D 8B F8 "
+        "4C 8B F2 48 8B D9 0F B6 B9 AE 00 00 00 48 8B 01 33 D2 "
+        "FF 50 10 40 84 FF 74 ?? 40 88 BB AE 00 00 00 80 8B AF 00 00 00 80 "
+        "49 8B D6 48 8D 8B B0 00 00 00 E8 ?? ?? ?? ??",
         0,
         0x500
     },
     {
         "MoonTextureWorkerUpdate",
-        "40 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 48 "
-        "48 8B E9 32 C9 88 8C 24 98 00 00 00 4C 8B 3D ?? ?? ?? ?? "
-        "4C 89 BC 24 A8 00 00 00 0F B6 85 18 03 00 00 "
-        "88 84 24 A0 00 00 00 8B 9D 30 03 00 00",
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 "
+        "41 54 41 55 41 56 41 57 48 83 EC 70 4D 8B F9 4D 8B F0 "
+        "48 8B F2 48 8B F9 80 79 42 00 74 ?? 80 79 43 00 75 ?? C6 41 43 01 "
+        "C7 41 54 FF FF FF FF 48 8B 49 30 45 33 E4 48 85 C9 74 ?? "
+        "48 8B 01 41 8D 54 24 01 FF 10 4C 89 67 30 0F B6 46 03",
         0,
         0x800
-    },
-    {
-        "MoonTextureWorkerLoop",
-        "48 89 5C 24 10 55 56 57 41 56 41 57 48 83 EC 30 "
-        "48 8B F9 48 8D 4C 24 70 E8 ?? ?? ?? ?? "
-        "44 0F B6 B7 18 03 00 00 4C 8B 3D ?? ?? ?? ?? "
-        "41 80 FE FF 0F 84 ?? ?? ?? ?? 48 8B 4F 10 C6 44 24 78 03",
-        0,
-        0x300
     },
     {
         "MoonTextureThreadStart",
@@ -670,11 +663,12 @@ bool ResolveFingerprintTargets(TextureSlot& slot) {
 
     HMODULE exe = GetModuleHandleA(nullptr);
     const uintptr_t base = reinterpret_cast<uintptr_t>(exe);
-    bool allFound = base != 0;
+    size_t found = 0;
     for (size_t i = 0; i < slot.fingerprintTargetCount; ++i) {
         TextureFingerprintTarget& target = slot.fingerprintTargets[i];
         target.start = ScanExecutableModulePattern(target.pattern);
         if (target.start) {
+            ++found;
             CW_SKY_VERBOSE_LOG("[%s] fingerprint %s = %p rva=0x%llX range=0x%zX\n",
                 slot.logTag,
                 target.name,
@@ -682,13 +676,15 @@ bool ResolveFingerprintTargets(TextureSlot& slot) {
                 static_cast<unsigned long long>(target.start - base),
                 target.range);
         } else {
-            allFound = false;
             Log("[W] %s fingerprint %s AOB not found\n", slot.logTag, target.name);
         }
     }
 
-    slot.fingerprintResolved = allFound;
-    return allFound;
+    // A candidate must still satisfy the runtime stack-hit threshold and, for
+    // Moon, the native texture hash. The threshold allows a future optional
+    // anchor to age out without disabling the validated path.
+    slot.fingerprintResolved = base != 0 && found >= static_cast<size_t>(slot.fingerprintHitsRequired);
+    return slot.fingerprintResolved;
 }
 
 void LogFingerprintSummary(TextureSlot& slot) {
