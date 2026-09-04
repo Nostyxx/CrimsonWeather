@@ -4,10 +4,15 @@
 
 #include <cctype>
 #include <fstream>
+#include <mutex>
 #include <share.h>
 #include <vector>
 
 namespace {
+
+std::mutex g_nativeToastQueueMutex;
+char g_queuedNativeToast[128] = {};
+std::atomic_bool g_nativeToastQueued = false;
 
 #if defined(CW_DEV_BUILD)
 constexpr const char* kDevOptimizationLogDir = "C:\\Games\\Crimson Desert\\bin64\\optimizationLOG";
@@ -1060,12 +1065,12 @@ ResolvedEnv ResolveEnv() {
         }
 
         auto* vtbl = *reinterpret_cast<uintptr_t**>(envMgr);
-        if (!IsReadablePointer(reinterpret_cast<uintptr_t>(vtbl), 0x48)) {
+        if (!IsReadablePointer(reinterpret_cast<uintptr_t>(vtbl), 0x68)) {
             return r;
         }
 
         using GetEntityFn = long long(__fastcall*)(void*);
-        auto getEntity = reinterpret_cast<GetEntityFn>(vtbl[0x40 / 8]);
+        auto getEntity = reinterpret_cast<GetEntityFn>(vtbl[0x60 / 8]);
         if (!getEntity || !IsReadablePointer(reinterpret_cast<uintptr_t>(getEntity), 16)) {
             return r;
         }
@@ -1075,15 +1080,13 @@ ResolvedEnv ResolveEnv() {
             return r;
         }
 
-        r.weatherState = *reinterpret_cast<long long*>(r.entity + 0xED8);
-        if (!r.weatherState || !IsReadablePointer(static_cast<uintptr_t>(r.weatherState), 0x58)) {
-            r.weatherState = *reinterpret_cast<long long*>(r.entity + 0xEE0);
-        }
-        if (!r.weatherState || !IsReadablePointer(static_cast<uintptr_t>(r.weatherState), 0x58)) {
+        r.weatherState = *reinterpret_cast<long long*>(r.entity + g_envWeatherStateOffset);
+        if (!r.weatherState || !IsReadablePointer(static_cast<uintptr_t>(r.weatherState),
+                                                   g_weatherNodeContainerOffset + sizeof(long long))) {
             return r;
         }
 
-        long long cont = *reinterpret_cast<long long*>(r.weatherState + 0x50);
+        long long cont = *reinterpret_cast<long long*>(r.weatherState + g_weatherNodeContainerOffset);
         if (!cont || !IsReadablePointer(static_cast<uintptr_t>(cont), 0x28)) {
             return r;
         }
@@ -1097,12 +1100,12 @@ ResolvedEnv ResolveEnv() {
             r.windNode = 0;
         }
 
-        r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE0);
+        r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE8);
         if (r.particleMgr && !IsReadablePointer(static_cast<uintptr_t>(r.particleMgr), 0x20)) {
             r.particleMgr = 0;
         }
         if (!r.particleMgr) {
-            r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE8);
+            r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE0);
         }
         if (r.particleMgr && !IsReadablePointer(static_cast<uintptr_t>(r.particleMgr), 0x20)) {
             r.particleMgr = 0;
@@ -1672,12 +1675,43 @@ void* ResolveNativeToastManager() {
 }
 
 bool NativeToastReady() {
-    return g_pNativeToastCreateString && g_pNativeToastPush && g_pNativeToastReleaseString &&
-           g_pNativeToastRootGlobal && g_nativeToastOuterOffset != 0 && g_nativeToastManagerOffset != 0;
+    const bool legacyBridgeReady =
+        g_pNativeToastCreateString && g_pNativeToastPush && g_pNativeToastReleaseString &&
+        g_pNativeToastRootGlobal && g_nativeToastOuterOffset != 0 && g_nativeToastManagerOffset != 0;
+    return legacyBridgeReady || g_pNativeToastShowAlert;
+}
+
+static void* ResolveToastUiRootNoThrow(void* minimapUi) {
+    __try {
+        void** vtable = *reinterpret_cast<void***>(minimapUi);
+        if (!vtable || !vtable[34]) {
+            return nullptr;
+        }
+        using GetUiRoot_fn = void*(__fastcall*)(void*);
+        return reinterpret_cast<GetUiRoot_fn>(vtable[34])(minimapUi);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+static bool ShowAlertNoThrow(void* uiRoot, const char* message) {
+    __try {
+        g_pNativeToastShowAlert(uiRoot, message, 0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 void ShowNativeToast(const char* msg) {
     if (!g_cfg.toastNotification || !msg || !msg[0] || !NativeToastReady()) {
+        return;
+    }
+
+    if (g_pNativeToastShowAlert) {
+        std::lock_guard<std::mutex> lock(g_nativeToastQueueMutex);
+        strncpy_s(g_queuedNativeToast, msg, _TRUNCATE);
+        g_nativeToastQueued = true;
         return;
     }
 
@@ -1686,7 +1720,6 @@ void ShowNativeToast(const char* msg) {
         Log("[W] native toast manager unavailable for: %s\n", msg);
         return;
     }
-
     void* messageHandle = g_pNativeToastCreateString(msg);
     if (!messageHandle) {
         Log("[W] native toast string create failed: %s\n", msg);
@@ -1696,4 +1729,32 @@ void ShowNativeToast(const char* msg) {
     g_pNativeToastPush(manager, &messageHandle, 0);
     g_pNativeToastReleaseString(messageHandle);
     Log("[i] native toast shown: %s\n", msg);
+}
+
+void FlushQueuedNativeToast(void* minimapUi) {
+    if (!g_pNativeToastShowAlert || !minimapUi || !g_nativeToastQueued.load()) {
+        return;
+    }
+
+    void* uiRoot = ResolveToastUiRootNoThrow(minimapUi);
+    if (!uiRoot) {
+        return;
+    }
+
+    char message[sizeof(g_queuedNativeToast)] = {};
+    {
+        std::lock_guard<std::mutex> lock(g_nativeToastQueueMutex);
+        if (!g_nativeToastQueued) {
+            return;
+        }
+        strcpy_s(message, g_queuedNativeToast);
+        g_nativeToastQueued = false;
+        g_queuedNativeToast[0] = '\0';
+    }
+
+    if (ShowAlertNoThrow(uiRoot, message)) {
+        Log("[i] native toast shown: %s\n", message);
+    } else {
+        Log("[W] native toast alert exception: %s\n", message);
+    }
 }

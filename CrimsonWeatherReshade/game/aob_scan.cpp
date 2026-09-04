@@ -394,6 +394,11 @@ static bool LooksLikeAtmosFogBlend(uintptr_t f){
         } else {
             return false;
         }
+        // 2.01 emits the same five-float blend with VEX-encoded vmovaps.
+        if (p[idx] == 0xC5 && p[idx + 1] == 0xF8 && p[idx + 2] == 0x29 &&
+            p[idx + 3] == 0x74 && p[idx + 4] == 0x24 && p[idx + 5] == 0x20) {
+            return true;
+        }
         if (p[idx] != 0x0F) return false;
         if (p[idx + 1] != 0x29 && p[idx + 1] != 0x11 && p[idx + 1] != 0x28 && p[idx + 1] != 0x10) return false;
         if (p[idx + 2] != 0x74 || p[idx + 3] != 0x24 || p[idx + 4] != 0x20) return false;
@@ -421,51 +426,107 @@ static bool LooksLikeWindPack(uintptr_t f) {
         0x8B, 0xFA, 0xB9, 0x40, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x40,
         0x18, 0x4C, 0x0F, 0x44, 0xC1
     };
-    return memcmp(wb, newShape, sizeof(newShape)) == 0;
+    if (memcmp(wb, newShape, sizeof(newShape)) == 0) return true;
+
+    const uint8_t v201Shape[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20,
+        0x48, 0x8B, 0x01, 0x48, 0x8B, 0xD9, 0x48, 0x85, 0xC0, 0x48,
+        0x8B, 0xFA, 0xB9, 0x40, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x40,
+        0x18, 0x4C, 0x0F, 0x44, 0xC1
+    };
+    return memcmp(wb, v201Shape, sizeof(v201Shape)) == 0;
 }
 
-static bool LooksLikeNativeLightningScheduler(uintptr_t f, uintptr_t rain) {
+static bool LooksLikeNativeLightningScheduler(uintptr_t f, uintptr_t rain,
+                                               ptrdiff_t* outElapsedOffset = nullptr,
+                                               ptrdiff_t* outNextDelayOffset = nullptr) {
     if (!f || !rain) return false;
     uint8_t b[0x1C0] = {};
     if (!ReadBytesSafe(f, b, sizeof(b))) return false;
 
-    const uint8_t prologue[] = {
+    const uint8_t oldPrologue[] = {
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x50
     };
-    if (memcmp(b, prologue, sizeof(prologue)) != 0) return false;
+    const uint8_t currentPrologue[] = {
+        0x40, 0x53, 0x48, 0x83, 0xEC, 0x40
+    };
+    if (memcmp(b, oldPrologue, sizeof(oldPrologue)) != 0 &&
+        memcmp(b, currentPrologue, sizeof(currentPrologue)) != 0) {
+        return false;
+    }
     if (!FindDirectCallToTargetInRange(f, 0x60, rain, nullptr)) return false;
 
-    bool writesNextDelayReset = false;
-    bool writesElapsedReset = false;
+    ptrdiff_t nextDelayOffset = 0;
+    ptrdiff_t elapsedOffset = 0;
     for (size_t i = 0; i + 10 <= sizeof(b); ++i) {
-        if (b[i] == 0xC7 && b[i + 1] == 0x83 &&
-            b[i + 2] == 0xE8 && b[i + 3] == 0x00 && b[i + 4] == 0x00 && b[i + 5] == 0x00 &&
-            b[i + 6] == 0x00 && b[i + 7] == 0x00 && b[i + 8] == 0x80 && b[i + 9] == 0xBF) {
-            writesNextDelayReset = true;
-        }
-        if (b[i] == 0xC7 && b[i + 1] == 0x83 &&
-            b[i + 2] == 0xE4 && b[i + 3] == 0x00 && b[i + 4] == 0x00 && b[i + 5] == 0x00 &&
-            b[i + 6] == 0x00 && b[i + 7] == 0x00 && b[i + 8] == 0x00 && b[i + 9] == 0x00) {
-            writesElapsedReset = true;
+        if (b[i] != 0xC7 || b[i + 1] != 0x83) continue;
+        const int32_t disp = *reinterpret_cast<const int32_t*>(b + i + 2);
+        const uint32_t value = *reinterpret_cast<const uint32_t*>(b + i + 6);
+        if (disp < 0x80 || disp > 0x200) continue;
+        if (value == 0xBF800000u) {
+            nextDelayOffset = disp;
+        } else if (value == 0u) {
+            elapsedOffset = disp;
         }
     }
-    return writesNextDelayReset && writesElapsedReset;
+    if (!elapsedOffset || nextDelayOffset != elapsedOffset + sizeof(float)) return false;
+    if (outElapsedOffset) *outElapsedOffset = elapsedOffset;
+    if (outNextDelayOffset) *outNextDelayOffset = nextDelayOffset;
+    return true;
 }
 
-static uintptr_t ResolveNativeLightningScheduler(uintptr_t tick, uintptr_t rain) {
+static uintptr_t ResolveNativeLightningScheduler(uintptr_t tick, uintptr_t rain,
+                                                  ptrdiff_t& outElapsedOffset,
+                                                  ptrdiff_t& outNextDelayOffset) {
     if (!tick || !rain) return 0;
     for (uintptr_t a = tick; a + 5 < tick + 0x900; ++a) {
         if (*reinterpret_cast<uint8_t*>(a) != 0xE8) continue;
         const uintptr_t t = ReadCall(a);
-        if (LooksLikeNativeLightningScheduler(t, rain)) {
+        ptrdiff_t elapsedOffset = 0;
+        ptrdiff_t nextDelayOffset = 0;
+        if (LooksLikeNativeLightningScheduler(t, rain, &elapsedOffset, &nextDelayOffset)) {
+            outElapsedOffset = elapsedOffset;
+            outNextDelayOffset = nextDelayOffset;
             return t;
         }
     }
     return 0;
 }
 
+static void ResolveWeatherStateLayout(uintptr_t tick, uintptr_t rain) {
+    uint8_t getter[8] = {};
+    if (ReadBytesSafe(rain, getter, sizeof(getter))) {
+        if (getter[0] == 0x48 && getter[1] == 0x8B && getter[2] == 0x51) {
+            g_weatherNodeContainerOffset = getter[3];
+        } else if (getter[0] == 0x48 && getter[1] == 0x8B && getter[2] == 0x91) {
+            g_weatherNodeContainerOffset = *reinterpret_cast<int32_t*>(getter + 3);
+        }
+    }
+
+    for (uintptr_t a = tick; a + 5 < tick + 0x800; ++a) {
+        if (*reinterpret_cast<uint8_t*>(a) != 0xE8 || ReadCall(a) != rain) continue;
+        const uintptr_t begin = a > tick + 12 ? a - 12 : tick;
+        for (uintptr_t p = begin; p + 7 <= a; ++p) {
+            uint8_t b[7] = {};
+            if (!ReadBytesSafe(p, b, sizeof(b))) continue;
+            if (b[0] == 0x48 && b[1] == 0x8B && b[2] == 0x88) {
+                g_envWeatherStateOffset = *reinterpret_cast<int32_t*>(b + 3);
+            } else if (b[0] == 0x48 && b[1] == 0x8B && b[2] == 0x48) {
+                g_envWeatherStateOffset = b[3];
+            } else {
+                continue;
+            }
+            CW_AOB_VERBOSE_LOG("[AOB] weather layout entity=0x%llX container=0x%llX\n",
+                static_cast<unsigned long long>(g_envWeatherStateOffset),
+                static_cast<unsigned long long>(g_weatherNodeContainerOffset));
+            return;
+        }
+    }
+}
+
 static uint8_t* ResolveWeatherEffectGateByte(uintptr_t tick) {
     if (!tick) return nullptr;
+    g_weatherEffectGateEnabledWhenZero = false;
     for (uintptr_t a = tick; a + 10 < tick + 0x220; ++a) {
         uint8_t b[10] = {};
         if (!ReadBytesSafe(a, b, sizeof(b))) continue;
@@ -475,22 +536,46 @@ static uint8_t* ResolveWeatherEffectGateByte(uintptr_t tick) {
             return reinterpret_cast<uint8_t*>(target);
         }
     }
+    // 2.01 skips the whole component update when this byte is non-zero.
+    for (uintptr_t a = tick; a + 9 < tick + 0x80; ++a) {
+        uint8_t b[9] = {};
+        if (!ReadBytesSafe(a, b, sizeof(b))) continue;
+        if (b[0] != 0x80 || b[1] != 0x3D || b[6] != 0x00) continue;
+        if (b[7] != 0x75 && !(b[7] == 0x0F && b[8] == 0x85)) continue;
+        g_weatherEffectGateEnabledWhenZero = true;
+        return reinterpret_cast<uint8_t*>(a + 7 + *reinterpret_cast<int32_t*>(a + 2));
+    }
     return nullptr;
 }
 
 static uintptr_t ResolveWeatherSoundEventPlayer(uintptr_t processWind) {
     if (!processWind) return 0;
-    uint8_t b[0x80] = {};
+    uint8_t b[0x240] = {};
     if (!ReadBytesSafe(processWind, b, sizeof(b))) return 0;
-    for (size_t i = 0; i + 33 < sizeof(b); ++i) {
+    for (size_t i = 0; i + 19 <= sizeof(b); ++i) {
         if (b[i + 0] == 0x39 && b[i + 1] == 0xB3 &&
-            b[i + 2] == 0xDC && b[i + 3] == 0x00 && b[i + 4] == 0x00 && b[i + 5] == 0x00 &&
-            b[i + 6] == 0x75 && b[i + 7] == 0x0D &&
-            b[i + 8] == 0xE8 &&
+            b[i + 6] == 0x75 && b[i + 7] == 0x0D && b[i + 8] == 0xE8 &&
             b[i + 13] == 0x89 && b[i + 14] == 0x83 &&
-            b[i + 15] == 0xDC && b[i + 16] == 0x00 && b[i + 17] == 0x00 && b[i + 18] == 0x00) {
+            memcmp(b + i + 2, b + i + 15, sizeof(int32_t)) == 0) {
             return ReadCall(processWind + i + 8);
         }
+    }
+    return 0;
+}
+
+static uintptr_t ResolveDeactivateEffect(uintptr_t weatherTick) {
+    if (!weatherTick) return 0;
+    uint8_t b[0x850] = {};
+    if (!ReadBytesSafe(weatherTick, b, sizeof(b))) return 0;
+
+    for (size_t i = 0; i + 20 <= sizeof(b); ++i) {
+        if (b[i] != 0x48 || b[i + 1] != 0x8D || b[i + 2] != 0x8B ||
+            *reinterpret_cast<const int32_t*>(b + i + 3) != WCO::HANDLE_ARRAY ||
+            b[i + 7] != 0xE8) {
+            continue;
+        }
+        const uintptr_t target = ReadCall(weatherTick + i + 7);
+        if (target) return target;
     }
     return 0;
 }
@@ -966,6 +1051,16 @@ static bool DiscoverGameClockCommitPath() {
             "49 8B D4 49 8B CF C5 F8 77 E8 ?? ?? ?? ??"
         );
     }
+    // 2.01 keeps the same six-argument setter and snapshot publish path, but
+    // compares the TLS flag through r9b and retains the manager in r13.
+    if (!publishTail) {
+        publishTail = ScanModule(
+            "BA ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 48 8B 08 "
+            "C4 C1 7C 10 04 24 44 38 0C 0A 74 ?? "
+            "C5 FC 11 05 ?? ?? ?? ?? EB ?? C5 FC 11 05 ?? ?? ?? ?? "
+            "49 8B D4 49 8B CD C5 F8 77 E8 ?? ?? ?? ??"
+        );
+    }
     const uintptr_t setter = publishTail
         ? PromoteToFunctionStart(publishTail, "GameTimeSetter")
         : 0;
@@ -1212,6 +1307,20 @@ static bool ResolveNativeToastBridgeAOB() {
         }
     }
 
+    // 2.01.00 replaced the legacy manager/string-handle bridge with a
+    // high-level AlertSystem entry point. Queue calls until the minimap UI
+    // callback supplies a valid game UI root on the UI thread.
+    uintptr_t showAlert = ScanModule(
+        "48 89 5C 24 08 57 48 83 EC 20 48 8B FA 41 8B D8 "
+        "48 8D 15 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 "
+        "0F 84 ?? ?? ?? ?? 4C 8B 80 A0 00 00 00"
+    );
+    if (showAlert) {
+        g_pNativeToastShowAlert = reinterpret_cast<NativeToastShowAlert_fn>(showAlert);
+        CW_AOB_VERBOSE_LOG("[AOB] NativeToast AlertSystem entry=%p\n", (void*)showAlert);
+        return true;
+    }
+
     Log("[W] AOB: NativeToast bridge not found\n");
     return false;
 }
@@ -1407,6 +1516,24 @@ static bool DiscoverTimeLayoutAOB() {
         uppSite = ScanModule(
             "57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? "
             "48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 40 "
+            "48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? "
+            "C5 FB 5A C8 C5 FA 11 8B B8 03 00 00"
+        );
+    }
+    // 2.01.00 keeps the visual-time handlers and field layout, but the
+    // environment-object dispatch moved from vtable slot 0x40 to 0x60.
+    if (!lowSite) {
+        lowSite = ScanModule(
+            "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? "
+            "48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 60 "
+            "48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? "
+            "C5 FB 5A C8 C5 FA 11 8B B4 03 00 00"
+        );
+    }
+    if (!uppSite) {
+        uppSite = ScanModule(
+            "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? "
+            "48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 60 "
             "48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? "
             "C5 FB 5A C8 C5 FA 11 8B B8 03 00 00"
         );
@@ -1634,6 +1761,13 @@ void RestoreRuntimePatches() {
 
 static uintptr_t ResolveDustIntensityTarget(uintptr_t weatherTick) {
     if (weatherTick) {
+        // 2.01.00 weather component: this accessor reads the native wind/dust
+        // inputs at +0x138/+0x1A4 and their dynamic scale at +0x158.
+        const uintptr_t currentBuildCallsite = weatherTick + 0x420;
+        if (*reinterpret_cast<const uint8_t*>(currentBuildCallsite) == 0xE8) {
+            const uintptr_t target = ReadCall(currentBuildCallsite);
+            if (target) return target;
+        }
         const uintptr_t callsite = weatherTick + 0x4C9;
         if (*reinterpret_cast<const uint8_t*>(callsite) == 0xE8) {
             const uintptr_t target = ReadCall(callsite);
@@ -1663,8 +1797,14 @@ bool RunAOBScan(){
 
 #if defined(CW_WIND_ONLY)
     uintptr_t windOnlyWeatherTick = ScanModule(
-        "48 8B C4 53 48 81 EC ?? 00 00 00 C5 F2 58 81 C8 00 00 00"
+        "40 53 48 81 EC C0 00 00 00 C5 F2 58 81 C8 00 00 00 "
+        "C5 F8 29 B4 24 B0 00 00 00 C5 78 29 54 24 70"
     );
+    if (!windOnlyWeatherTick) {
+        windOnlyWeatherTick = ScanModule(
+        "48 8B C4 53 48 81 EC ?? 00 00 00 C5 F2 58 81 C8 00 00 00"
+        );
+    }
     if (!windOnlyWeatherTick) {
         windOnlyWeatherTick = ScanModule("48 8B C4 53 48 81 EC B0 00 00 00 80 3D");
     }
@@ -1689,7 +1829,12 @@ bool RunAOBScan(){
 #endif
 
     // Anchor 1: WeatherTick
-    uintptr_t tick=ScanModule("48 8B C4 53 48 81 EC ?? 00 00 00 C5 F2 58 81 C8 00 00 00");
+    uintptr_t tick=ScanModule(
+        "40 53 48 81 EC C0 00 00 00 C5 F2 58 81 C8 00 00 00 "
+        "C5 F8 29 B4 24 B0 00 00 00 C5 78 29 54 24 70"
+    );
+    const bool is201WeatherTick = tick != 0;
+    if (!tick) tick=ScanModule("48 8B C4 53 48 81 EC ?? 00 00 00 C5 F2 58 81 C8 00 00 00");
     if(!tick){
         tick=ScanModule("48 8B C4 53 48 81 EC B0 00 00 00 80 3D");
     }
@@ -1714,8 +1859,10 @@ bool RunAOBScan(){
     }
     if(!rain){Log("[E] AOB: GetRainIntensity not found\n");return false;}
     CW_AOB_VERBOSE_LOG("[AOB] GetRainIntensity = %p\n",(void*)rain);
+    ResolveWeatherStateLayout(tick, rain);
 
-    uintptr_t addrNativeLightningScheduler = ResolveNativeLightningScheduler(tick, rain);
+    uintptr_t addrNativeLightningScheduler = ResolveNativeLightningScheduler(
+        tick, rain, g_lightningElapsedOffset, g_lightningNextDelayOffset);
     if (addrNativeLightningScheduler) {
         CW_AOB_VERBOSE_LOG("[AOB] NativeLightningScheduler = %p\n", (void*)addrNativeLightningScheduler);
     } else {
@@ -1747,10 +1894,12 @@ bool RunAOBScan(){
         CW_AOB_VERBOSE_LOG("[AOB] %s = %p (Tick+0x%X)\n",n,(void*)t,(uint32_t)off);
         return t;};
 
-    uintptr_t addrProcessRain  = EC(0x0AF,"ProcessRainState");
-    uintptr_t addrGetSnow      = EC(0x418,"GetSnowIntensity");
+    uintptr_t addrProcessRain  = EC(is201WeatherTick ? 0x04B : 0x0AF,"ProcessRainState");
+    uintptr_t addrGetSnow      = EC(is201WeatherTick ? 0x36F : 0x418,"GetSnowIntensity");
     uintptr_t addrGetDust      = ResolveDustIntensityTarget(tick);
-    uintptr_t addrProcessWind  = EC(0x0FE,"ProcessWindState");
+    // In 2.01 the first component helper owns the native rain/snow/dust sound
+    // and effect state formerly reached by the later ProcessWind call.
+    uintptr_t addrProcessWind  = is201WeatherTick ? addrProcessRain : EC(0x0FE,"ProcessWindState");
     addrProcessWind = PromoteToFunctionStart(addrProcessWind, "ProcessWindState");
     if (!addrGetSnow) {
         addrGetSnow = ScanModule(
@@ -1795,8 +1944,6 @@ bool RunAOBScan(){
     uintptr_t addrPlayWeatherSoundEvent = ResolveWeatherSoundEventPlayer(addrProcessWind);
     if (addrPlayWeatherSoundEvent) {
         CW_AOB_VERBOSE_LOG("[AOB] PlayWeatherSoundEvent = %p\n", (void*)addrPlayWeatherSoundEvent);
-    } else {
-        Log("[W] PlayWeatherSoundEvent not found (thunder audio unavailable)\n");
     }
     g_pPlayWeatherSoundEvent = reinterpret_cast<PlayWeatherSoundEvent_fn>(addrPlayWeatherSoundEvent);
 
@@ -1815,9 +1962,15 @@ bool RunAOBScan(){
         Log("[W] AK::PostEventById not found (thunder audio direct post unavailable)\n");
     }
     g_pAkPostEventById = reinterpret_cast<AkPostEventById_fn>(addrAkPostEventById);
+    if (!addrPlayWeatherSoundEvent && addrAkPostEventById) {
+        CW_AOB_VERBOSE_LOG("[AOB] thunder audio route = AK::PostEventById (legacy weather wrapper absent)\n");
+    } else if (!addrPlayWeatherSoundEvent && !addrAkPostEventById) {
+        Log("[W] Thunder audio event player unavailable\n");
+    }
 
-    uintptr_t addrActivate     = EC(0x2AA,"ActivateEffect");
-    uintptr_t addrSetIntensity = EC(0x2CC,"SetIntensity");
+    uintptr_t addrActivate     = EC(is201WeatherTick ? 0x159 : 0x2AA,"ActivateEffect");
+    uintptr_t addrSetIntensity = EC(is201WeatherTick ? 0x17C : 0x2CC,"SetIntensity");
+    uintptr_t addrDeactivate   = ResolveDeactivateEffect(tick);
     if (!addrActivate) {
         addrActivate = ScanModule(
             "4C 8B DC 49 89 5B 08 49 89 6B 10 49 89 73 18 57 48 83 EC 40 49 8B F1 48 8B F9 49 8B 00 4C 8B 10"
@@ -1887,6 +2040,11 @@ bool RunAOBScan(){
                 "48 89 5C 24 08 57 48 83 EC 30 48 8B 01 48 8B D9 48 85 C0 48 8B FA B9 40 00 00 00 4C 8D 40 18 4C 0F 44 C1"
             );
         }
+        if (!addrWindPack) {
+            addrWindPack = ScanModule(
+                "48 89 5C 24 08 57 48 83 EC 20 48 8B 01 48 8B D9 48 85 C0 48 8B FA B9 40 00 00 00 4C 8D 40 18 4C 0F 44 C1"
+            );
+        }
     }
     if (addrWindPack) {
         CW_AOB_VERBOSE_LOG("[AOB] WindPack = %p\n", (void*)addrWindPack);
@@ -1941,6 +2099,11 @@ bool RunAOBScan(){
                 addrSceneFrameUpdate = candidate;
             }
         }
+    }
+    if (addrDeactivate) {
+        CW_AOB_VERBOSE_LOG("[AOB] DeactivateEffect = %p\n", (void*)addrDeactivate);
+    } else {
+        Log("[W] DeactivateEffect not found (weather particle release may be delayed)\n");
     }
     if (addrSceneFrameUpdate && !DiscoverSceneFrameLayout(addrSceneFrameUpdate)) {
         Log("[W] SceneFrameUpdate layout validation failed\n");
@@ -2065,6 +2228,12 @@ bool RunAOBScan(){
         addrAtmosFogBlend = ScanModule(
             "48 83 EC 38 48 8B 41 88 0F ?? 74 24 20 F3 0F 10 48 10 48 8B 41 90 F3 0F 10 40 10"
         );
+        if (!addrAtmosFogBlend) {
+            addrAtmosFogBlend = ScanModule(
+                "48 83 EC 38 48 8B 81 88 00 00 00 C5 F8 29 74 24 20 "
+                "C5 FA 10 58 10 48 8B 81 90 00 00 00 C5 FA 10 40 10"
+            );
+        }
     }
     if (!addrWeatherFrameUpdate) {
         weatherFramePatternFallbackUsed = true;
@@ -2084,8 +2253,9 @@ bool RunAOBScan(){
         Log("[W] AtmosFogBlend not found (fog direct override disabled)\n");
     }
 
-    // g_EnvManagerPtr from WeatherTick+0xB4
-    uintptr_t envSite = tick+0xB4;
+    // The 2.01 component uses the same environment global but dispatches it
+    // through vtable slot 0x60 instead of 0x40.
+    uintptr_t envSite = tick + (is201WeatherTick ? 0x0B8 : 0x0B4);
     if(*reinterpret_cast<uint8_t*>(envSite)==0x48){
         g_pEnvManager=reinterpret_cast<uintptr_t*>(ReadRIP7(envSite));
         envManagerValidated = IsReadableAddress(reinterpret_cast<uintptr_t>(g_pEnvManager), sizeof(uintptr_t));
@@ -2102,6 +2272,11 @@ bool RunAOBScan(){
         if(!envGlobalSite){
             envGlobalSite = ScanModule(
                 "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 40 48 8B 88 E0 0E 00 00"
+            );
+        }
+        if(!envGlobalSite){
+            envGlobalSite = ScanModule(
+                "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 50 60 48 8B 88 E0 0E 00 00"
             );
         }
         if(envGlobalSite){
@@ -2126,6 +2301,26 @@ bool RunAOBScan(){
                     (void*)g_pNullSentinel,(uint32_t)(g_pNullSentinel? sentinelValue:0));
                 break;}}
     if(!nullSentinelValidated){
+        // The 2.01 activation helper compares each handle at [self+0xFC]
+        // against the shared sentinel loaded immediately before that compare.
+        if (addrActivate) {
+            for (int off = 0; off < 0x80; ++off) {
+                auto* b = reinterpret_cast<uint8_t*>(addrActivate + off);
+                if (b[0] == 0x8B && b[1] == 0x05 &&
+                    b[6] == 0x39 && b[7] == 0x84 && b[8] == 0x99 &&
+                    *reinterpret_cast<uint32_t*>(b + 9) == 0xFC) {
+                    g_pNullSentinel = reinterpret_cast<int*>(ReadRIP6(addrActivate + off));
+                    int sentinelValue = 0;
+                    nullSentinelValidated = IsReadableAddress(reinterpret_cast<uintptr_t>(g_pNullSentinel), sizeof(int)) &&
+                        TryReadIntSafe(g_pNullSentinel, &sentinelValue);
+                    CW_AOB_VERBOSE_LOG("[AOB] g_NullSentinel(activation) = %p (=0x%08X)\n",
+                        (void*)g_pNullSentinel, (uint32_t)(g_pNullSentinel ? sentinelValue : 0));
+                    break;
+                }
+            }
+        }
+    }
+    if(!nullSentinelValidated){
         uintptr_t nullSite = ScanModule(
             "8B 05 ?? ?? ?? ?? 48 8B F9 39 01"
         );
@@ -2148,11 +2343,29 @@ bool RunAOBScan(){
         "48 8D AC 24 80 FD FF FF 48 81 EC 80 03 00 00 "
         "41 0F B7 F8 0F B7 DA 4C 8B F1 BE FF FF 00 00"
     );
+    if (!addrMinimapRegionLabels) {
+        // 2.01.00: same area/sub-area label routine with one additional saved register.
+        addrMinimapRegionLabels = ScanModule(
+            "66 44 89 44 24 18 66 89 54 24 10 55 53 56 57 41 54 41 56 41 57 "
+            "48 8D AC 24 80 FD FF FF 48 81 EC 80 03 00 00 "
+            "41 0F B7 F8 0F B7 DA 4C 8B F9 41 BE FF FF 00 00"
+        );
+    }
     uintptr_t addrMinimapGameTimeUpdate = ScanModule(
         "48 89 5C 24 ?? 48 89 4C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 "
         "48 8D AC 24 ?? ?? FF FF 48 81 EC ?? 03 00 00 4C 8B F9 "
         "48 83 B9 ?? 03 00 00 00 0F 84"
     );
+    if (!addrMinimapGameTimeUpdate) {
+        // 2.01.00: anchor the minimap clock handler on its UI field guard and
+        // event payload access (eventContext + 0x18), not its moving frame size.
+        addrMinimapGameTimeUpdate = ScanModule(
+            "48 89 5C 24 ?? 48 89 4C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 "
+            "48 8D AC 24 ?? ?? FF FF 48 81 EC ?? 03 00 00 "
+            "48 83 B9 C0 03 00 00 00 0F 84 ?? ?? 00 00 "
+            "C5 FA 10 99 ?? 05 00 00 48 8B 42 18 44 8B 40 04"
+        );
+    }
     uintptr_t addrGameTimeGetter = 0;
     uintptr_t addrGameFieldInfoResolver = 0;
 #if !defined(CW_WIND_ONLY)
@@ -2209,6 +2422,7 @@ bool RunAOBScan(){
     }
 
     g_pActivateEffect = reinterpret_cast<ActivateEffect_fn>(addrActivate);
+    g_pDeactivateEffect = reinterpret_cast<DeactivateEffect_fn>(addrDeactivate);
     g_pSetIntensity   = reinterpret_cast<SetIntensity_fn>  (addrSetIntensity);
     g_pGameFieldInfoResolver = reinterpret_cast<GameFieldInfoResolver_fn>(addrGameFieldInfoResolver);
     g_pOrigAtmosFogBlend = reinterpret_cast<AtmosFogBlend_fn>(addrAtmosFogBlend);
@@ -2398,7 +2612,9 @@ bool RunAOBScan(){
 
     SetAobTargetHealth(AobTargetId::NativeToast,
         nativeToastReady ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
-        reinterpret_cast<uintptr_t>(g_pNativeToastRootGlobal),
+        g_pNativeToastShowAlert
+            ? reinterpret_cast<uintptr_t>(g_pNativeToastShowAlert)
+            : reinterpret_cast<uintptr_t>(g_pNativeToastRootGlobal),
         nativeToastReady ? "native toast bridge ready" : "native toast bridge unavailable");
 
     const bool minimapRegionInstalled = addrMinimapRegionLabels && g_pOrigMinimapRegionLabels;

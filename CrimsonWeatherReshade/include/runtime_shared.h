@@ -86,8 +86,8 @@ namespace WCO {
     constexpr ptrdiff_t WIND_EVENT_A = 0xD0;
     constexpr ptrdiff_t WIND_EVENT_B = 0xD4;
     constexpr ptrdiff_t LERP_ALPHA = 0xEC;
-    constexpr ptrdiff_t BLEND_DIR_MULT = 0xF0;
-    constexpr ptrdiff_t HANDLE_ARRAY = 0xF4;
+    constexpr ptrdiff_t BLEND_DIR_MULT = 0xF4;
+    constexpr ptrdiff_t HANDLE_ARRAY = 0xFC;
     constexpr ptrdiff_t SOUND_RAIN = 0xD8;
     constexpr ptrdiff_t SOUND_WIND = 0xDC;
     constexpr ptrdiff_t SOUND_SKYWIND = 0xE0;
@@ -146,7 +146,7 @@ namespace TD {
     constexpr ptrdiff_t UPPER_LIMIT_DEF = 0x3D0;
     constexpr ptrdiff_t CURRENT_A_DEF = 0x3C8;
     constexpr ptrdiff_t CURRENT_B_DEF = 0x3C4;
-    constexpr ptrdiff_t ENV_GET_ENTITY_DEF = 0x40;
+    constexpr ptrdiff_t ENV_GET_ENTITY_DEF = 0x60;
     constexpr ptrdiff_t ENV_GET_TIME_DEF = 0x178;
     constexpr ptrdiff_t ENT_SET_TIME_DEF = 0x130;
 }
@@ -166,6 +166,7 @@ inline constexpr int kEffectCount = 9;
 
 typedef void(__fastcall* WeatherTick_fn)(long long self, float dt);
 typedef void(__fastcall* ActivateEffect_fn)(long long self, int id, long long* slotA, long long* slotB, float v);
+typedef long long(__fastcall* DeactivateEffect_fn)(int* handle);
 typedef void(__fastcall* SetIntensity_fn)(long long particleMgr, int handle, float v);
 typedef __m128(__fastcall* GetWeatherIntensity_fn)(long long weatherState);
 typedef __m128(__fastcall* GetDustIntensity_fn)(long long weatherState);
@@ -180,7 +181,7 @@ typedef long long(__fastcall* GameTimeSetter_fn)(long long manager, long long ti
                                                  unsigned char notify, int stageKey);
 typedef long long(__fastcall* GameFieldInfoResolver_fn)(unsigned short* areaId);
 typedef void(__fastcall* NativeLightningScheduler_fn)(long long self);
-typedef int(__fastcall* PlayWeatherSoundEvent_fn)(uint32_t eventId);
+typedef uint32_t(__fastcall* PlayWeatherSoundEvent_fn)(uint32_t eventId);
 typedef int(__fastcall* AkLoadBankById_fn)(uint32_t bankId, uint32_t memoryPoolId);
 typedef uint32_t(__fastcall* AkPostEventById_fn)(
     uint32_t eventId,
@@ -200,9 +201,11 @@ typedef void(__fastcall* EntitySetTimeOfDay_fn)(long long entity, float value);
 typedef void*(__fastcall* NativeToastCreateString_fn)(const char* text);
 typedef void(__fastcall* NativeToastPush_fn)(void* manager, void** messageHandle, unsigned int flags);
 typedef void(__fastcall* NativeToastReleaseString_fn)(void* messageHandle);
+typedef long long(__fastcall* NativeToastShowAlert_fn)(void* uiRoot, const char* text, unsigned int textId);
 
 inline WeatherTick_fn g_pOriginalTick = nullptr;
 inline ActivateEffect_fn g_pActivateEffect = nullptr;
+inline DeactivateEffect_fn g_pDeactivateEffect = nullptr;
 inline SetIntensity_fn g_pSetIntensity = nullptr;
 inline GetWeatherIntensity_fn g_pOrigGetRainIntensity = nullptr;
 inline GetWeatherIntensity_fn g_pOrigGetSnowIntensity = nullptr;
@@ -225,6 +228,8 @@ inline uint32_t g_gameClockTlsFlagOffset = 0;
 inline uint32_t g_gameClockFieldStorageOffset = 0;
 inline uint32_t g_gameClockFieldEnabledOffset = 0;
 inline NativeLightningScheduler_fn g_pNativeLightningScheduler = nullptr;
+inline ptrdiff_t g_lightningElapsedOffset = 0xE4;
+inline ptrdiff_t g_lightningNextDelayOffset = 0xE8;
 inline PlayWeatherSoundEvent_fn g_pPlayWeatherSoundEvent = nullptr;
 inline AkLoadBankById_fn g_pAkLoadBankById = nullptr;
 inline AkPostEventById_fn g_pAkPostEventById = nullptr;
@@ -232,6 +237,7 @@ inline MinimapRegionLabels_fn g_pOrigMinimapRegionLabels = nullptr;
 inline MinimapGameTimeUpdate_fn g_pOrigMinimapGameTimeUpdate = nullptr;
 inline uintptr_t* g_pEnvManager = nullptr;
 inline uint8_t* g_pWeatherEffectGateByte = nullptr;
+inline bool g_weatherEffectGateEnabledWhenZero = false;
 inline int* g_pNullSentinel = nullptr;
 inline void** g_pWeatherTickVtableSlot = nullptr;
 inline FogReceiverSet_fn g_pOrigFogSet[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
@@ -239,6 +245,8 @@ inline uintptr_t g_addrFogSet[5] = { 0, 0, 0, 0, 0 };
 inline uintptr_t g_addrWeatherFrameUpdateResolved = 0;
 inline std::atomic<float> g_forcedFogSet[5];
 inline std::atomic<float> g_windMul{ 1.0f };
+inline ptrdiff_t g_envWeatherStateOffset = 0xEE0;
+inline ptrdiff_t g_weatherNodeContainerOffset = 0x60;
 inline std::atomic<bool> g_fogSetHooksAttempted{ false };
 inline std::atomic<bool> g_fogSetHooksInstalled{ false };
 inline std::atomic<bool> g_timeLayoutReady{ false };
@@ -255,6 +263,7 @@ inline uintptr_t g_addrTimeDebugHandler = 0;
 inline NativeToastCreateString_fn g_pNativeToastCreateString = nullptr;
 inline NativeToastPush_fn g_pNativeToastPush = nullptr;
 inline NativeToastReleaseString_fn g_pNativeToastReleaseString = nullptr;
+inline NativeToastShowAlert_fn g_pNativeToastShowAlert = nullptr;
 inline void** g_pNativeToastRootGlobal = nullptr;
 inline uint32_t g_nativeToastOuterOffset = 0;
 inline ptrdiff_t g_nativeToastManagerOffset = 0;
@@ -745,6 +754,7 @@ void RequestCrimsonWeatherStart();
 void* ResolveNativeToastManager();
 bool NativeToastReady();
 void ShowNativeToast(const char* msg);
+void FlushQueuedNativeToast(void* minimapUi);
 bool StartHotkeyService();
 void StopHotkeyService();
 

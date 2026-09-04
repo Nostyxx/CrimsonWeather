@@ -122,11 +122,11 @@ static ResolvedEnv ResolveTickEnvCurrentBuild() {
         }
 
         auto* vt = *reinterpret_cast<uintptr_t**>(envMgr);
-        if (!vt || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(vt), 0x48)) {
+        if (!vt || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(vt), 0x68)) {
             return r;
         }
 
-        auto getEntity = reinterpret_cast<long long(__fastcall*)(void*)>(vt[0x40 / 8]);
+        auto getEntity = reinterpret_cast<long long(__fastcall*)(void*)>(vt[0x60 / 8]);
         if (!getEntity || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(getEntity), 16)) {
             return r;
         }
@@ -136,21 +136,22 @@ static ResolvedEnv ResolveTickEnvCurrentBuild() {
             return r;
         }
 
-        if (!IsReadableTickPtr(static_cast<uintptr_t>(r.entity + 0xEE0), sizeof(long long)) ||
+        if (!IsReadableTickPtr(static_cast<uintptr_t>(r.entity + g_envWeatherStateOffset), sizeof(long long)) ||
             !IsReadableTickPtr(static_cast<uintptr_t>(r.entity + 0xEE8), sizeof(long long))) {
             return r;
         }
 
-        r.weatherState = *reinterpret_cast<long long*>(r.entity + 0xEE0);
+        r.weatherState = *reinterpret_cast<long long*>(r.entity + g_envWeatherStateOffset);
         r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE8);
-        if (!r.weatherState || !IsReadableTickPtr(static_cast<uintptr_t>(r.weatherState), 0x58)) {
+        if (!r.weatherState || !IsReadableTickPtr(static_cast<uintptr_t>(r.weatherState),
+                                                  g_weatherNodeContainerOffset + sizeof(long long))) {
             return r;
         }
         if (r.particleMgr && !IsReadableTickPtr(static_cast<uintptr_t>(r.particleMgr), 0x20)) {
             r.particleMgr = 0;
         }
 
-        long long result = *reinterpret_cast<long long*>(r.weatherState + 0x50);
+        long long result = *reinterpret_cast<long long*>(r.weatherState + g_weatherNodeContainerOffset);
         if (!result || !IsReadableTickPtr(static_cast<uintptr_t>(result), 0x28)) {
             return r;
         }
@@ -173,11 +174,9 @@ static ResolvedEnv ResolveTickEnvCurrentBuild() {
 }
 
 static ResolvedEnv ResolveCustomTickEnv() {
-    if (g_oDust.active.load()) {
-        ResolvedEnv dustEnv = ResolveTickEnvCurrentBuild();
-        if (dustEnv.valid) {
-            return dustEnv;
-        }
+    ResolvedEnv currentBuildEnv = ResolveTickEnvCurrentBuild();
+    if (currentBuildEnv.valid) {
+        return currentBuildEnv;
     }
     return ResolveEnv();
 }
@@ -1428,6 +1427,7 @@ void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
 
 // Clear weather parameters.
 static void ApplyClearWeatherParams(long long self, const ResolvedEnv& env) {
+    (void)self;
     if (!env.valid) return;
     if (env.cloudNode) {
         At<float>(env.cloudNode, CN::FOG_A)       = 0.0f;
@@ -1435,8 +1435,6 @@ static void ApplyClearWeatherParams(long long self, const ResolvedEnv& env) {
         At<float>(env.cloudNode, CN::STORM_THRESH) = 0.0f;
         At<float>(env.cloudNode, CN::DUST_THRESH)  = 0.0f;
     }
-    At<float>(self, WCO::LERP_ALPHA)     = 1.0f;
-    At<float>(self, WCO::BLEND_DIR_MULT) = 1.0f;
 }
 
 // Apply all weather parameters after the engine tick.
@@ -1492,9 +1490,7 @@ static void ApplyWeatherParams(long long self, const ResolvedEnv& env) {
 
     ApplyCloudOverrides(env);
 
-    // WeatherComponent lerp overrides.
-    At<float>(self, WCO::LERP_ALPHA)     = 1.0f;
-    At<float>(self, WCO::BLEND_DIR_MULT) = 1.0f;
+    (void)self;
 }
 static uint32_t ComputeCustomEffectMask() {
     uint32_t mask = 0;
@@ -1533,9 +1529,6 @@ static void TickRainOnly(long long self, const ResolvedEnv& env, int nullSent) {
         At<float>(env.cloudNode, CN::STORM_THRESH) = rain;
         At<float>(env.cloudNode, CN::DUST_THRESH) = 0.0f;
     }
-    At<float>(self, WCO::LERP_ALPHA) = 1.0f;
-    At<float>(self, WCO::BLEND_DIR_MULT) = 1.0f;
-
     auto UpdateEff = [&](int i, bool on, float intensity) {
         int& handle = At<int>(self, WCO::HANDLE_ARRAY + i * 4);
         if (on && handle == nullSent) {
@@ -1580,6 +1573,8 @@ static void StopWeatherEffectsByMask(long long self, uint32_t effectMask) {
 
 static std::atomic<int> g_rainEffectCleanupTicks{ 0 };
 static std::atomic<bool> g_rainEffectWasWanted{ false };
+static std::atomic<int> g_snowEffectCleanupTicks{ 0 };
+static std::atomic<bool> g_snowEffectWasWanted{ false };
 
 static bool RainEffectWantedNow() {
     return !g_forceClear.load() &&
@@ -1633,22 +1628,16 @@ static uint32_t ComputeSuppressedWeatherEffectMask() {
 }
 
 static void ApplyNoWindPolicy(long long self, const ResolvedEnv& env) {
+    (void)env;
     At<int>(self, WCO::SOUND_WIND)    = 0;
     At<int>(self, WCO::SOUND_SKYWIND) = 0;
-    if (env.windNode) {
-        At<float>(env.windNode, WN::SPEED) = 0.0f;
-        At<float>(env.windNode, WN::GUST)  = 0.0f;
-    }
 }
 
 static void ApplyDustWindPolicy(long long self, const ResolvedEnv& env) {
+    (void)env;
     if (!env.valid || !DustForcesCalmWind()) return;
     At<int>(self, WCO::SOUND_WIND)    = 0;
     At<int>(self, WCO::SOUND_SKYWIND) = 0;
-    if (env.windNode) {
-        At<float>(env.windNode, WN::SPEED) = 0.0f;
-        At<float>(env.windNode, WN::GUST)  = 0.0f;
-    }
 }
 
 // Process wind state hook.
@@ -1706,36 +1695,101 @@ static void TickWeatherState(long long self, float dt) {
     }
 
     ApplyWeatherParams(self, env);
-    uint32_t mask = ComputeCustomEffectMask();
+    const uint32_t mask = ComputeCustomEffectMask();
 
     if (g_pActivateEffect && g_pSetIntensity && env.particleMgr) {
-        for (int i = 0; i < kEffectCount; i++) {
+        for (int i = 0; i < kEffectCount; ++i) {
             int& handle = At<int>(self, WCO::HANDLE_ARRAY + i * 4);
             if (mask & (1u << i)) {
-                const EffectSlot& s = kSlots[i];
+                const EffectSlot& slot = kSlots[i];
                 if (handle == nullSent) {
-                    g_pActivateEffect(self, s.id,
-                        reinterpret_cast<long long*>(self + s.slotA),
-                        reinterpret_cast<long long*>(self + s.slotB), 1.0f);
+                    g_pActivateEffect(self, slot.id,
+                        reinterpret_cast<long long*>(self + slot.slotA),
+                        reinterpret_cast<long long*>(self + slot.slotB), 1.0f);
                 }
-                int h = At<int>(self, WCO::HANDLE_ARRAY + i * 4);
-                if (h != nullSent) {
-                    float effI = 1.0f;
-                    if (i <= 1) effI = (!g_noRain.load() && g_oRain.active.load()) ? g_oRain.value.load() : 0.0f;
-                    else if (i == 2 || i == 3) effI = (!g_noSnow.load() && g_oSnow.active.load()) ? g_oSnow.value.load() : 0.0f;
-                    else if (i == 4) effI = (!g_noRain.load() && g_oRain.active.load()) ? max(0.f, g_oRain.value.load() - 0.5f) * 2.f : 0.0f;
-                    else if (i == 5) effI = g_oWindActual.active.load() ? min(1.f, g_oWindActual.value.load() / 10.f) : 0.0f;
-                    else if (i == 6) effI = (!g_noDust.load() && g_oDust.active.load()) ? min(1.0f, g_oDust.value.load()) : 0.0f;
-                    else if (i == 7) effI = min(
+                const int activeHandle = At<int>(self, WCO::HANDLE_ARRAY + i * 4);
+                if (activeHandle != nullSent) {
+                    float intensity = 1.0f;
+                    if (i <= 1) intensity = (!g_noRain.load() && g_oRain.active.load()) ? g_oRain.value.load() : 0.0f;
+                    else if (i == 2 || i == 3) intensity = (!g_noSnow.load() && g_oSnow.active.load()) ? g_oSnow.value.load() : 0.0f;
+                    else if (i == 4) intensity = (!g_noRain.load() && g_oRain.active.load()) ? max(0.0f, g_oRain.value.load() - 0.5f) * 2.0f : 0.0f;
+                    else if (i == 5) intensity = g_oWindActual.active.load() ? min(1.0f, g_oWindActual.value.load() / 10.0f) : 0.0f;
+                    else if (i == 6) intensity = (!g_noDust.load() && g_oDust.active.load()) ? min(1.0f, g_oDust.value.load()) : 0.0f;
+                    else if (i == 7) intensity = min(
                         (!g_noSnow.load() && g_oSnow.active.load()) ? g_oSnow.value.load() : 0.0f,
                         (!g_noDust.load() && g_oDust.active.load()) ? g_oDust.value.load() : 0.0f);
-                    else if (i == 8) effI = 0.0f;
-                    g_pSetIntensity(env.particleMgr, h, effI);
+                    else if (i == 8) intensity = 0.0f;
+                    g_pSetIntensity(env.particleMgr, activeHandle, intensity);
                 }
             } else if (handle != nullSent) {
                 g_pSetIntensity(env.particleMgr, handle, 0.0f);
             }
         }
+    }
+}
+
+static int DeactivateWeatherEffectsByMask(long long self, uint32_t effectMask) {
+    if (!g_pNullSentinel) return 0;
+    const int nullSent = *g_pNullSentinel;
+    const ResolvedEnv env = ResolveEnv();
+    int deactivated = 0;
+
+    for (int i = 0; i < kEffectCount; ++i) {
+        if ((effectMask & (1u << i)) == 0) continue;
+        int& handle = At<int>(self, WCO::HANDLE_ARRAY + i * 4);
+        if (handle == nullSent) continue;
+
+        if (g_pSetIntensity && env.valid && env.particleMgr) {
+            g_pSetIntensity(env.particleMgr, handle, 0.0f);
+        }
+        if (g_pDeactivateEffect) {
+            __try {
+                g_pDeactivateEffect(&handle);
+                handle = nullSent;
+                ++deactivated;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                Log("[snow] native effect deactivation exception slot=%d handle=%d\n", i, handle);
+            }
+        }
+    }
+    return deactivated;
+}
+
+static bool SnowEffectWantedNow() {
+    return !g_forceClear.load() &&
+           !g_noSnow.load() &&
+           g_oSnow.active.load() &&
+           g_oSnow.value.load() > 0.01f;
+}
+
+static void UpdateSnowEffectTransitionCleanup() {
+    const bool wanted = SnowEffectWantedNow();
+    const bool wasWanted = g_snowEffectWasWanted.exchange(wanted);
+    if (wasWanted && !wanted) {
+        constexpr int kSnowCleanupTicks = 30;
+        g_snowEffectCleanupTicks.store(kSnowCleanupTicks);
+        Log("[snow] cleanup requested: snow transitioned off ticks=%d\n", kSnowCleanupTicks);
+    }
+}
+
+static bool SnowEffectCleanupActive() {
+    return g_snowEffectCleanupTicks.load() > 0;
+}
+
+static void TickSnowEffectCleanup(long long self) {
+    int ticks = g_snowEffectCleanupTicks.load();
+    if (ticks <= 0) {
+        return;
+    }
+
+    const int deactivated = DeactivateWeatherEffectsByMask(self, 0x00Cu);
+    if (deactivated > 0) {
+        Log("[snow] released native effect handle(s)=%d\n", deactivated);
+    }
+    ticks = g_snowEffectCleanupTicks.fetch_sub(1) - 1;
+    if (ticks <= 0) {
+        g_snowEffectCleanupTicks.store(0);
+        Log("[snow] cleanup finished\n");
     }
 }
 
@@ -1800,6 +1854,7 @@ void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventCont
     if (g_pOrigMinimapGameTimeUpdate) {
         g_pOrigMinimapGameTimeUpdate(self, eventContext);
     }
+    FlushQueuedNativeToast(reinterpret_cast<void*>(self));
 }
 
 namespace {
@@ -2470,17 +2525,17 @@ static uint64_t ResolveWeatherAudioGameObjectId() {
         }
 
         auto* envVt = *reinterpret_cast<uintptr_t**>(envMgr);
-        if (!envVt || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(envVt), 0x48)) {
+        if (!envVt || !IsReadableTickPtr(reinterpret_cast<uintptr_t>(envVt), 0x68)) {
             return 0;
         }
 
-        auto getRoot = reinterpret_cast<long long(__fastcall*)(long long)>(envVt[0x40 / 8]);
-        const long long root = getRoot(envMgr);
-        if (!root || !IsReadableTickPtr(static_cast<uintptr_t>(root + 0x1D0), sizeof(uintptr_t))) {
+        auto getEntity = reinterpret_cast<long long(__fastcall*)(long long)>(envVt[0x60 / 8]);
+        const long long entity = getEntity(envMgr);
+        if (!entity || !IsReadableTickPtr(static_cast<uintptr_t>(entity + 0x1C8), sizeof(uintptr_t))) {
             return 0;
         }
 
-        const long long audioProvider = *reinterpret_cast<long long*>(root + 0x1D0);
+        const long long audioProvider = *reinterpret_cast<long long*>(entity + 0x1C8);
         if (!audioProvider || !IsReadableTickPtr(static_cast<uintptr_t>(audioProvider), sizeof(uintptr_t))) {
             return 0;
         }
@@ -2504,12 +2559,12 @@ static uint64_t ResolveWeatherAudioGameObjectId() {
 }
 
 static void TryPlayThunderAudio() {
-    if (!g_pAkPostEventById) {
+    if (!g_pPlayWeatherSoundEvent && !g_pAkPostEventById) {
         static DWORD64 s_lastUnavailableLog = 0;
         const DWORD64 now = GetTickCount64();
         if (now - s_lastUnavailableLog >= 10000) {
             s_lastUnavailableLog = now;
-            Log("[thunder-audio] unavailable: AK::PostEventById missing\n");
+            Log("[thunder-audio] unavailable: native and AK event players missing\n");
         }
         return;
     }
@@ -2523,8 +2578,32 @@ static void TryPlayThunderAudio() {
     }
 
     constexpr ThunderAudioCandidate kThunderAudioCandidates[] = {
+        { 3742816565u, "env_2d_oneshot_thunder" },
         { 3685435772u, "env_oneshot_thunder" },
     };
+
+    if (g_pPlayWeatherSoundEvent) {
+        for (const ThunderAudioCandidate& candidate : kThunderAudioCandidates) {
+            uint32_t playingId = 0;
+            __try {
+                playingId = static_cast<uint32_t>(g_pPlayWeatherSoundEvent(candidate.eventId));
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                Log("[thunder-audio] native post exception name=%s id=%u\n",
+                    candidate.eventName, candidate.eventId);
+                continue;
+            }
+            if (playingId) {
+                Log("[thunder-audio] native post ok event=%s id=%u playing=%u\n",
+                    candidate.eventName, candidate.eventId, playingId);
+                s_lastThunderSound = now;
+                return;
+            }
+        }
+    }
+
+    if (!g_pAkPostEventById) {
+        return;
+    }
 
     const uint64_t gameObjectId = ResolveWeatherAudioGameObjectId();
     if (!gameObjectId) {
@@ -2598,7 +2677,7 @@ static void TickNativeLightningBridge(long long self, float dt) {
     const float rainHint = !g_noRain.load() && g_oRain.active.load() && std::isfinite(g_oRain.value.load())
         ? min(1.0f, max(0.0f, g_oRain.value.load()))
         : -1.0f;
-    if (!IsReadableTickPtr(static_cast<uintptr_t>(self), 0xF0) ||
+    if (!IsReadableTickPtr(static_cast<uintptr_t>(self), g_lightningNextDelayOffset + sizeof(float)) ||
         !IsReadableTickPtr(reinterpret_cast<uintptr_t>(g_pWeatherEffectGateByte), sizeof(*g_pWeatherEffectGateByte))) {
         return;
     }
@@ -2609,16 +2688,15 @@ static void TickNativeLightningBridge(long long self, float dt) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return;
     }
-    if (gate == 0) {
-        return;
-    }
+    const bool gateEnabled = g_weatherEffectGateEnabledWhenZero ? gate == 0 : gate != 0;
 
     long long effect = 0;
     long long variation = 0;
     float elapsedBefore = 0.0f;
     float nextBefore = -1.0f;
     if (!TryReadTickValue(self, 0x78, effect) || !TryReadTickValue(self, 0x80, variation) ||
-        !TryReadTickValue(self, 0xE4, elapsedBefore) || !TryReadTickValue(self, 0xE8, nextBefore)) {
+        !TryReadTickValue(self, g_lightningElapsedOffset, elapsedBefore) ||
+        !TryReadTickValue(self, g_lightningNextDelayOffset, nextBefore)) {
         return;
     }
     if (!effect || !variation) {
@@ -2633,8 +2711,8 @@ static void TickNativeLightningBridge(long long self, float dt) {
     }
 
     __try {
-        float& elapsed = At<float>(self, 0xE4);
-        float& nextDelay = At<float>(self, 0xE8);
+        float& elapsed = At<float>(self, g_lightningElapsedOffset);
+        float& nextDelay = At<float>(self, g_lightningNextDelayOffset);
         const float rate = ThunderRateCurve(thunder);
         const float maxDelay = 0.85f + (1.0f - rate) * 18.0f;
         const float schedulerRain = 0.85f + rate * 0.15f;
@@ -2659,8 +2737,8 @@ static void TickNativeLightningBridge(long long self, float dt) {
 
     float elapsedAfter = 0.0f;
     float nextAfter = -1.0f;
-    TryReadTickValue(self, 0xE4, elapsedAfter);
-    TryReadTickValue(self, 0xE8, nextAfter);
+    TryReadTickValue(self, g_lightningElapsedOffset, elapsedAfter);
+    TryReadTickValue(self, g_lightningNextDelayOffset, nextAfter);
 
     const bool spawnedStrike = elapsedBefore > 0.5f && elapsedAfter < 0.1f && nextAfter < 0.0f;
     if (spawnedStrike) {
@@ -2671,8 +2749,10 @@ static void TickNativeLightningBridge(long long self, float dt) {
     const DWORD64 now = GetTickCount64();
     if (now - s_lastLog >= 10000) {
         s_lastLog = now;
-        Log("[thunder] amount=%.3f rain=%.3f gate=%u e4=%.3f->%.3f e8=%.3f->%.3f effect=%p var=%p\n",
-            thunder, rainHint, gate, elapsedBefore, elapsedAfter, nextBefore, nextAfter,
+        Log("[thunder] amount=%.3f rain=%.3f gate=%u enabled=%d elapsed[0x%zX]=%.3f->%.3f next[0x%zX]=%.3f->%.3f effect=%p var=%p\n",
+            thunder, rainHint, gate, gateEnabled ? 1 : 0,
+            static_cast<size_t>(g_lightningElapsedOffset), elapsedBefore, elapsedAfter,
+            static_cast<size_t>(g_lightningNextDelayOffset), nextBefore, nextAfter,
             reinterpret_cast<void*>(effect), reinterpret_cast<void*>(variation));
     }
 }
@@ -2773,6 +2853,7 @@ static bool WeatherTickRuntimeWorkNeeded(bool resetStopNow, bool modSuspendNow, 
         AnyCustomWeatherSliderActive() ||
         g_activeWeather == kCustomWeather ||
         RainEffectCleanupActive() ||
+        SnowEffectCleanupActive() ||
         g_noRain.load() ||
         g_noSnow.load() ||
         g_noDust.load() ||
@@ -2834,6 +2915,7 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
         Preset_OnWorldTick(worldReady, serviceDt);
     }
     UpdateRainEffectTransitionCleanup();
+    UpdateSnowEffectTransitionCleanup();
 
     if (!modEnabled) {
         g_pOriginalTick(self, dt);
@@ -2851,8 +2933,8 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
         ApplySnowCoverageGlobalOverrides(modEnabled);
         StopWeatherEffectsByMask(self, 0x1DFu);
         TickRainEffectCleanup(self, env);
+        TickSnowEffectCleanup(self);
         ApplyClearWeatherParams(self, env);
-        ApplyWindFromSlider(self, env);
         if (resetStopNow) {
             StopAllWeatherEffects(self);
         }
@@ -2873,6 +2955,7 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
         TickWeatherState(self, serviceDt);
     }
     TickRainEffectCleanup(self, env);
+    TickSnowEffectCleanup(self);
     const uint32_t suppressedWeatherMask = ComputeSuppressedWeatherEffectMask();
     if (suppressedWeatherMask) {
         StopWeatherEffectsByMask(self, suppressedWeatherMask);

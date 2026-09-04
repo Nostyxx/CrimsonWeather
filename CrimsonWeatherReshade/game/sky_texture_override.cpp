@@ -20,6 +20,8 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -121,6 +123,7 @@ enum class AnimationLoopMode {
 constexpr size_t kDefaultAnimatedTextureGpuSlotCount = 12;
 constexpr size_t kMinAnimatedTextureGpuSlotCount = 4;
 constexpr size_t kMaxAnimatedTextureGpuSlotCount = 120;
+constexpr size_t kStreamingNativeResourceLimit = 8;
 
 struct AnimatedFrameSlot {
     size_t frameIndex = static_cast<size_t>(-1);
@@ -204,9 +207,11 @@ struct TextureSlot {
     bool fingerprintResolved = false;
 
     std::vector<ID3D12Resource*> nativeResources;
+    std::unordered_set<ID3D12Resource*> nativeResourceIndex;
     ID3D12Resource* primaryNativeResource = nullptr;
     std::atomic<bool> nativeLocked{ false };
     std::vector<SrvBinding> bindings;
+    std::unordered_map<SIZE_T, size_t> bindingIndex;
     std::vector<SrvBinding> pendingBindings;
 
     std::string selectedPath;
@@ -265,6 +270,7 @@ struct TextureSlot {
     std::atomic<uint32_t> nativeLogCount{ 0 };
     std::atomic<uint32_t> descriptorLogCount{ 0 };
     std::atomic<uint32_t> pendingDescriptorLogCount{ 0 };
+    std::atomic<uint32_t> srvLogCount{ 0 };
     std::atomic<bool> fingerprintSummaryLogged{ false };
 
     TextureSlot(
@@ -303,6 +309,10 @@ struct TextureSlot {
           expectedTopMipHash(expectedTopMipHashIn),
           fingerprintTargets(fingerprintTargetsIn),
           fingerprintTargetCount(fingerprintTargetCountIn) {
+        nativeResources.reserve(lockFirstNative ? 1u : kStreamingNativeResourceLimit);
+        nativeResourceIndex.reserve(lockFirstNative ? 1u : kStreamingNativeResourceLimit);
+        bindings.reserve(maxBindings);
+        bindingIndex.reserve(maxBindings);
         strcpy_s(status, initialStatus ? initialStatus : "");
     }
 };
@@ -340,6 +350,10 @@ std::atomic<bool> g_deviceHooksInstalled{ false };
 std::atomic<bool> g_commandListHooksInstalled{ false };
 std::atomic<ID3D12Device*> g_device{ nullptr };
 std::atomic<ID3D12CommandQueue*> g_uploadQueue{ nullptr };
+constexpr size_t kTrackedDescriptorFilterBucketCount = 1024;
+std::array<std::atomic<uint8_t>, kTrackedDescriptorFilterBucketCount> g_trackedDescriptorFilter{};
+std::atomic<SIZE_T> g_trackedDescriptorMin{ SIZE_MAX };
+std::atomic<SIZE_T> g_trackedDescriptorMax{ 0 };
 void* g_d3d12CreateDeviceTarget = nullptr;
 HANDLE g_animationWorkerThread = nullptr;
 HANDLE g_animationWorkerEvent = nullptr;
@@ -360,38 +374,14 @@ TextureFingerprintTarget g_moonFingerprintTargets[] = {
         "MoonTextureWorkerUpdate",
         "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 "
         "41 54 41 55 41 56 41 57 48 83 EC 70 4D 8B F9 4D 8B F0 "
-        "48 8B F2 48 8B F9 80 79 42 00 74 ?? 80 79 43 00 75 ?? C6 41 43 01 "
+        "48 8B FA 48 8B D9 80 79 42 00 74 ?? 80 79 43 00 75 ?? C6 41 43 01 "
         "C7 41 54 FF FF FF FF 48 8B 49 30 45 33 E4 48 85 C9 74 ?? "
-        "48 8B 01 41 8D 54 24 01 FF 10 4C 89 67 30 0F B6 46 03",
+        "48 8B 01 BA 01 00 00 00 FF 10 4C 89 63 30 0F B6 47 03",
         0,
         0x800
     },
-    {
-        "MoonTextureThreadStart",
-        "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 40 "
-        "65 48 8B 04 25 58 00 00 00 48 8B F9 B9 60 02 00 00 "
-        "48 8B 10 48 8B 07 48 89 04 11 48 8D 4C 24 50 E8 ?? ?? ?? ??",
-        0,
-        0x200
-    },
 };
 TextureFingerprintTarget g_milkywayFingerprintTargets[] = {
-    {
-        "MilkywayTextureUploadCommit",
-        "49 8B 45 00 48 8B 80 D8 00 00 00 48 89 45 D7 "
-        "48 8B 40 10 48 89 55 AF 48 8B 08 E8 ?? ?? ?? ?? "
-        "48 8B D8 48 89 45 AF",
-        0,
-        0x220
-    },
-    {
-        "MilkywayTextureLoaderCheck",
-        "BE 0E 2B 00 00 45 33 C9 C6 44 24 20 00 8B D6 "
-        "48 8B CF E8 ?? ?? ?? ?? 0F B6 D8 3C 01 75 2E "
-        "4C 8B 84 24 C0 00 00 00 49 83 38 00 74 20",
-        0,
-        0x220
-    },
     {
         "MilkywayTextureNodeApply",
         "0F B7 44 24 70 66 89 83 AC 00 00 00 48 8B 03 4C 8B CD "
@@ -400,18 +390,14 @@ TextureFingerprintTarget g_milkywayFingerprintTargets[] = {
         0x240
     },
     {
-        "MilkywayTextureNodeUpdate",
-        "4C 8D 44 24 30 4D 85 F6 4D 0F 45 C6 66 89 5C 24 20 "
-        "4D 8B CF 48 8B D6 48 8B CD E8 ?? ?? ?? ?? 0F B6 D8 84 C0 75 30",
+        "MilkywayTextureWorkerUpdate",
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 "
+        "41 54 41 55 41 56 41 57 48 83 EC 70 4D 8B F9 4D 8B F0 "
+        "48 8B FA 48 8B D9 80 79 42 00 74 ?? 80 79 43 00 75 ?? C6 41 43 01 "
+        "C7 41 54 FF FF FF FF 48 8B 49 30 45 33 E4 48 85 C9 74 ?? "
+        "48 8B 01 BA 01 00 00 00 FF 10 4C 89 63 30 0F B6 47 03",
         0,
-        0x240
-    },
-    {
-        "MilkywayTextureResourceAttach",
-        "44 88 65 69 0F B7 45 68 66 89 44 24 20 4C 8B 4D 60 "
-        "45 33 C0 48 8D 55 C0 48 8B CF E8 ?? ?? ?? ?? 84 C0 74 49",
-        0,
-        0x240
+        0x800
     },
 };
 
@@ -424,7 +410,7 @@ TextureSlot g_moonSlot(
     512,
     512,
     10,
-    3,
+    2,
     16,
     true,
     true,
@@ -456,6 +442,58 @@ TextureSlot g_milkywaySlot(
     "Milky Way texture: integrated hook waiting");
 
 TextureSlot* g_textureSlots[] = { &g_moonSlot, &g_milkywaySlot };
+
+size_t TrackedDescriptorFilterIndex(SIZE_T handle, uint64_t salt) {
+    uint64_t value = static_cast<uint64_t>(handle) + salt;
+    value ^= value >> 30;
+    value *= 0xBF58476D1CE4E5B9ull;
+    value ^= value >> 27;
+    value *= 0x94D049BB133111EBull;
+    value ^= value >> 31;
+    return static_cast<size_t>(value) & (kTrackedDescriptorFilterBucketCount - 1);
+}
+
+void AddTrackedDescriptorToFastFilter(SIZE_T handle) {
+    constexpr uint64_t salts[] = {
+        0x9E3779B97F4A7C15ull,
+        0xD1B54A32D192ED03ull,
+        0x94D049BB133111EBull,
+    };
+    for (const uint64_t salt : salts) {
+        g_trackedDescriptorFilter[TrackedDescriptorFilterIndex(handle, salt)]
+            .fetch_add(1, std::memory_order_release);
+    }
+}
+
+void RemoveTrackedDescriptorFromFastFilter(SIZE_T handle) {
+    constexpr uint64_t salts[] = {
+        0x9E3779B97F4A7C15ull,
+        0xD1B54A32D192ED03ull,
+        0x94D049BB133111EBull,
+    };
+    for (const uint64_t salt : salts) {
+        g_trackedDescriptorFilter[TrackedDescriptorFilterIndex(handle, salt)]
+            .fetch_sub(1, std::memory_order_release);
+    }
+}
+
+bool TrackedDescriptorFastFilterMayContain(SIZE_T handle) {
+    if (!handle) {
+        return false;
+    }
+    constexpr uint64_t salts[] = {
+        0x9E3779B97F4A7C15ull,
+        0xD1B54A32D192ED03ull,
+        0x94D049BB133111EBull,
+    };
+    for (const uint64_t salt : salts) {
+        if (g_trackedDescriptorFilter[TrackedDescriptorFilterIndex(handle, salt)]
+                .load(std::memory_order_acquire) == 0) {
+            return false;
+        }
+    }
+    return true;
+}
 
 constexpr const char* kNoMoonOptionName = "No Moon";
 constexpr const char* kNoMilkywayOptionName = "No Milky Way";
@@ -1488,13 +1526,13 @@ const char* MoonProofNameLocked() {
     if (!g_moonSlot.contentProofHit) {
         return "waiting-content";
     }
-    if (!g_moonSlot.sawUnormSrv || !g_moonSlot.sawSrgbSrv) {
-        return "waiting-srv-pair";
+    if (g_moonSlot.bindings.empty()) {
+        return "waiting-runtime-binding";
     }
-    if (g_moonSlot.copiedSrvCount < 2 || g_moonSlot.bindings.size() < 4) {
+    if (g_moonSlot.copiedSrvCount == 0) {
         return "waiting-runtime-copy";
     }
-    return g_moonSlot.bindings.size() >= 6 ? "proven-strong" : "proven";
+    return g_moonSlot.bindings.size() >= 2 ? "proven-strong" : "proven";
 }
 
 int MoonProofLevelLocked() {
@@ -1504,13 +1542,13 @@ int MoonProofLevelLocked() {
     if (!g_moonSlot.contentProofHit) {
         return 1;
     }
-    if (!g_moonSlot.sawUnormSrv || !g_moonSlot.sawSrgbSrv) {
+    if (g_moonSlot.bindings.empty()) {
         return 2;
     }
-    if (g_moonSlot.copiedSrvCount < 2 || g_moonSlot.bindings.size() < 4) {
+    if (g_moonSlot.copiedSrvCount == 0) {
         return 3;
     }
-    return g_moonSlot.bindings.size() >= 6 ? 5 : 4;
+    return g_moonSlot.bindings.size() >= 2 ? 5 : 4;
 }
 
 void UpdateMoonProofStateLocked(const char* reason) {
@@ -3048,26 +3086,115 @@ void ApplyMilkywayAnimationPath(const char* path) {
     ApplyAnimationPath(g_milkywaySlot, path);
 }
 bool IsNativeResourceLocked(TextureSlot& slot, ID3D12Resource* resource) {
-    if (!resource) {
-        return false;
-    }
-    for (ID3D12Resource* item : slot.nativeResources) {
-        if (item == resource) {
-            return true;
-        }
-    }
-    return false;
+    return resource && slot.nativeResourceIndex.find(resource) != slot.nativeResourceIndex.end();
 }
 
 void TrackNativeResourceLocked(TextureSlot& slot, ID3D12Resource* resource, const char* tag);
 void ReleaseBinding(SrvBinding& binding);
 void AdoptPendingBindingsLocked(TextureSlot& slot, ID3D12Resource* provenResource);
 
+size_t NativeResourceLimit(const TextureSlot& slot) {
+    return slot.lockFirstNative ? 1u : kStreamingNativeResourceLimit;
+}
+
+bool RemoveBindingAtLocked(TextureSlot& slot, size_t index) {
+    if (index >= slot.bindings.size()) {
+        return false;
+    }
+
+    slot.bindingIndex.erase(slot.bindings[index].dest.ptr);
+    RemoveTrackedDescriptorFromFastFilter(slot.bindings[index].dest.ptr);
+    ReleaseBinding(slot.bindings[index]);
+    if (index + 1 != slot.bindings.size()) {
+        slot.bindings[index] = slot.bindings.back();
+        if (slot.bindings[index].dest.ptr) {
+            slot.bindingIndex[slot.bindings[index].dest.ptr] = index;
+        }
+    }
+    slot.bindings.pop_back();
+    return true;
+}
+
+bool RemoveBindingForHandleLocked(TextureSlot& slot, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+    if (!handle.ptr) {
+        return false;
+    }
+    const auto found = slot.bindingIndex.find(handle.ptr);
+    if (found == slot.bindingIndex.end()) {
+        return false;
+    }
+    return RemoveBindingAtLocked(slot, found->second);
+}
+
+void PruneNativeResourcesLocked(TextureSlot& slot) {
+    const size_t limit = NativeResourceLimit(slot);
+    while (slot.nativeResources.size() > limit) {
+        auto evict = std::find_if(slot.nativeResources.begin(), slot.nativeResources.end(),
+            [&slot](ID3D12Resource* candidate) {
+                return candidate != slot.primaryNativeResource;
+            });
+        if (evict == slot.nativeResources.end()) {
+            break;
+        }
+
+        ID3D12Resource* resource = *evict;
+        slot.nativeResourceIndex.erase(resource);
+        slot.nativeResources.erase(evict);
+        if (resource) {
+            resource->Release();
+        }
+    }
+}
+
+void AdoptStreamingPrimaryLocked(TextureSlot& slot, ID3D12Resource* resource) {
+    if (!resource || slot.primaryNativeResource == resource) {
+        return;
+    }
+
+    ID3D12Resource* oldPrimary = slot.primaryNativeResource;
+    for (size_t i = slot.bindings.size(); i > 0; --i) {
+        if (slot.bindings[i - 1].nativeResource != resource) {
+            RemoveBindingAtLocked(slot, i - 1);
+        }
+    }
+
+    for (auto it = slot.nativeResources.begin(); it != slot.nativeResources.end();) {
+        ID3D12Resource* candidate = *it;
+        if (candidate == resource) {
+            ++it;
+            continue;
+        }
+        slot.nativeResourceIndex.erase(candidate);
+        if (candidate) {
+            candidate->Release();
+        }
+        it = slot.nativeResources.erase(it);
+    }
+
+    if (oldPrimary) {
+        oldPrimary->Release();
+    }
+    resource->AddRef();
+    slot.primaryNativeResource = resource;
+
+    if (!IsNativeResourceLocked(slot, resource)) {
+        resource->AddRef();
+        slot.nativeResources.push_back(resource);
+        slot.nativeResourceIndex.insert(resource);
+    }
+    CW_SKY_VERBOSE_LOG("[%s] streaming texture generation changed old=%p new=%p\n",
+        slot.logTag,
+        oldPrimary,
+        resource);
+}
+
 void ClearTrackedNativeStateLocked(TextureSlot& slot) {
     for (SrvBinding& binding : slot.bindings) {
+        RemoveTrackedDescriptorFromFastFilter(binding.dest.ptr);
         ReleaseBinding(binding);
     }
     slot.bindings.clear();
+    slot.bindingIndex.clear();
 
     for (SrvBinding& binding : slot.pendingBindings) {
         ReleaseBinding(binding);
@@ -3080,6 +3207,7 @@ void ClearTrackedNativeStateLocked(TextureSlot& slot) {
         }
     }
     slot.nativeResources.clear();
+    slot.nativeResourceIndex.clear();
 
     if (slot.primaryNativeResource) {
         slot.primaryNativeResource->Release();
@@ -3110,7 +3238,14 @@ void PromoteContentProvenTextureLocked(TextureSlot& slot, ID3D12Resource* resour
             slot.logTag,
             slot.primaryNativeResource,
             resource);
-        ClearTrackedNativeStateLocked(slot);
+        if (slot.useProof) {
+            ClearTrackedNativeStateLocked(slot);
+        } else {
+            AdoptStreamingPrimaryLocked(slot, resource);
+        }
+    } else if (!slot.primaryNativeResource) {
+        resource->AddRef();
+        slot.primaryNativeResource = resource;
     }
 
     if (replacingCandidate || !slot.contentProofHit) {
@@ -3174,6 +3309,13 @@ void TrackNativeResourceLocked(TextureSlot& slot, ID3D12Resource* resource, cons
 
     resource->AddRef();
     slot.nativeResources.push_back(resource);
+    slot.nativeResourceIndex.insert(resource);
+    if (!slot.useProof && slot.contentProofHit &&
+        slot.primaryNativeResource && slot.primaryNativeResource != resource) {
+        AdoptStreamingPrimaryLocked(slot, resource);
+        return;
+    }
+    PruneNativeResourcesLocked(slot);
     const uint32_t index = slot.candidateLogCount.fetch_add(1);
     if (index < 16) {
         D3D12_RESOURCE_DESC desc = resource->GetDesc();
@@ -3197,12 +3339,12 @@ SrvBinding* FindBindingLocked(TextureSlot& slot, D3D12_CPU_DESCRIPTOR_HANDLE han
     if (!handle.ptr) {
         return nullptr;
     }
-    for (SrvBinding& binding : slot.bindings) {
-        if (binding.dest.ptr == handle.ptr) {
-            return &binding;
-        }
+    const auto found = slot.bindingIndex.find(handle.ptr);
+    if (found == slot.bindingIndex.end() || found->second >= slot.bindings.size()) {
+        return nullptr;
     }
-    return nullptr;
+    SrvBinding& binding = slot.bindings[found->second];
+    return binding.dest.ptr == handle.ptr ? &binding : nullptr;
 }
 
 SrvBinding* FindPendingBindingLocked(TextureSlot& slot, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
@@ -3306,6 +3448,8 @@ void TrackBindingLocked(TextureSlot& slot,
         binding = &slot.bindings.back();
         nativeResource->AddRef();
         binding->nativeResource = nativeResource;
+        slot.bindingIndex[dest.ptr] = slot.bindings.size() - 1;
+        AddTrackedDescriptorToFastFilter(dest.ptr);
     } else if (binding->nativeResource != nativeResource) {
         if (binding->nativeResource) {
             binding->nativeResource->Release();
@@ -3318,6 +3462,17 @@ void TrackBindingLocked(TextureSlot& slot,
     binding->hasDesc = desc != nullptr;
     binding->nativeDesc = desc ? *desc : D3D12_SHADER_RESOURCE_VIEW_DESC{};
     binding->copied = copied;
+
+    SIZE_T observedMin = g_trackedDescriptorMin.load(std::memory_order_relaxed);
+    while (dest.ptr < observedMin &&
+           !g_trackedDescriptorMin.compare_exchange_weak(
+               observedMin, dest.ptr, std::memory_order_release, std::memory_order_relaxed)) {
+    }
+    SIZE_T observedMax = g_trackedDescriptorMax.load(std::memory_order_relaxed);
+    while (dest.ptr > observedMax &&
+           !g_trackedDescriptorMax.compare_exchange_weak(
+               observedMax, dest.ptr, std::memory_order_release, std::memory_order_relaxed)) {
+    }
 
     if (slot.useProof) {
         if (isNew) {
@@ -3415,54 +3570,279 @@ UINT TotalDescriptorCount(UINT rangeCount, const UINT* sizes) {
     return total;
 }
 
-void MaybeTrackCopiedDescriptor(TextureSlot& slot,
-                                ID3D12Device* device,
-                                D3D12_CPU_DESCRIPTOR_HANDLE source,
-                                D3D12_CPU_DESCRIPTOR_HANDLE dest,
-                                const char* tag) {
-    if (!device || !source.ptr || !dest.ptr || source.ptr == dest.ptr || !g_hookLockReady.load()) {
+void MaybeTrackCopiedDescriptorLocked(TextureSlot& slot,
+                                      ID3D12Device* device,
+                                      D3D12_CPU_DESCRIPTOR_HANDLE source,
+                                      D3D12_CPU_DESCRIPTOR_HANDLE dest,
+                                      const char* tag) {
+    if (!device || !source.ptr || !dest.ptr || source.ptr == dest.ptr) {
         return;
     }
 
-    ID3D12Resource* fileTexture = nullptr;
-    D3D12_SHADER_RESOURCE_VIEW_DESC nativeDesc{};
-    bool hasDesc = false;
-    EnterCriticalSection(&g_hookLock);
     SrvBinding* sourceBinding = FindBindingLocked(slot, source);
-    if (sourceBinding && sourceBinding->nativeResource && sourceBinding->hasDesc) {
-        ID3D12Resource* nativeResource = sourceBinding->nativeResource;
-        nativeResource->AddRef();
-        nativeDesc = sourceBinding->nativeDesc;
-        hasDesc = true;
-        TrackBindingLocked(slot, nativeResource, &nativeDesc, dest, true, tag);
-        nativeResource->Release();
-        fileTexture = (!slot.selectedPath.empty() && TextureSwapReadyLocked(slot)) ? slot.fileResource.load() : nullptr;
-        if (fileTexture) {
-            fileTexture->AddRef();
-            if (slot.rewriteAllOnCopy) {
-                const int rewritten = RewriteTrackedDescriptorsLocked(slot, fileTexture);
-                SetTextureStatus(slot, "%s: selected live (%zu descriptors)", slot.displayName, slot.bindings.size());
-                CW_SKY_VERBOSE_LOG("[%s] auto rewrite after %s rewritten=%d file=%p\n", slot.logTag, tag, rewritten, fileTexture);
-            }
-        }
+    if (!sourceBinding || !sourceBinding->nativeResource || !sourceBinding->hasDesc) {
+        RemoveBindingForHandleLocked(slot, dest);
+        return;
+    }
 
-        const uint32_t index = slot.descriptorCopyLogCount.fetch_add(1);
-        if (index < 4) {
-            CW_SKY_VERBOSE_LOG("[%s] %s copied descriptor src=0x%llX dst=0x%llX\n",
-                slot.logTag,
-                tag,
-                static_cast<unsigned long long>(source.ptr),
-                static_cast<unsigned long long>(dest.ptr));
-        } else if (index == 4) {
-            CW_SKY_VERBOSE_LOG("[%s] descriptor copy log cap reached\n", slot.logTag);
+    ID3D12Resource* nativeResource = sourceBinding->nativeResource;
+    const D3D12_SHADER_RESOURCE_VIEW_DESC nativeDesc = sourceBinding->nativeDesc;
+    nativeResource->AddRef();
+    TrackBindingLocked(slot, nativeResource, &nativeDesc, dest, true, tag);
+    nativeResource->Release();
+
+    ID3D12Resource* fileTexture = (!slot.selectedPath.empty() && TextureSwapReadyLocked(slot))
+        ? slot.fileResource.load()
+        : nullptr;
+    if (fileTexture) {
+        fileTexture->AddRef();
+        if (slot.rewriteAllOnCopy) {
+            const int rewritten = RewriteTrackedDescriptorsLocked(slot, fileTexture);
+            SetTextureStatus(slot, "%s: selected live (%zu descriptors)", slot.displayName, slot.bindings.size());
+            CW_SKY_VERBOSE_LOG("[%s] auto rewrite after %s rewritten=%d file=%p\n", slot.logTag, tag, rewritten, fileTexture);
         }
     }
-    LeaveCriticalSection(&g_hookLock);
 
-    if (fileTexture && hasDesc && g_realCreateShaderResourceView) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC fileDesc = FileSrvDescFromNative(slot, nativeDesc);
-        g_realCreateShaderResourceView(device, fileTexture, &fileDesc, dest);
+    if (fileTexture) {
+        if (g_realCreateShaderResourceView) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC fileDesc = FileSrvDescFromNative(slot, nativeDesc);
+            g_realCreateShaderResourceView(device, fileTexture, &fileDesc, dest);
+        }
         fileTexture->Release();
+    }
+
+    const uint32_t index = slot.descriptorCopyLogCount.fetch_add(1);
+    if (index < 4) {
+        CW_SKY_VERBOSE_LOG("[%s] %s copied descriptor src=0x%llX dst=0x%llX\n",
+            slot.logTag,
+            tag,
+            static_cast<unsigned long long>(source.ptr),
+            static_cast<unsigned long long>(dest.ptr));
+    } else if (index == 4) {
+        CW_SKY_VERBOSE_LOG("[%s] descriptor copy log cap reached\n", slot.logTag);
+    }
+}
+
+bool DescriptorOffsetInRange(D3D12_CPU_DESCRIPTOR_HANDLE start,
+                             UINT count,
+                             D3D12_CPU_DESCRIPTOR_HANDLE handle,
+                             UINT increment,
+                             UINT& outOffset) {
+    outOffset = 0;
+    if (!start.ptr || !handle.ptr || increment == 0 || handle.ptr < start.ptr) {
+        return false;
+    }
+
+    const SIZE_T delta = handle.ptr - start.ptr;
+    if ((delta % increment) != 0) {
+        return false;
+    }
+    const SIZE_T offset = delta / increment;
+    if (offset >= count || offset > UINT_MAX) {
+        return false;
+    }
+    outOffset = static_cast<UINT>(offset);
+    return true;
+}
+
+bool DescriptorRangeOverlapsTrackedHandles(D3D12_CPU_DESCRIPTOR_HANDLE start,
+                                           UINT count,
+                                           UINT increment,
+                                           SIZE_T trackedMin,
+                                           SIZE_T trackedMax) {
+    if (!start.ptr || count == 0 || increment == 0 || trackedMin > trackedMax) {
+        return false;
+    }
+
+    SIZE_T end = start.ptr;
+    const SIZE_T steps = static_cast<SIZE_T>(count - 1);
+    if (steps > (SIZE_MAX - start.ptr) / increment) {
+        end = SIZE_MAX;
+    } else {
+        end += steps * increment;
+    }
+    return start.ptr <= trackedMax && end >= trackedMin;
+}
+
+bool CopiedDescriptorRangesMayTouchTrackedHandles(
+    UINT numDestDescriptorRanges,
+    const D3D12_CPU_DESCRIPTOR_HANDLE* destDescriptorRangeStarts,
+    const UINT* destDescriptorRangeSizes,
+    UINT numSrcDescriptorRanges,
+    const D3D12_CPU_DESCRIPTOR_HANDLE* srcDescriptorRangeStarts,
+    const UINT* srcDescriptorRangeSizes,
+    UINT increment) {
+    const UINT totalDest = TotalDescriptorCount(numDestDescriptorRanges, destDescriptorRangeSizes);
+    const UINT totalSrc = TotalDescriptorCount(numSrcDescriptorRanges, srcDescriptorRangeSizes);
+    const UINT total = std::min(totalDest, totalSrc);
+    constexpr UINT kFastFilterEnumerationLimit = 64;
+    if (total <= kFastFilterEnumerationLimit) {
+        for (UINT i = 0; i < total; ++i) {
+            const D3D12_CPU_DESCRIPTOR_HANDLE source = DescriptorAt(
+                numSrcDescriptorRanges,
+                srcDescriptorRangeStarts,
+                srcDescriptorRangeSizes,
+                i,
+                increment);
+            const D3D12_CPU_DESCRIPTOR_HANDLE dest = DescriptorAt(
+                numDestDescriptorRanges,
+                destDescriptorRangeStarts,
+                destDescriptorRangeSizes,
+                i,
+                increment);
+            if (TrackedDescriptorFastFilterMayContain(source.ptr) ||
+                TrackedDescriptorFastFilterMayContain(dest.ptr)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    const SIZE_T trackedMin = g_trackedDescriptorMin.load(std::memory_order_acquire);
+    const SIZE_T trackedMax = g_trackedDescriptorMax.load(std::memory_order_acquire);
+    if (trackedMin > trackedMax) {
+        return false;
+    }
+
+    for (UINT range = 0; range < numDestDescriptorRanges; ++range) {
+        const UINT count = destDescriptorRangeSizes ? destDescriptorRangeSizes[range] : 1;
+        if (DescriptorRangeOverlapsTrackedHandles(
+                destDescriptorRangeStarts[range], count, increment, trackedMin, trackedMax)) {
+            return true;
+        }
+    }
+    for (UINT range = 0; range < numSrcDescriptorRanges; ++range) {
+        const UINT count = srcDescriptorRangeSizes ? srcDescriptorRangeSizes[range] : 1;
+        if (DescriptorRangeOverlapsTrackedHandles(
+                srcDescriptorRangeStarts[range], count, increment, trackedMin, trackedMax)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void ProcessCopiedDescriptorRangesLocked(
+    ID3D12Device* device,
+    UINT numDestDescriptorRanges,
+    const D3D12_CPU_DESCRIPTOR_HANDLE* destDescriptorRangeStarts,
+    const UINT* destDescriptorRangeSizes,
+    UINT numSrcDescriptorRanges,
+    const D3D12_CPU_DESCRIPTOR_HANDLE* srcDescriptorRangeStarts,
+    const UINT* srcDescriptorRangeSizes,
+    UINT increment,
+    const char* tag) {
+    if (!device || !destDescriptorRangeStarts || !srcDescriptorRangeStarts || increment == 0) {
+        return;
+    }
+
+    const UINT totalDest = TotalDescriptorCount(numDestDescriptorRanges, destDescriptorRangeSizes);
+    const UINT totalSrc = TotalDescriptorCount(numSrcDescriptorRanges, srcDescriptorRangeSizes);
+    const UINT total = std::min(totalDest, totalSrc);
+    if (total == 0) {
+        return;
+    }
+
+    constexpr UINT kDirectDescriptorLookupLimit = 32;
+    if (total <= kDirectDescriptorLookupLimit) {
+        for (UINT i = 0; i < total; ++i) {
+            const D3D12_CPU_DESCRIPTOR_HANDLE source = DescriptorAt(
+                numSrcDescriptorRanges,
+                srcDescriptorRangeStarts,
+                srcDescriptorRangeSizes,
+                i,
+                increment);
+            const D3D12_CPU_DESCRIPTOR_HANDLE dest = DescriptorAt(
+                numDestDescriptorRanges,
+                destDescriptorRangeStarts,
+                destDescriptorRangeSizes,
+                i,
+                increment);
+            for (TextureSlot* slot : g_textureSlots) {
+                if (!slot || slot->bindings.empty()) {
+                    continue;
+                }
+                MaybeTrackCopiedDescriptorLocked(*slot, device, source, dest, tag);
+            }
+        }
+        return;
+    }
+
+    constexpr size_t kTrackedHandleSnapshotCapacity = 64;
+    for (TextureSlot* slot : g_textureSlots) {
+        if (!slot || slot->bindings.empty()) {
+            continue;
+        }
+
+        std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kTrackedHandleSnapshotCapacity> trackedHandles{};
+        const size_t trackedCount = std::min(slot->bindings.size(), trackedHandles.size());
+        for (size_t i = 0; i < trackedCount; ++i) {
+            trackedHandles[i] = slot->bindings[i].dest;
+        }
+
+        UINT logicalBase = 0;
+        for (UINT range = 0; range < numDestDescriptorRanges && logicalBase < total; ++range) {
+            const UINT rangeSize = destDescriptorRangeSizes ? destDescriptorRangeSizes[range] : 1;
+            for (size_t tracked = 0; tracked < trackedCount; ++tracked) {
+                UINT rangeOffset = 0;
+                if (!DescriptorOffsetInRange(
+                        destDescriptorRangeStarts[range],
+                        rangeSize,
+                        trackedHandles[tracked],
+                        increment,
+                        rangeOffset)) {
+                    continue;
+                }
+
+                const UINT logicalIndex = logicalBase + rangeOffset;
+                if (logicalIndex >= total) {
+                    continue;
+                }
+                const D3D12_CPU_DESCRIPTOR_HANDLE source = DescriptorAt(
+                    numSrcDescriptorRanges,
+                    srcDescriptorRangeStarts,
+                    srcDescriptorRangeSizes,
+                    logicalIndex,
+                    increment);
+                if (!FindBindingLocked(*slot, source)) {
+                    RemoveBindingForHandleLocked(*slot, trackedHandles[tracked]);
+                }
+            }
+            logicalBase += rangeSize;
+        }
+
+        logicalBase = 0;
+        for (UINT range = 0; range < numSrcDescriptorRanges && logicalBase < total; ++range) {
+            const UINT rangeSize = srcDescriptorRangeSizes ? srcDescriptorRangeSizes[range] : 1;
+            for (size_t tracked = 0; tracked < trackedCount; ++tracked) {
+                UINT rangeOffset = 0;
+                if (!DescriptorOffsetInRange(
+                        srcDescriptorRangeStarts[range],
+                        rangeSize,
+                        trackedHandles[tracked],
+                        increment,
+                        rangeOffset)) {
+                    continue;
+                }
+
+                const UINT logicalIndex = logicalBase + rangeOffset;
+                if (logicalIndex >= total) {
+                    continue;
+                }
+                const D3D12_CPU_DESCRIPTOR_HANDLE dest = DescriptorAt(
+                    numDestDescriptorRanges,
+                    destDescriptorRangeStarts,
+                    destDescriptorRangeSizes,
+                    logicalIndex,
+                    increment);
+                MaybeTrackCopiedDescriptorLocked(
+                    *slot,
+                    device,
+                    trackedHandles[tracked],
+                    dest,
+                    tag);
+            }
+            logicalBase += rangeSize;
+        }
     }
 }
 
@@ -3563,16 +3943,18 @@ void TryProveTextureFromNativeCopy(TextureSlot& slot,
 
     bool trackedNativeCandidate = false;
     bool alreadyProven = false;
+    bool destinationIsPrimary = false;
     if (g_hookLockReady.load()) {
         EnterCriticalSection(&g_hookLock);
         trackedNativeCandidate = IsNativeResourceLocked(slot, dst->pResource);
         alreadyProven = slot.contentProofHit;
+        destinationIsPrimary = slot.primaryNativeResource == dst->pResource;
         LeaveCriticalSection(&g_hookLock);
     }
-    if (alreadyProven) {
+    if (alreadyProven && (slot.useProof || destinationIsPrimary)) {
         return;
     }
-    if (!trackedNativeCandidate) {
+    if (!slot.useProof && !trackedNativeCandidate) {
         const uint32_t count = slot.contentRejectLogCount.fetch_add(1);
         if (count < 4) {
             CW_SKY_VERBOSE_LOG("[%s] content proof skipped untracked native-sized copy dest=%p %llux%u mips=%u fmt=%s(%u)\n",
@@ -3642,6 +4024,12 @@ void TryProveTextureFromNativeCopy(TextureSlot& slot,
 
     if (hash != slot.expectedTopMipHash) {
         const uint32_t count = slot.contentRejectLogCount.fetch_add(1);
+        if (count == 0) {
+            Log("[%s] native content hash changed observed=0x%llX expected=0x%llX\n",
+                slot.logTag,
+                static_cast<unsigned long long>(hash),
+                static_cast<unsigned long long>(slot.expectedTopMipHash));
+        }
         if (count < 12) {
             CW_SKY_VERBOSE_LOG("[%s] content proof rejected hash=0x%llX expected=0x%llX dest=%p offset=%llu rowPitch=%u\n",
                 slot.logTag,
@@ -3669,7 +4057,7 @@ void TrackCommittedResourceHits(const bool* hits, void** resource, const char* t
     auto* d3dResource = reinterpret_cast<ID3D12Resource*>(*resource);
     EnterCriticalSection(&g_hookLock);
     for (size_t i = 0; i < sizeof(g_textureSlots) / sizeof(g_textureSlots[0]); ++i) {
-        if (hits[i]) {
+        if (hits[i] && !g_textureSlots[i]->useProof) {
             TrackNativeResourceLocked(*g_textureSlots[i], d3dResource, tag);
         }
     }
@@ -3869,10 +4257,19 @@ void STDMETHODCALLTYPE HookCreateShaderResourceView(ID3D12Device* self,
     TextureSlot* hitSlot = nullptr;
     bool active = false;
     D3D12_RESOURCE_DESC resourceDesc{};
-    if (resource && g_hookLockReady.load()) {
-        resourceDesc = resource->GetDesc();
+    if (g_hookLockReady.load()) {
+        if (resource) {
+            resourceDesc = resource->GetDesc();
+        }
         EnterCriticalSection(&g_hookLock);
         for (TextureSlot* slot : g_textureSlots) {
+            SrvBinding* overwritten = FindBindingLocked(*slot, destDescriptor);
+            if (overwritten && overwritten->nativeResource != resource) {
+                RemoveBindingForHandleLocked(*slot, destDescriptor);
+            }
+            if (!resource) {
+                continue;
+            }
             if (!IsNativeResourceLocked(*slot, resource)) {
                 continue;
             }
@@ -3881,7 +4278,7 @@ void STDMETHODCALLTYPE HookCreateShaderResourceView(ID3D12Device* self,
             hitSlot = slot;
             break;
         }
-        if (!hitSlot) {
+        if (resource && !hitSlot) {
             for (TextureSlot* slot : g_textureSlots) {
                 if (!slot->useProof || !IsNativeDesc(*slot, &resourceDesc)) {
                     continue;
@@ -3915,9 +4312,8 @@ void STDMETHODCALLTYPE HookCreateShaderResourceView(ID3D12Device* self,
     g_realCreateShaderResourceView(self, srvResource, srvDesc, destDescriptor);
 
     if (hitSlot) {
-        static std::atomic<uint32_t> s_srvLogCount{ 0 };
-        const uint32_t srvLogIndex = hitSlot->useProof ? s_srvLogCount.fetch_add(1) : 0;
-        if (!hitSlot->useProof || srvLogIndex < 4) {
+        const uint32_t srvLogIndex = hitSlot->srvLogCount.fetch_add(1);
+        if (srvLogIndex < 4) {
             Log("[%s] CreateShaderResourceView res=%p %llux%u mips=%u fmt=%s(%u) srvFmt=%s(%u) desc=0x%llX replacement=%u\n",
                 hitSlot->logTag,
                 resource,
@@ -3962,15 +4358,29 @@ void STDMETHODCALLTYPE HookCopyDescriptors(ID3D12Device* self,
 
     __try {
         const UINT increment = self->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        const UINT totalDest = TotalDescriptorCount(numDestDescriptorRanges, destDescriptorRangeSizes);
-        const UINT totalSrc = TotalDescriptorCount(numSrcDescriptorRanges, srcDescriptorRangeSizes);
-        const UINT total = std::min(totalDest, totalSrc);
-        for (UINT i = 0; i < total; ++i) {
-            const D3D12_CPU_DESCRIPTOR_HANDLE source = DescriptorAt(numSrcDescriptorRanges, srcDescriptorRangeStarts, srcDescriptorRangeSizes, i, increment);
-            const D3D12_CPU_DESCRIPTOR_HANDLE dest = DescriptorAt(numDestDescriptorRanges, destDescriptorRangeStarts, destDescriptorRangeSizes, i, increment);
-            for (TextureSlot* slot : g_textureSlots) {
-                MaybeTrackCopiedDescriptor(*slot, self, source, dest, "CopyDescriptors");
-            }
+        if (!CopiedDescriptorRangesMayTouchTrackedHandles(
+                numDestDescriptorRanges,
+                destDescriptorRangeStarts,
+                destDescriptorRangeSizes,
+                numSrcDescriptorRanges,
+                srcDescriptorRangeStarts,
+                srcDescriptorRangeSizes,
+                increment)) {
+            return;
+        }
+        if (g_hookLockReady.load()) {
+            EnterCriticalSection(&g_hookLock);
+            ProcessCopiedDescriptorRangesLocked(
+                self,
+                numDestDescriptorRanges,
+                destDescriptorRangeStarts,
+                destDescriptorRangeSizes,
+                numSrcDescriptorRanges,
+                srcDescriptorRangeStarts,
+                srcDescriptorRangeSizes,
+                increment,
+                "CopyDescriptors");
+            LeaveCriticalSection(&g_hookLock);
         }
     } __except (LogSkyExceptionFilter("HookCopyDescriptors/post", GetExceptionInformation())) {
     }
@@ -3996,14 +4406,29 @@ void STDMETHODCALLTYPE HookCopyDescriptorsSimple(ID3D12Device* self,
 
     __try {
         const UINT increment = self->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        for (UINT i = 0; i < numDescriptors; ++i) {
-            D3D12_CPU_DESCRIPTOR_HANDLE source{};
-            D3D12_CPU_DESCRIPTOR_HANDLE dest{};
-            source.ptr = srcDescriptorRangeStart.ptr + static_cast<SIZE_T>(i) * increment;
-            dest.ptr = destDescriptorRangeStart.ptr + static_cast<SIZE_T>(i) * increment;
-            for (TextureSlot* slot : g_textureSlots) {
-                MaybeTrackCopiedDescriptor(*slot, self, source, dest, "CopyDescriptorsSimple");
-            }
+        if (!CopiedDescriptorRangesMayTouchTrackedHandles(
+                1,
+                &destDescriptorRangeStart,
+                &numDescriptors,
+                1,
+                &srcDescriptorRangeStart,
+                &numDescriptors,
+                increment)) {
+            return;
+        }
+        if (g_hookLockReady.load()) {
+            EnterCriticalSection(&g_hookLock);
+            ProcessCopiedDescriptorRangesLocked(
+                self,
+                1,
+                &destDescriptorRangeStart,
+                &numDescriptors,
+                1,
+                &srcDescriptorRangeStart,
+                &numDescriptors,
+                increment,
+                "CopyDescriptorsSimple");
+            LeaveCriticalSection(&g_hookLock);
         }
     } __except (LogSkyExceptionFilter("HookCopyDescriptorsSimple/post", GetExceptionInformation())) {
     }
