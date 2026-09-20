@@ -93,8 +93,6 @@ struct WeatherPresetData {
     std::string moonTexture;
     bool milkywayTextureEnabled = false;
     std::string milkywayTexture;
-    bool fogEnabled = false;
-    float fogPercent = 0.0f;
     bool nativeFogEnabled = false;
     float nativeFog = 1.0f;
     bool volumeFogScatterColorEnabled = false;
@@ -116,9 +114,6 @@ struct WeatherPresetData {
     bool noWind = false;
     bool puddleScaleEnabled = false;
     float puddleScale = 0.0f;
-    bool renodxAuroraRegionMaskEnabled = false;
-    bool renodxAuroraGateEnabled = false;
-    uint32_t renodxAuroraRegionMask = 126;
 };
 
 constexpr int kPresetRegionGlobal = 0;
@@ -174,7 +169,6 @@ struct WeatherPresetSourceMask {
     bool moonRoll = false;
     bool moonTexture = false;
     bool milkywayTexture = false;
-    bool fog = false;
     bool nativeFog = false;
     bool volumeFogScatterColor = false;
     bool mieScatterColor = false;
@@ -261,7 +255,6 @@ WeatherPresetData Preset_GetEditRegionData();
 WeatherPresetSourceMask Preset_GetEditRegionOverrideMask();
 void Preset_SetEditRegionData(const WeatherPresetData& data);
 void Preset_SetEditRegionDataWithOverrides(const WeatherPresetData& data, const WeatherPresetSourceMask& mask);
-void Preset_SetRenoDxAuroraSettings(bool enabled, uint32_t mask);
 void Preset_ResetEditRegion();
 void Preset_SelectNew();
 bool Preset_SelectIndex(int index);

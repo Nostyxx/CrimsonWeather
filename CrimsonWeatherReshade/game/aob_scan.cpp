@@ -12,10 +12,7 @@
 static bool EnableWeatherTickHook() { return false; }
 static bool EnableIntensityHooks() { return true; }
 static bool EnableWindHooks() { return false; }
-static bool EnableProcessWindHook() { return false; }
-static bool EnableWindPackHook() { return false; }
 static bool EnableSceneFrameHook() { return false; }
-static bool EnableFogHooks() { return false; }
 static bool EnableRegionHook() { return false; }
 static bool EnableGameTimeHooks() { return false; }
 static bool DevLaunchOptionIsFullProfile() { return false; }
@@ -49,11 +46,6 @@ static bool EnableSceneFrameHook() {
     return option == DevLaunchOption::Full || option == DevLaunchOption::FrameHooks;
 }
 
-static bool EnableFogHooks() {
-    const DevLaunchOption option = ActiveDevLaunchOption();
-    return option == DevLaunchOption::Full || option == DevLaunchOption::FogHooks;
-}
-
 static bool EnableRegionHook() {
     const DevLaunchOption option = ActiveDevLaunchOption();
     return option == DevLaunchOption::Full || option == DevLaunchOption::RegionHook;
@@ -63,22 +55,11 @@ static bool EnableGameTimeHooks() {
     return ActiveDevLaunchOption() == DevLaunchOption::Full;
 }
 
-static bool EnableProcessWindHook() {
-    return EnableWindHooks();
-}
-
-static bool EnableWindPackHook() {
-    return EnableWindHooks();
-}
-
 #else
 static bool EnableWeatherTickHook() { return true; }
 static bool EnableIntensityHooks() { return true; }
 static bool EnableWindHooks() { return true; }
-static bool EnableProcessWindHook() { return true; }
-static bool EnableWindPackHook() { return true; }
 static bool EnableSceneFrameHook() { return true; }
-static bool EnableFogHooks() { return true; }
 static bool EnableRegionHook() { return true; }
 static bool EnableGameTimeHooks() { return true; }
 static bool DevLaunchOptionIsFullProfile() { return true; }
@@ -90,19 +71,12 @@ static bool PatchPointerSlot(void** slot, void* value);
 const char* RuntimeHookLabel(RuntimeHookId id) {
     switch (id) {
     case RuntimeHookId::WeatherTick: return "WeatherTick";
-    case RuntimeHookId::GetRainIntensity: return "GetRainIntensity";
+    case RuntimeHookId::WeatherCompose: return "WeatherCompose";
     case RuntimeHookId::GetSnowIntensity: return "GetSnowIntensity";
     case RuntimeHookId::GetDustIntensity: return "GetDustIntensity";
     case RuntimeHookId::ProcessWindState: return "ProcessWindState";
     case RuntimeHookId::WindPack: return "WindPack";
     case RuntimeHookId::SceneFrameUpdate: return "SceneFrameUpdate";
-    case RuntimeHookId::WeatherFrameUpdate: return "WeatherFrameUpdate";
-    case RuntimeHookId::AtmosFogBlend: return "AtmosFogBlend";
-    case RuntimeHookId::FogSet0: return "FogSet0";
-    case RuntimeHookId::FogSet1: return "FogSet1";
-    case RuntimeHookId::FogSet2: return "FogSet2";
-    case RuntimeHookId::FogSet3: return "FogSet3";
-    case RuntimeHookId::FogSet4: return "FogSet4";
     case RuntimeHookId::MinimapRegionLabels: return "MinimapRegionLabels";
     case RuntimeHookId::MinimapGameTimeUpdate: return "MinimapGameTimeUpdate";
     case RuntimeHookId::GameTimeGetter: return "GameTimeGetter";
@@ -113,7 +87,7 @@ const char* RuntimeHookLabel(RuntimeHookId id) {
 static const char* RuntimeHookKind(RuntimeHookId id) {
     switch (id) {
     case RuntimeHookId::WeatherTick: return "Core tick";
-    case RuntimeHookId::GetRainIntensity:
+    case RuntimeHookId::WeatherCompose: return "Weather table";
     case RuntimeHookId::GetSnowIntensity:
     case RuntimeHookId::GetDustIntensity:
         return "Intensity";
@@ -122,14 +96,6 @@ static const char* RuntimeHookKind(RuntimeHookId id) {
         return "Wind/cloud";
     case RuntimeHookId::SceneFrameUpdate:
         return "Frame";
-    case RuntimeHookId::WeatherFrameUpdate:
-    case RuntimeHookId::AtmosFogBlend:
-    case RuntimeHookId::FogSet0:
-    case RuntimeHookId::FogSet1:
-    case RuntimeHookId::FogSet2:
-    case RuntimeHookId::FogSet3:
-    case RuntimeHookId::FogSet4:
-        return "Fog";
     case RuntimeHookId::MinimapRegionLabels:
         return "Region";
     case RuntimeHookId::MinimapGameTimeUpdate:
@@ -262,6 +228,9 @@ static bool ParsePattern(const char* pattern, uint8_t* bytes, uint8_t* mask, siz
 
 static bool ReadBytesSafe(uintptr_t addr, uint8_t* out, size_t n);
 static bool IsWritableAddress(uintptr_t addr, size_t bytes);
+uintptr_t FindFunctionStartViaUnwind(uintptr_t pc);
+static size_t FindCallsitesTo(uintptr_t target, uintptr_t* out, size_t cap);
+static uintptr_t ReadCall(uintptr_t address);
 
 static uintptr_t ScanModule(const char*pat){
     uint8_t bytes[256],mask[256];size_t len=0;
@@ -279,6 +248,128 @@ static uintptr_t ScanModule(const char*pat){
             bool ok=true;for(size_t k=0;k<len;k++)if(mask[k]&&mem[j+k]!=bytes[k]){ok=false;break;}
             if(ok)return base+j;}
     }return 0;}
+
+static uintptr_t ScanModuleUnique(const char* pattern, size_t& matchCount) {
+    matchCount = 0;
+    uint8_t bytes[256] = {};
+    uint8_t mask[256] = {};
+    size_t len = 0;
+    if (!ParsePattern(pattern, bytes, mask, len)) return 0;
+
+    auto* hMod = reinterpret_cast<uint8_t*>(GetModuleHandleA(nullptr));
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(hMod);
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(hMod + dos->e_lfanew);
+    auto* sec = IMAGE_FIRST_SECTION(nt);
+    uintptr_t onlyMatch = 0;
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
+        if (!(sec->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+        const size_t size = sec->Misc.VirtualSize;
+        if (size < len) continue;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(hMod) + sec->VirtualAddress;
+        const auto* mem = reinterpret_cast<const uint8_t*>(base);
+        for (size_t j = 0; j <= size - len; ++j) {
+            bool matches = true;
+            for (size_t k = 0; k < len; ++k) {
+                if (mask[k] && mem[j + k] != bytes[k]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (!matches) continue;
+            onlyMatch = base + j;
+            ++matchCount;
+            if (matchCount > 1) return 0;
+        }
+    }
+    return onlyMatch;
+}
+
+static bool LooksLikeWeatherCompose(uintptr_t address) {
+    uint8_t code[0x580] = {};
+    if (!ReadBytesSafe(address, code, sizeof(code))) return false;
+
+    for (size_t i = 0; i + 4 < sizeof(code); ++i) {
+        bool parentLoad = false;
+        size_t loadLength = 0;
+        if (g_weatherNodeContainerOffset >= INT8_MIN && g_weatherNodeContainerOffset <= INT8_MAX &&
+            code[i] == 0x48 && code[i + 1] == 0x8B && code[i + 2] == 0x47 &&
+            static_cast<int8_t>(code[i + 3]) == g_weatherNodeContainerOffset) {
+            parentLoad = true;
+            loadLength = 4;
+        } else if (i + 7 <= sizeof(code) &&
+                   code[i] == 0x48 && code[i + 1] == 0x8B && code[i + 2] == 0x87 &&
+                   *reinterpret_cast<const int32_t*>(code + i + 3) == g_weatherNodeContainerOffset) {
+            parentLoad = true;
+            loadLength = 7;
+        }
+        if (!parentLoad) continue;
+
+        const size_t end = min(sizeof(code), i + loadLength + 0x30);
+        for (size_t j = i + loadLength; j + 6 <= end; ++j) {
+            if (code[j] == 0xFF && code[j + 1] == 0x90 &&
+                *reinterpret_cast<const uint32_t*>(code + j + 2) == 0x160) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool LooksLikeWeatherComposeCaller(uintptr_t caller, uintptr_t compositor) {
+    uint8_t code[0x80] = {};
+    if (!ReadBytesSafe(caller, code, sizeof(code))) return false;
+    if (code[0] != 0x48 || code[1] != 0x89 || code[2] != 0x5C || code[3] != 0x24 ||
+        code[5] != 0x55 || code[6] != 0x56 || code[7] != 0x57) {
+        return false;
+    }
+
+    for (size_t i = 0; i + 5 <= sizeof(code); ++i) {
+        if (code[i] != 0xE8 || ReadCall(caller + i) != compositor) continue;
+        const size_t end = min(sizeof(code), i + 0x28);
+        for (size_t j = i + 5; j + 8 <= end; ++j) {
+            if (code[j] == 0x48 && code[j + 1] == 0x8B && code[j + 2] == 0x46 &&
+                static_cast<int8_t>(code[j + 3]) == g_weatherNodeContainerOffset &&
+                code[j + 4] == 0x48 && code[j + 5] == 0x8D &&
+                code[j + 6] == 0x48 && code[j + 7] == 0x18) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static uintptr_t ResolveWeatherCompose() {
+    size_t matches = 0;
+    const uintptr_t address = ScanModuleUnique(
+        "48 8B C4 C5 FA 11 48 10 48 89 48 08 55 53 56 57 "
+        "41 54 41 55 41 56 41 57 48 8D 6C 24 88 48 81 EC",
+        matches);
+    if (!address) {
+        Log("[W] WeatherCompose signature expected one match, found %zu\n", matches);
+        return 0;
+    }
+    if (!LooksLikeWeatherCompose(address)) {
+        Log("[W] WeatherCompose semantic validation failed at %p\n", reinterpret_cast<void*>(address));
+        return 0;
+    }
+
+    uintptr_t callsites[4] = {};
+    const size_t callsiteCount = FindCallsitesTo(address, callsites, std::size(callsites));
+    if (callsiteCount != 1) {
+        Log("[W] WeatherCompose expected one native caller, found %zu\n", callsiteCount);
+        return 0;
+    }
+    const uintptr_t caller = FindFunctionStartViaUnwind(callsites[0]);
+    if (!caller || !LooksLikeWeatherComposeCaller(caller, address)) {
+        Log("[W] WeatherCompose caller validation failed call=%p entry=%p\n",
+            reinterpret_cast<void*>(callsites[0]), reinterpret_cast<void*>(caller));
+        return 0;
+    }
+    CW_AOB_VERBOSE_LOG("[AOB] WeatherCompose compositor=%p caller=%p call=%p\n",
+        reinterpret_cast<void*>(address), reinterpret_cast<void*>(caller),
+        reinterpret_cast<void*>(callsites[0]));
+    return caller;
+}
 
 static uintptr_t ReadCall(uintptr_t a){
     if(*reinterpret_cast<uint8_t*>(a)!=0xE8)return 0;
@@ -378,34 +469,6 @@ static uintptr_t PromoteToFunctionStart(uintptr_t addr, const char* name) {
         return fn;
     }
     return fn ? fn : addr;
-}
-
-static bool LooksLikeAtmosFogBlend(uintptr_t f){
-    if(!f) return false;
-    __try {
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(f);
-        if (p[0] != 0x48 || p[1] != 0x83 || p[2] != 0xEC || p[3] != 0x38) return false;
-        if (p[4] != 0x48 || p[5] != 0x8B) return false;
-        int idx = 0;
-        if (p[6] == 0x41 && p[7] == 0x88) {
-            idx = 8;
-        } else if (p[6] == 0x81 && p[7] == 0x88 && p[8] == 0x00 && p[9] == 0x00 && p[10] == 0x00) {
-            idx = 11;
-        } else {
-            return false;
-        }
-        // 2.01 emits the same five-float blend with VEX-encoded vmovaps.
-        if (p[idx] == 0xC5 && p[idx + 1] == 0xF8 && p[idx + 2] == 0x29 &&
-            p[idx + 3] == 0x74 && p[idx + 4] == 0x24 && p[idx + 5] == 0x20) {
-            return true;
-        }
-        if (p[idx] != 0x0F) return false;
-        if (p[idx + 1] != 0x29 && p[idx + 1] != 0x11 && p[idx + 1] != 0x28 && p[idx + 1] != 0x10) return false;
-        if (p[idx + 2] != 0x74 || p[idx + 3] != 0x24 || p[idx + 4] != 0x20) return false;
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
 }
 
 static bool LooksLikeWindPack(uintptr_t f) {
@@ -804,8 +867,7 @@ static void RecomputeRuntimeHealthSummary() {
     SetRuntimeGroupHealth(RuntimeHealthGroup::CoreWeather,
         AggregateTargetHealth({
             AobTargetId::WeatherTick,
-            AobTargetId::GetRainIntensity,
-            AobTargetId::GetSnowIntensity,
+            AobTargetId::WeatherCompose,
             AobTargetId::GetDustIntensity,
             AobTargetId::ActivateEffect,
             AobTargetId::SetIntensity,
@@ -815,15 +877,13 @@ static void RecomputeRuntimeHealthSummary() {
 
     SetRuntimeGroupHealth(RuntimeHealthGroup::CloudExperiment,
         AggregateTargetHealth({
-            AobTargetId::ProcessWindState,
-            AobTargetId::WindPack,
+            AobTargetId::WeatherCompose,
             AobTargetId::EnvManagerPtr
         }, note), note);
 
     SetRuntimeGroupHealth(RuntimeHealthGroup::Fog,
         AggregateTargetHealth({
-            AobTargetId::WeatherFrameUpdate,
-            AobTargetId::AtmosFogBlend
+            AobTargetId::WeatherCompose
         }, note), note);
 
     SetRuntimeGroupHealth(RuntimeHealthGroup::Time,
@@ -851,15 +911,14 @@ static void RecomputeRuntimeHealthSummary() {
     SetRuntimeFeatureHealth(RuntimeFeatureId::Rain,
         AggregateTargetHealth({
             AobTargetId::WeatherTick,
-            AobTargetId::GetRainIntensity,
-            AobTargetId::ActivateEffect,
-            AobTargetId::SetIntensity
+            AobTargetId::WeatherCompose
         }, note), note);
 
-    const bool thunderReady = g_pNativeLightningScheduler && g_pWeatherEffectGateByte;
+    const bool thunderReady = g_pNativeLightningScheduler && g_pWeatherEffectGateByte &&
+        g_pOrigGetRainIntensity;
     SetRuntimeFeatureHealth(RuntimeFeatureId::ThunderControls,
         thunderReady ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
-        thunderReady ? "native lightning scheduler ready" : "native lightning scheduler unavailable");
+        thunderReady ? "native lightning scheduler ready" : "native lightning scheduler or rain bridge unavailable");
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::Dust,
         AggregateTargetHealth({
@@ -872,7 +931,7 @@ static void RecomputeRuntimeHealthSummary() {
     SetRuntimeFeatureHealth(RuntimeFeatureId::Snow,
         AggregateTargetHealth({
             AobTargetId::WeatherTick,
-            AobTargetId::GetSnowIntensity,
+            AobTargetId::WeatherCompose,
             AobTargetId::ActivateEffect,
             AobTargetId::SetIntensity
         }, note), note);
@@ -885,30 +944,26 @@ static void RecomputeRuntimeHealthSummary() {
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::CloudControls,
         AggregateTargetHealth({
-            AobTargetId::ProcessWindState,
-            AobTargetId::WindPack,
+            AobTargetId::WeatherCompose,
             AobTargetId::EnvManagerPtr
         }, note), note);
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::FogControls,
         AggregateTargetHealth({
-            AobTargetId::WeatherFrameUpdate,
-            AobTargetId::AtmosFogBlend
+            AobTargetId::WeatherCompose
         }, note), note);
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::WindControls,
         AggregateTargetHealth({
             AobTargetId::WeatherTick,
-            AobTargetId::ProcessWindState,
-            AobTargetId::WindPack,
+            AobTargetId::WeatherCompose,
             AobTargetId::EnvManagerPtr
         }, note), note);
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::NoWindControls,
         AggregateTargetHealth({
             AobTargetId::WeatherTick,
-            AobTargetId::GetDustIntensity,
-            AobTargetId::ProcessWindState,
+            AobTargetId::WeatherCompose,
             AobTargetId::EnvManagerPtr
         }, note), note);
 
@@ -920,14 +975,13 @@ static void RecomputeRuntimeHealthSummary() {
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::ExperimentControls,
         AggregateTargetHealth({
-            AobTargetId::ProcessWindState,
-            AobTargetId::WindPack,
+            AobTargetId::WeatherCompose,
             AobTargetId::EnvManagerPtr
         }, note), note);
 
     SetRuntimeFeatureHealth(RuntimeFeatureId::CelestialControls,
         AggregateTargetHealth({
-            AobTargetId::WindPack,
+            AobTargetId::WeatherCompose,
             AobTargetId::SceneFrameUpdate
         }, note), note);
 
@@ -1361,27 +1415,6 @@ uintptr_t FindFunctionStartViaUnwind(uintptr_t pc){
     return (uintptr_t)(imageBase + rf->BeginAddress);
 }
 
-static bool LooksLikeWeatherFrameUpdate(uintptr_t addr){
-    uint8_t b[12] = {};
-    if (!ReadBytesSafe(addr, b, sizeof(b))) return false;
-    if (b[0] != 0x48 || b[1] != 0x8B || b[2] != 0xC4) return false;
-    for (int i = 3; i <= 9; ++i) {
-        if (b[i] == 0x48 && b[i + 1] == 0x8D) return true;
-    }
-    return false;
-}
-
-static uintptr_t FindFuncStartByPrologueBack(uintptr_t from, size_t maxBack){
-    if (!from) return 0;
-    for (size_t back = 0; back <= maxBack; ++back) {
-        uintptr_t a = from - back;
-        if (LooksLikeWeatherFrameUpdate(a)) {
-            return a;
-        }
-    }
-    return 0;
-}
-
 static bool TryDeriveTimeVtableOffsetsFromFunction(uintptr_t fnStart,
                                                    ptrdiff_t& outEnvGetEntity,
                                                    ptrdiff_t& outEnvGetTime,
@@ -1759,23 +1792,43 @@ void RestoreRuntimePatches() {
     g_pWeatherTickVtableSlot = nullptr;
 }
 
-static uintptr_t ResolveDustIntensityTarget(uintptr_t weatherTick) {
-    if (weatherTick) {
-        // 2.01.00 weather component: this accessor reads the native wind/dust
-        // inputs at +0x138/+0x1A4 and their dynamic scale at +0x158.
-        const uintptr_t currentBuildCallsite = weatherTick + 0x420;
-        if (*reinterpret_cast<const uint8_t*>(currentBuildCallsite) == 0xE8) {
-            const uintptr_t target = ReadCall(currentBuildCallsite);
-            if (target) return target;
+static bool LooksLikeEffectiveWindTarget(uintptr_t address) {
+    uint8_t code[0x90] = {};
+    if (!ReadBytesSafe(address, code, sizeof(code))) return false;
+
+    const auto contains = [&](const uint8_t* pattern, size_t length) {
+        for (size_t i = 0; i + length <= sizeof(code); ++i) {
+            if (memcmp(code + i, pattern, length) == 0) return true;
         }
-        const uintptr_t callsite = weatherTick + 0x4C9;
-        if (*reinterpret_cast<const uint8_t*>(callsite) == 0xE8) {
-            const uintptr_t target = ReadCall(callsite);
-            if (target) return target;
+        return false;
+    };
+    static constexpr uint8_t kWindSpeed[] = { 0x49, 0x8D, 0x80, 0x38, 0x01, 0x00, 0x00 };
+    static constexpr uint8_t kAltitudeWindRatio[] = { 0x49, 0x8D, 0x80, 0x58, 0x01, 0x00, 0x00 };
+    static constexpr uint8_t kWindBlendContribution[] = { 0x49, 0x8D, 0x90, 0xA4, 0x01, 0x00, 0x00 };
+    static constexpr uint8_t kWeatherMode[] = { 0x80, 0x79, 0x31, 0x00 };
+    return contains(kWindSpeed, sizeof(kWindSpeed)) &&
+        contains(kAltitudeWindRatio, sizeof(kAltitudeWindRatio)) &&
+        contains(kWindBlendContribution, sizeof(kWindBlendContribution)) &&
+        contains(kWeatherMode, sizeof(kWeatherMode));
+}
+
+static uintptr_t ResolveEffectiveWindTarget(uintptr_t weatherTick) {
+    size_t matches = 0;
+    uintptr_t target = ScanModuleUnique(
+        "48 8B 41 60 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 "
+        "48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0",
+        matches);
+    if (target && LooksLikeEffectiveWindTarget(target)) return target;
+
+    if (weatherTick) {
+        for (uintptr_t site = weatherTick; site + 5 < weatherTick + 0x900; ++site) {
+            if (*reinterpret_cast<const uint8_t*>(site) != 0xE8) continue;
+            const uintptr_t candidate = ReadCall(site);
+            if (candidate && LooksLikeEffectiveWindTarget(candidate)) return candidate;
         }
     }
 
-    uintptr_t target = ScanModule(
+    target = ScanModule(
         "48 8B 41 58 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0"
     );
     if (!target) {
@@ -1788,6 +1841,55 @@ static uintptr_t ResolveDustIntensityTarget(uintptr_t weatherTick) {
             "48 8B 41 50 41 B8 40 00 00 00 48 85 C0 41 B9 48 01 00 00 48 8D 50 18 B8 B4 01 00 00 49 0F 44 D0"
         );
     }
+    return target && LooksLikeEffectiveWindTarget(target) ? target : 0;
+}
+
+static bool LooksLikeDustIntensityTarget(uintptr_t address) {
+    uint8_t code[0x100] = {};
+    if (!ReadBytesSafe(address, code, sizeof(code))) return false;
+
+    const auto contains = [&](const uint8_t* pattern, size_t length) {
+        for (size_t i = 0; i + length <= sizeof(code); ++i) {
+            if (memcmp(code + i, pattern, length) == 0) return true;
+        }
+        return false;
+    };
+    static constexpr uint8_t kWeatherState[] = { 0x4C, 0x8B, 0x43, 0x60 };
+    static constexpr uint8_t kCascadeAmplitude1[] = { 0x48, 0x8D, 0x82, 0xA0, 0x01, 0x00, 0x00 };
+    static constexpr uint8_t kCascadeSize4[] = { 0x48, 0x8D, 0x8A, 0x9C, 0x01, 0x00, 0x00 };
+    static constexpr uint8_t kPuddleRate[] = { 0x48, 0x8D, 0x82, 0x3C, 0x01, 0x00, 0x00 };
+    return contains(kWeatherState, sizeof(kWeatherState)) &&
+        contains(kCascadeAmplitude1, sizeof(kCascadeAmplitude1)) &&
+        contains(kCascadeSize4, sizeof(kCascadeSize4)) &&
+        contains(kPuddleRate, sizeof(kPuddleRate));
+}
+
+static uintptr_t ResolveDustIntensityTarget(uintptr_t weatherTick) {
+    size_t matches = 0;
+    uintptr_t target = ScanModuleUnique(
+        "53 48 83 EC 30 48 8B D9 48 8B 89 E8 00 00 00 "
+        "C5 F8 29 74 24 20 48 8B 01 FF 90 00 01 00 00 4C 8B 43 60",
+        matches);
+    if (target && !LooksLikeDustIntensityTarget(target)) {
+        target = 0;
+    }
+
+    if (!target && weatherTick) {
+        for (uintptr_t site = weatherTick; site + 5 < weatherTick + 0x900; ++site) {
+            if (*reinterpret_cast<const uint8_t*>(site) != 0xE8) continue;
+            const uintptr_t candidate = ReadCall(site);
+            if (candidate && LooksLikeDustIntensityTarget(candidate)) {
+                target = candidate;
+                break;
+            }
+        }
+    }
+    if (!target) {
+        Log("[W] Dust intensity accessor unresolved (signature matches=%zu)\n", matches);
+        return 0;
+    }
+
+    CW_AOB_VERBOSE_LOG("[AOB] DustIntensity = %p\n", (void*)target);
     return target;
 }
 
@@ -1808,7 +1910,7 @@ bool RunAOBScan(){
     if (!windOnlyWeatherTick) {
         windOnlyWeatherTick = ScanModule("48 8B C4 53 48 81 EC B0 00 00 00 80 3D");
     }
-    const uintptr_t windOnlyAddrGetDust = ResolveDustIntensityTarget(windOnlyWeatherTick);
+    const uintptr_t windOnlyAddrGetDust = ResolveEffectiveWindTarget(windOnlyWeatherTick);
     if (!windOnlyAddrGetDust) {
         Log("[E] AOB: GetDustIntensity not found\n");
         return false;
@@ -1860,6 +1962,12 @@ bool RunAOBScan(){
     if(!rain){Log("[E] AOB: GetRainIntensity not found\n");return false;}
     CW_AOB_VERBOSE_LOG("[AOB] GetRainIntensity = %p\n",(void*)rain);
     ResolveWeatherStateLayout(tick, rain);
+    const uintptr_t addrWeatherCompose = ResolveWeatherCompose();
+    if (addrWeatherCompose) {
+        CW_AOB_VERBOSE_LOG("[AOB] WeatherCompose = %p\n", reinterpret_cast<void*>(addrWeatherCompose));
+    } else {
+        Log("[W] WeatherCompose unavailable; rain will use the legacy getter fallback\n");
+    }
 
     uintptr_t addrNativeLightningScheduler = ResolveNativeLightningScheduler(
         tick, rain, g_lightningElapsedOffset, g_lightningNextDelayOffset);
@@ -1879,10 +1987,6 @@ bool RunAOBScan(){
 
     bool processWindFallbackUsed = false;
     bool windPackFallbackUsed = false;
-    bool weatherFrameForcedUsed = false;
-    bool weatherFramePatternFallbackUsed = false;
-    bool fogForcedUsed = false;
-    bool fogPatternFallbackUsed = false;
     bool envManagerValidated = false;
     bool nullSentinelValidated = false;
     auto EC=[&](ptrdiff_t off,const char*n)->uintptr_t{
@@ -1896,6 +2000,7 @@ bool RunAOBScan(){
 
     uintptr_t addrProcessRain  = EC(is201WeatherTick ? 0x04B : 0x0AF,"ProcessRainState");
     uintptr_t addrGetSnow      = EC(is201WeatherTick ? 0x36F : 0x418,"GetSnowIntensity");
+    uintptr_t addrEffectiveWind = ResolveEffectiveWindTarget(tick);
     uintptr_t addrGetDust      = ResolveDustIntensityTarget(tick);
     // In 2.01 the first component helper owns the native rain/snow/dust sound
     // and effect state formerly reached by the later ProcessWind call.
@@ -1988,22 +2093,22 @@ bool RunAOBScan(){
         }
     }
     uintptr_t addrWindPack = 0;
-    uintptr_t addrCloudPack = ResolveCloudPackByCallPair(rain, addrGetDust);
+    uintptr_t addrCloudPack = ResolveCloudPackByCallPair(rain, addrEffectiveWind);
     if (!addrCloudPack) {
         addrCloudPack = ScanModule(
             "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 20 4D 8B D9 4C 8B C3 48 8B FA 48 8B F1 E8 ?? ?? ?? ?? 48 8B CE F3 0F 11 03 E8"
         );
     }
     if (addrCloudPack) {
-        uintptr_t cRainSite = 0, cDustSite = 0;
+        uintptr_t cRainSite = 0, cWindSite = 0;
         FindDirectCallToTargetInRange(addrCloudPack, 0x80, rain, &cRainSite);
-        if (cRainSite) FindDirectCallToTargetInRange(cRainSite + 5, 0x40, addrGetDust, &cDustSite);
+        if (cRainSite) FindDirectCallToTargetInRange(cRainSite + 5, 0x40, addrEffectiveWind, &cWindSite);
         uintptr_t cRain = cRainSite ? ReadCall(cRainSite) : 0;
-        uintptr_t cDust = cDustSite ? ReadCall(cDustSite) : 0;
+        uintptr_t cWind = cWindSite ? ReadCall(cWindSite) : 0;
         CW_AOB_VERBOSE_LOG("[AOB] CloudPack = %p\n", (void*)addrCloudPack);
-        if (!cRain || cRain != rain || (addrGetDust && (!cDust || cDust != addrGetDust))) {
-            Log("[W] CloudPack call validation mismatch rain=%p/%p dust=%p/%p\n",
-                (void*)cRain, (void*)rain, (void*)cDust, (void*)addrGetDust);
+        if (!cRain || cRain != rain || !cWind || cWind != addrEffectiveWind) {
+            Log("[W] CloudPack call validation mismatch rain=%p/%p wind=%p/%p\n",
+                (void*)cRain, (void*)rain, (void*)cWind, (void*)addrEffectiveWind);
         }
 
         // Resolve FUN_1432b8540 (wind constant pack) from caller of CloudPack.
@@ -2114,145 +2219,6 @@ bool RunAOBScan(){
     } else {
         Log("[W] SceneFrameUpdate not found (celestial direction override unavailable)\n");
     }
-    uintptr_t addrPPLayerUpdate = ScanModule(
-        "48 8B C4 48 89 58 10 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ??"
-    );
-    if (!addrPPLayerUpdate) {
-        addrPPLayerUpdate = ScanModule(
-            "48 8B C4 48 89 58 10 55 56 57 41 54 41 55 41 56 41 57 48 81 EC ?? ?? ?? ??"
-        );
-    }
-    if (addrPPLayerUpdate) {
-        CW_AOB_VERBOSE_LOG("[AOB] PostProcessLayerUpdate = %p\n", (void*)addrPPLayerUpdate);
-    } else {
-        Log("[W] PostProcessLayerUpdate not found (fog xref resolver disabled)\n");
-    }
-    uintptr_t addrWeatherFrameUpdate = 0;
-    uintptr_t addrAtmosFogBlend = 0;
-    if (addrPPLayerUpdate) {
-        uintptr_t xrefs[32] = {};
-        size_t nX = FindCallsitesTo(addrPPLayerUpdate, xrefs, 32);
-        CW_AOB_VERBOSE_LOG("[AOB] PostProcessLayerUpdate xrefs=%u\n", (unsigned)nX);
-        for (size_t i = 0; i < nX && i < 8; ++i) {
-            CW_AOB_VERBOSE_LOG("[AOB]   xref[%u] call@%p\n", (unsigned)i, (void*)xrefs[i]);
-        }
-
-        for (size_t i = 0; i < nX && !addrAtmosFogBlend; ++i) {
-            uintptr_t callSite = xrefs[i];
-            if (!addrWeatherFrameUpdate) {
-                uintptr_t wfUW = FindFunctionStartViaUnwind(callSite);
-                if (wfUW && LooksLikeWeatherFrameUpdate(wfUW)) {
-                    addrWeatherFrameUpdate = wfUW;
-                    CW_AOB_VERBOSE_LOG("[AOB] WeatherFrameUpdate(unwind) = %p (from call@%p)\n",
-                        (void*)wfUW, (void*)callSite);
-                } else if (callSite > 0x316) {
-                    uintptr_t wf = callSite - 0x316; // known relation in current family
-                    uint8_t wb[12] = {};
-                    ReadBytesSafe(wf, wb, sizeof(wb));
-                    if (LooksLikeWeatherFrameUpdate(wf)) {
-                        addrWeatherFrameUpdate = wf;
-                        CW_AOB_VERBOSE_LOG("[AOB] WeatherFrameUpdate(xref) = %p (from ppCall-0x316)\n", (void*)wf);
-                    } else {
-                        Log("[W] WeatherFrameUpdate(xref) mismatch at %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X; trying backward scan\n",
-                            (void*)wf, wb[0], wb[1], wb[2], wb[3], wb[4], wb[5], wb[6], wb[7], wb[8], wb[9], wb[10], wb[11]);
-                        uintptr_t wfBack = FindFuncStartByPrologueBack(callSite, 0x800);
-                        if (wfBack) {
-                            addrWeatherFrameUpdate = wfBack;
-                            CW_AOB_VERBOSE_LOG("[AOB] WeatherFrameUpdate(backscan) = %p (from call@%p)\n",
-                                (void*)wfBack, (void*)callSite);
-                        } else if (wb[0] == 0x48 && wb[1] == 0x8B && wb[2] == 0xC4) {
-                            addrWeatherFrameUpdate = wf;
-                            weatherFrameForcedUsed = true;
-                            Log("[W] WeatherFrameUpdate forced from xref delta: %p\n", (void*)wf);
-                        }
-                    }
-                }
-            }
-            uintptr_t forcedCand = 0;
-
-            if (callSite > 0x6E && *reinterpret_cast<uint8_t*>(callSite - 0x6E) == 0xE8) {
-                forcedCand = ReadCall(callSite - 0x6E);
-                uint8_t fp[8] = {};
-                ReadBytesSafe(forcedCand, fp, sizeof(fp));
-                CW_AOB_VERBOSE_LOG("[AOB] candidate fixed d=0x6E call@%p -> %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X looks=%d\n",
-                    (void*)(callSite - 0x6E), (void*)forcedCand,
-                    fp[0], fp[1], fp[2], fp[3], fp[4], fp[5], fp[6], fp[7],
-                    LooksLikeAtmosFogBlend(forcedCand) ? 1 : 0);
-                if (LooksLikeAtmosFogBlend(forcedCand)) {
-                    addrAtmosFogBlend = forcedCand;
-                    CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend(xref-fixed) = %p (ppCall-0x6E)\n", (void*)forcedCand);
-                    break;
-                }
-            }
-
-            uintptr_t nearestCand = 0;
-            int nearestDist = 0x7FFFFFFF;
-            for (int d = 0x40; d <= 0xA0; ++d) {
-                uintptr_t fogSite = callSite - d;
-                if (*reinterpret_cast<uint8_t*>(fogSite) != 0xE8) continue;
-                uintptr_t cand = ReadCall(fogSite);
-                if (d < nearestDist) {
-                    nearestDist = d;
-                    nearestCand = cand;
-                }
-                uint8_t cp[8] = {};
-                ReadBytesSafe(cand, cp, sizeof(cp));
-                CW_AOB_VERBOSE_LOG("[AOB] candidate d=0x%X call@%p -> %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X looks=%d\n",
-                    d, (void*)fogSite, (void*)cand,
-                    cp[0], cp[1], cp[2], cp[3], cp[4], cp[5], cp[6], cp[7],
-                    LooksLikeAtmosFogBlend(cand) ? 1 : 0);
-                if (LooksLikeAtmosFogBlend(cand)) {
-                    addrAtmosFogBlend = cand;
-                    CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend(xref) = %p (ppCall-%d at %p)\n",
-                        (void*)cand, d, (void*)fogSite);
-                    break;
-                }
-            }
-
-            if (!addrAtmosFogBlend) {
-                if (forcedCand) {
-                    addrAtmosFogBlend = forcedCand;
-                    fogForcedUsed = true;
-                    CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend(fallback) = %p\n", (void*)forcedCand);
-                } else if (nearestCand) {
-                    addrAtmosFogBlend = nearestCand;
-                    fogForcedUsed = true;
-                    CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend(fallback) = %p\n", (void*)nearestCand);
-                }
-            }
-        }
-    }
-
-    if (!addrAtmosFogBlend) {
-        fogPatternFallbackUsed = true;
-        addrAtmosFogBlend = ScanModule(
-            "48 83 EC 38 48 8B 41 88 0F ?? 74 24 20 F3 0F 10 48 10 48 8B 41 90 F3 0F 10 40 10"
-        );
-        if (!addrAtmosFogBlend) {
-            addrAtmosFogBlend = ScanModule(
-                "48 83 EC 38 48 8B 81 88 00 00 00 C5 F8 29 74 24 20 "
-                "C5 FA 10 58 10 48 8B 81 90 00 00 00 C5 FA 10 40 10"
-            );
-        }
-    }
-    if (!addrWeatherFrameUpdate) {
-        weatherFramePatternFallbackUsed = true;
-        addrWeatherFrameUpdate = ScanModule(
-            "48 8B C4 ?? ?? ?? ?? 48 8D ?? ?? 48 81 EC ?? ?? ?? ??"
-        );
-    }
-    if (addrWeatherFrameUpdate) {
-        CW_AOB_VERBOSE_LOG("[AOB] WeatherFrameUpdate = %p\n", (void*)addrWeatherFrameUpdate);
-    } else {
-        Log("[W] WeatherFrameUpdate not found (fog-frame force disabled)\n");
-    }
-    g_addrWeatherFrameUpdateResolved = addrWeatherFrameUpdate;
-    if (addrAtmosFogBlend) {
-        CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend = %p\n", (void*)addrAtmosFogBlend);
-    } else {
-        Log("[W] AtmosFogBlend not found (fog direct override disabled)\n");
-    }
-
     // The 2.01 component uses the same environment global but dispatches it
     // through vtable slot 0x60 instead of 0x40.
     uintptr_t envSite = tick + (is201WeatherTick ? 0x0B8 : 0x0B4);
@@ -2425,11 +2391,9 @@ bool RunAOBScan(){
     g_pDeactivateEffect = reinterpret_cast<DeactivateEffect_fn>(addrDeactivate);
     g_pSetIntensity   = reinterpret_cast<SetIntensity_fn>  (addrSetIntensity);
     g_pGameFieldInfoResolver = reinterpret_cast<GameFieldInfoResolver_fn>(addrGameFieldInfoResolver);
-    g_pOrigAtmosFogBlend = reinterpret_cast<AtmosFogBlend_fn>(addrAtmosFogBlend);
-    if (g_pOrigAtmosFogBlend) {
-        CW_AOB_VERBOSE_LOG("[AOB] AtmosFogBlend helper ready\n");
-    }
-
+#if !defined(CW_WIND_ONLY)
+    g_pOrigGetRainIntensity = reinterpret_cast<GetWeatherIntensity_fn>(rain);
+#endif
     if (EnableWeatherTickHook()) {
         InstallHook((void*)tick,(void*)&Hooked_WeatherTick,
                     (void**)&g_pOriginalTick,"WeatherTick",false);
@@ -2446,31 +2410,19 @@ bool RunAOBScan(){
 
     if (EnableIntensityHooks()) {
 #if !defined(CW_WIND_ONLY)
-        InstallHook((void*)rain,(void*)&Hooked_GetRainIntensity,
-                    (void**)&g_pOrigGetRainIntensity,"GetRainIntensity",false);
-        if(addrGetSnow)
-            InstallHook((void*)addrGetSnow,(void*)&Hooked_GetSnowIntensity,
-                        (void**)&g_pOrigGetSnowIntensity,"GetSnowIntensity",false);
+        if (addrWeatherCompose) {
+            InstallHook((void*)addrWeatherCompose, (void*)&Hooked_WeatherCompose,
+                        (void**)&g_pOrigWeatherCompose, "WeatherCompose", false);
+        }
 #endif
         if(addrGetDust)
             InstallHook((void*)addrGetDust,(void*)&Hooked_GetDustIntensity,
                         (void**)&g_pOrigGetDustIntensity,"GetDustIntensity",false);
     }
     if (EnableWindHooks() || EnableSceneFrameHook()) {
-        if(EnableProcessWindHook() && addrProcessWind)
-            InstallHook((void*)addrProcessWind,(void*)&Hooked_ProcessWindState,
-                        (void**)&g_pOrigProcessWindState,"ProcessWindState",false);
-        if(EnableWindPackHook() && addrWindPack)
-            InstallHook((void*)addrWindPack,(void*)&Hooked_WindPack,
-                        (void**)&g_pOrigWindPack,"WindPack",false);
         if(EnableSceneFrameHook() && addrSceneFrameUpdate)
             InstallHook((void*)addrSceneFrameUpdate,(void*)&Hooked_SceneFrameUpdate,
                         (void**)&g_pOrigSceneFrameUpdate,"SceneFrameUpdate",false);
-    }
-    if (EnableFogHooks()) {
-        if(addrWeatherFrameUpdate)
-            InstallHook((void*)addrWeatherFrameUpdate,(void*)&Hooked_WeatherFrameUpdate,
-                        (void**)&g_pOrigWeatherFrameUpdate,"WeatherFrameUpdate",false);
     }
     if (EnableRegionHook()) {
         if(addrMinimapRegionLabels)
@@ -2486,13 +2438,12 @@ bool RunAOBScan(){
     }
     if (!DevLaunchOptionIsFullProfile()) {
 #if defined(CW_DEV_BUILD)
-        Log("[dev] Hook isolation active: option=%s tick=%d intensity=%d wind=%d sceneFrame=%d fog=%d region=%d\n",
+        Log("[dev] Hook isolation active: option=%s tick=%d intensity=%d wind=%d sceneFrame=%d region=%d\n",
             DevLaunchOptionName(g_devLaunchOption.load()),
             EnableWeatherTickHook() ? 1 : 0,
             EnableIntensityHooks() ? 1 : 0,
             EnableWindHooks() ? 1 : 0,
             EnableSceneFrameHook() ? 1 : 0,
-            EnableFogHooks() ? 1 : 0,
             EnableRegionHook() ? 1 : 0);
 #else
         Log("[W] Gameplay hooks isolation active\n");
@@ -2505,21 +2456,27 @@ bool RunAOBScan(){
         !weatherTickReady ? "required hook missing"
             : (g_pWeatherTickVtableSlot ? "vtable hook installed" : "direct hook installed"));
 
+    const bool weatherComposeReady = addrWeatherCompose && g_pOrigWeatherCompose;
+    SetAobTargetHealth(AobTargetId::WeatherCompose,
+        weatherComposeReady ? RuntimeHealthState::Ready : RuntimeHealthState::Degraded,
+        addrWeatherCompose,
+        weatherComposeReady ? "finalized weather-table hook installed" : "weather-table override unavailable");
+
     SetAobTargetHealth(AobTargetId::GetRainIntensity,
         (rain && g_pOrigGetRainIntensity)
             ? RuntimeHealthState::Ready
             : RuntimeHealthState::Disabled,
         rain,
-        !(rain && g_pOrigGetRainIntensity) ? "required hook missing"
-            : "hook installed");
+        !(rain && g_pOrigGetRainIntensity) ? "native getter unavailable"
+            : "resolved as thunder scheduler helper; no detour installed");
 
     SetAobTargetHealth(AobTargetId::GetSnowIntensity,
-        (addrGetSnow && g_pOrigGetSnowIntensity)
+        addrGetSnow
             ? RuntimeHealthState::Ready
             : RuntimeHealthState::Disabled,
         addrGetSnow,
-        !(addrGetSnow && g_pOrigGetSnowIntensity) ? "unresolved or hook failed"
-            : "hook installed");
+        !addrGetSnow ? "native accessor unresolved"
+            : "resolved; finalized weather-table path active");
 
     SetAobTargetHealth(AobTargetId::GetDustIntensity,
         (addrGetDust && g_pOrigGetDustIntensity)
@@ -2529,14 +2486,15 @@ bool RunAOBScan(){
         !(addrGetDust && g_pOrigGetDustIntensity) ? "unresolved or hook failed"
             : "hook installed");
 
-    const bool processWindInstalled = addrProcessWind && g_pOrigProcessWindState;
+    const bool processWindResolved = addrProcessWind != 0;
     SetAobTargetHealth(AobTargetId::ProcessWindState,
-        processWindInstalled
+        processWindResolved
             ? RuntimeHealthState::Ready
             : RuntimeHealthState::Disabled,
         addrProcessWind,
-        !processWindInstalled ? "unresolved or hook failed"
-            : (processWindFallbackUsed ? "signature-resolved + hook installed" : "hook installed"));
+        !processWindResolved ? "native weather-audio function unresolved"
+            : (processWindFallbackUsed ? "signature-resolved; no detour required"
+                                       : "resolved; no detour required"));
 
     SetAobTargetHealth(AobTargetId::ActivateEffect,
         addrActivate
@@ -2554,14 +2512,14 @@ bool RunAOBScan(){
         !addrSetIntensity ? "Tick+0x2CC unresolved"
             : "resolved");
 
-    const bool windPackInstalled = addrWindPack && g_pOrigWindPack;
+    const bool windPackResolved = addrWindPack != 0;
     SetAobTargetHealth(AobTargetId::WindPack,
-        windPackInstalled
+        windPackResolved
             ? RuntimeHealthState::Ready
             : RuntimeHealthState::Disabled,
         addrWindPack,
-        !windPackInstalled ? "unresolved or hook failed"
-            : "hook installed");
+        !windPackResolved ? "native atmosphere packer unresolved"
+            : "resolved as atmosphere-layout anchor; no detour installed");
 
     const bool sceneFrameInstalled = addrSceneFrameUpdate && g_pOrigSceneFrameUpdate;
     SetAobTargetHealth(AobTargetId::SceneFrameUpdate,
@@ -2571,22 +2529,6 @@ bool RunAOBScan(){
         addrSceneFrameUpdate,
         !sceneFrameInstalled ? "scene constant buffer hook unavailable"
             : "hook installed");
-
-    const bool weatherFrameInstalled = addrWeatherFrameUpdate && g_pOrigWeatherFrameUpdate;
-    SetAobTargetHealth(AobTargetId::WeatherFrameUpdate,
-        weatherFrameInstalled
-            ? RuntimeHealthState::Ready
-            : RuntimeHealthState::Disabled,
-        addrWeatherFrameUpdate,
-        !weatherFrameInstalled ? "fog frame hook unavailable"
-            : "hook installed");
-
-    const bool fogBlendCallable = addrAtmosFogBlend && g_pOrigAtmosFogBlend;
-    SetAobTargetHealth(AobTargetId::AtmosFogBlend,
-        fogBlendCallable ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,
-        addrAtmosFogBlend,
-        fogBlendCallable ? "callable helper resolved; driven from WeatherFrameUpdate"
-            : "fog blend helper unavailable");
 
     SetAobTargetHealth(AobTargetId::EnvManagerPtr,
         envManagerValidated ? RuntimeHealthState::Ready : RuntimeHealthState::Disabled,

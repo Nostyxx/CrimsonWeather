@@ -27,7 +27,6 @@ float ClampPresetCloudAmount(bool extendedSliderRange, float value) { return Cla
 float ClampPresetCloudHeight(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, -15.0f, 15.0f, -50.0f, 50.0f); }
 float ClampPresetCloudDensity(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 10.0f, 0.0f, 50.0f); }
 float ClampPresetCloudWide(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 15.0f, 0.0f, 50.0f); }
-float ClampPresetFogPercent(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 100.0f, 0.0f, 500.0f); }
 float ClampPresetNativeFog(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 15.0f, 0.0f, 50.0f); }
 float ClampPresetWind(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 15.0f, 0.0f, 50.0f); }
 float ClampPresetPuddleScale(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 1.0f, 0.0f, 5.0f); }
@@ -166,7 +165,6 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         EnabledFloatNearlyEqual(a.moonRollEnabled, a.moonRoll, b.moonRollEnabled, b.moonRoll) &&
         EnabledStringEquals(a.moonTextureEnabled, a.moonTexture, b.moonTextureEnabled, b.moonTexture) &&
         EnabledStringEquals(a.milkywayTextureEnabled, a.milkywayTexture, b.milkywayTextureEnabled, b.milkywayTexture) &&
-        EnabledFloatNearlyEqual(a.fogEnabled, a.fogPercent, b.fogEnabled, b.fogPercent) &&
         EnabledFloatNearlyEqual(a.nativeFogEnabled, a.nativeFog, b.nativeFogEnabled, b.nativeFog) &&
         EnabledColorNearlyEqual(a.volumeFogScatterColorEnabled, a.volumeFogScatterColor, b.volumeFogScatterColorEnabled, b.volumeFogScatterColor, true) &&
         EnabledColorNearlyEqual(a.mieScatterColorEnabled, a.mieScatterColor, b.mieScatterColorEnabled, b.mieScatterColor, true) &&
@@ -178,11 +176,7 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         a.noFog == b.noFog &&
         FloatNearlyEqual(a.wind, b.wind) &&
         a.noWind == b.noWind &&
-        EnabledFloatNearlyEqual(a.puddleScaleEnabled, a.puddleScale, b.puddleScaleEnabled, b.puddleScale) &&
-        a.renodxAuroraRegionMaskEnabled == b.renodxAuroraRegionMaskEnabled &&
-        (!a.renodxAuroraRegionMaskEnabled ||
-            (a.renodxAuroraGateEnabled == b.renodxAuroraGateEnabled &&
-                (a.renodxAuroraRegionMask & 126u) == (b.renodxAuroraRegionMask & 126u)));
+        EnabledFloatNearlyEqual(a.puddleScaleEnabled, a.puddleScale, b.puddleScaleEnabled, b.puddleScale);
 }
 
 bool PresetMaskAny(const WeatherPresetMask& mask) {
@@ -195,7 +189,7 @@ bool PresetMaskAny(const WeatherPresetMask& mask) {
         mask.exp2C || mask.exp2D || mask.cloudVariation ||
         mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunLightIntensity || mask.sunYaw || mask.sunPitch ||
         mask.moonSize || mask.moonLightIntensity || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture ||
-        mask.fog || mask.nativeFog || mask.volumeFogScatterColor || mask.mieScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
+        mask.nativeFog || mask.volumeFogScatterColor || mask.mieScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
         mask.mieAerosolAbsorption || mask.heightFogBaseline || mask.heightFogFalloff || mask.noFog || mask.wind ||
         mask.noWind || mask.puddleScale;
 }
@@ -245,7 +239,6 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.moonRoll = mask.moonRoll;
     out.moonTexture = mask.moonTexture;
     out.milkywayTexture = mask.milkywayTexture;
-    out.fog = mask.fog;
     out.nativeFog = mask.nativeFog;
     out.volumeFogScatterColor = mask.volumeFogScatterColor;
     out.mieScatterColor = mask.mieScatterColor;
@@ -306,7 +299,6 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.moonRoll = source.moonRoll;
     mask.moonTexture = source.moonTexture;
     mask.milkywayTexture = source.milkywayTexture;
-    mask.fog = source.fog;
     mask.nativeFog = source.nativeFog;
     mask.volumeFogScatterColor = source.volumeFogScatterColor;
     mask.mieScatterColor = source.mieScatterColor;
@@ -366,7 +358,6 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.moonRoll == b.moonRoll &&
         a.moonTexture == b.moonTexture &&
         a.milkywayTexture == b.milkywayTexture &&
-        a.fog == b.fog &&
         a.nativeFog == b.nativeFog &&
         a.volumeFogScatterColor == b.volumeFogScatterColor &&
         a.mieScatterColor == b.mieScatterColor &&
@@ -426,7 +417,6 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.moonRoll = true;
     mask.moonTexture = true;
     mask.milkywayTexture = true;
-    mask.fog = true;
     mask.nativeFog = true;
     mask.volumeFogScatterColor = true;
     mask.mieScatterColor = true;
@@ -487,7 +477,6 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.moonRoll = !EnabledFloatNearlyEqual(base.moonRollEnabled, base.moonRoll, value.moonRollEnabled, value.moonRoll);
     mask.moonTexture = !EnabledStringEquals(base.moonTextureEnabled, base.moonTexture, value.moonTextureEnabled, value.moonTexture);
     mask.milkywayTexture = !EnabledStringEquals(base.milkywayTextureEnabled, base.milkywayTexture, value.milkywayTextureEnabled, value.milkywayTexture);
-    mask.fog = !EnabledFloatNearlyEqual(base.fogEnabled, base.fogPercent, value.fogEnabled, value.fogPercent);
     mask.nativeFog = !EnabledFloatNearlyEqual(base.nativeFogEnabled, base.nativeFog, value.nativeFogEnabled, value.nativeFog);
     mask.volumeFogScatterColor = !EnabledColorNearlyEqual(base.volumeFogScatterColorEnabled, base.volumeFogScatterColor, value.volumeFogScatterColorEnabled, value.volumeFogScatterColor, true);
     mask.mieScatterColor = !EnabledColorNearlyEqual(base.mieScatterColorEnabled, base.mieScatterColor, value.mieScatterColorEnabled, value.mieScatterColor, true);
@@ -645,10 +634,6 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
     if (mask.milkywayTexture) {
         target.milkywayTextureEnabled = source.milkywayTextureEnabled;
         target.milkywayTexture = source.milkywayTexture;
-    }
-    if (mask.fog) {
-        target.fogEnabled = source.fogEnabled;
-        target.fogPercent = source.fogPercent;
     }
     if (mask.nativeFog) {
         target.nativeFogEnabled = source.nativeFogEnabled;
@@ -817,8 +802,6 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.moonTexture = t >= 0.5f ? b.moonTexture : a.moonTexture;
     out.milkywayTextureEnabled = ChoosePresetBool(a.milkywayTextureEnabled, b.milkywayTextureEnabled, t);
     out.milkywayTexture = t >= 0.5f ? b.milkywayTexture : a.milkywayTexture;
-    out.fogEnabled = a.fogEnabled || b.fogEnabled;
-    out.fogPercent = LerpPresetFloat(a.fogPercent, b.fogPercent, t);
     out.nativeFogEnabled = a.nativeFogEnabled || b.nativeFogEnabled;
     out.nativeFog = LerpPresetFloat(a.nativeFog, b.nativeFog, t);
     out.volumeFogScatterColorEnabled = a.volumeFogScatterColorEnabled || b.volumeFogScatterColorEnabled;
@@ -840,9 +823,6 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.noWind = ChoosePresetBool(a.noWind, b.noWind, t);
     out.puddleScaleEnabled = a.puddleScaleEnabled || b.puddleScaleEnabled;
     out.puddleScale = LerpPresetFloat(a.puddleScale, b.puddleScale, t);
-    out.renodxAuroraRegionMaskEnabled = ChoosePresetBool(a.renodxAuroraRegionMaskEnabled, b.renodxAuroraRegionMaskEnabled, t);
-    out.renodxAuroraGateEnabled = ChoosePresetBool(a.renodxAuroraGateEnabled, b.renodxAuroraGateEnabled, t);
-    out.renodxAuroraRegionMask = t >= 0.5f ? b.renodxAuroraRegionMask : a.renodxAuroraRegionMask;
     return out;
 }
 

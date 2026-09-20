@@ -133,7 +133,7 @@
     <ClInclude Include="include\community_service.h" />
     <ClInclude Include="include\mod_metadata.h" />
     <ClInclude Include="include\community_ui.h" />
-    <ClInclude Include="include\renodx_bridge.h" />
+    <ClInclude Include="include\performance_benchmark.h" />
     <ClInclude Include="include\update_service.h" />
     <ClInclude Include="include\sky_image_loader.h" />
     <ClInclude Include="include\sky_texture_override.h" />
@@ -154,9 +154,9 @@
     <ClCompile Include="community\update_service.cpp" />
     <ClCompile Include="core\hotkey_service.cpp" />
     <ClCompile Include="core\runtime_state.cpp" />
+    <ClCompile Include="diagnostics\performance_benchmark.cpp" Condition="'$(CWBuildFlavor)'=='Dev'" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="game\aob_scan.cpp" />
-    <ClCompile Include="game\renodx_bridge.cpp" />
     <ClCompile Include="game\sky_image_loader.cpp" />
     <ClCompile Include="game\sky_texture_override.cpp" />
     <ClCompile Include="game\weather_hooks.cpp" />
@@ -178,7 +178,6 @@
     <ClCompile Include="ui\overlay_favorites.cpp" />
     <ClCompile Include="ui\overlay_general.cpp" />
     <ClCompile Include="ui\overlay_presets.cpp" />
-    <ClCompile Include="ui\overlay_renodx.cpp" />
     <ClCompile Include="ui\overlay_status.cpp" />
     <ClCompile Include="ui\overlay_weather.cpp" />
     <ClCompile Include="ui\overlay_widgets.cpp" />

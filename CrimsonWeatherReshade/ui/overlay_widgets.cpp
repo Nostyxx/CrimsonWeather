@@ -279,12 +279,11 @@ void DrawHookUnavailable(RuntimeHookId hook) {
 }
 
 bool WeatherTickReady() { return HookReady(RuntimeHookId::WeatherTick); }
-bool RainHookReady() { return HookReady(RuntimeHookId::GetRainIntensity); }
-bool SnowHookReady() { return HookReady(RuntimeHookId::GetSnowIntensity); }
+bool RainHookReady() { return HookReady(RuntimeHookId::WeatherCompose); }
+bool SnowHookReady() { return HookReady(RuntimeHookId::WeatherCompose); }
 bool DustHookReady() { return HookReady(RuntimeHookId::GetDustIntensity); }
-bool WindPackReady() { return HookReady(RuntimeHookId::WindPack); }
+bool WindPackReady() { return HookReady(RuntimeHookId::WeatherCompose); }
 bool SceneFrameReady() { return HookReady(RuntimeHookId::SceneFrameUpdate); }
-bool WeatherFrameReady() { return HookReady(RuntimeHookId::WeatherFrameUpdate); }
 bool RealGameTimeReady() { return HookReady(RuntimeHookId::GameTimeGetter); }
 
 bool DrawResetButton(const char* id) {

@@ -41,18 +41,6 @@ bool TryParseFloat(const std::string& text, float& outValue) {
     return true;
 }
 
-bool TryParseUInt32(const std::string& text, uint32_t& outValue) {
-    std::string trimmed = TrimCopy(text);
-    if (trimmed.empty()) return false;
-    char* endPtr = nullptr;
-    const unsigned long parsed = strtoul(trimmed.c_str(), &endPtr, 0);
-    if (endPtr == trimmed.c_str() || (endPtr && *endPtr != '\0')) {
-        return false;
-    }
-    outValue = static_cast<uint32_t>(parsed);
-    return true;
-}
-
 struct PresetParseState {
     WeatherPresetData data{};
     WeatherPresetMask mask{};
@@ -90,7 +78,6 @@ struct PresetParseState {
     bool moonRollEnabledSeen = false;
     bool moonTextureEnabledSeen = false;
     bool milkywayTextureEnabledSeen = false;
-    bool fogEnabledSeen = false;
     bool nativeFogEnabledSeen = false;
     bool volumeFogScatterColorEnabledSeen = false;
     bool mieScatterColorEnabledSeen = false;
@@ -100,8 +87,6 @@ struct PresetParseState {
     bool heightFogBaselineEnabledSeen = false;
     bool heightFogFalloffEnabledSeen = false;
     bool puddleScaleEnabledSeen = false;
-    bool renodxAuroraRegionMaskSeen = false;
-    bool renodxAuroraGateEnabledSeen = false;
     bool sawLegacyAlias = false;
 };
 
@@ -159,7 +144,6 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "MoonRollEnabled") || KeyEquals(key, "MoonRoll")) mask.moonRoll = true;
     else if (KeyEquals(key, "MoonTextureEnabled") || KeyEquals(key, "MoonTexture")) mask.moonTexture = true;
     else if (KeyEquals(key, "MilkywayTextureEnabled") || KeyEquals(key, "MilkywayTexture")) mask.milkywayTexture = true;
-    else if (KeyEquals(key, "FogEnabled") || KeyEquals(key, "Fog")) mask.fog = true;
     else if (KeyEquals(key, "NativeFogEnabled") || KeyEquals(key, "NativeFog") ||
              KeyEquals(key, "PlainFogEnabled") || KeyEquals(key, "PlainFog")) mask.nativeFog = true;
     else if (KeyEquals(key, "VolumeFogScatterColorEnabled") ||
@@ -227,7 +211,6 @@ bool ParseSnowPresetKeyValue(const std::string& key, const std::string& value, P
 void ParsePresetKeyValue(const std::string& key, const std::string& value, PresetParseState& state) {
     bool boolValue = false;
     float floatValue = 0.0f;
-    uint32_t uintValue = 0;
     WeatherPresetData& data = state.data;
     MarkPresetMaskForKey(key, state.mask);
 
@@ -489,13 +472,6 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "MilkywayTexture")) {
         data.milkywayTexture = TrimCopy(value);
-    } else if (KeyEquals(key, "FogEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.fogEnabled = boolValue;
-            state.fogEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "Fog")) {
-        if (TryParseFloat(value, floatValue)) data.fogPercent = floatValue;
     } else if (KeyEquals(key, "NativeFogEnabled") || KeyEquals(key, "PlainFogEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.nativeFogEnabled = boolValue;
@@ -577,19 +553,6 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "PuddleScale")) {
         if (TryParseFloat(value, floatValue)) data.puddleScale = floatValue;
-    } else if (KeyEquals(key, "AuroraEnabled") || KeyEquals(key, "AuroraGateEnabled") || KeyEquals(key, "RenoDxAuroraEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.renodxAuroraRegionMaskEnabled = true;
-            data.renodxAuroraGateEnabled = boolValue;
-            state.renodxAuroraRegionMaskSeen = true;
-            state.renodxAuroraGateEnabledSeen = true;
-        }
-    } else if (KeyEquals(key, "AuroraRegionMask") || KeyEquals(key, "RenoDxAuroraRegionMask") || KeyEquals(key, "RenoDXAuroraRegionMask")) {
-        if (TryParseUInt32(value, uintValue)) {
-            data.renodxAuroraRegionMaskEnabled = true;
-            data.renodxAuroraRegionMask = uintValue & 126u;
-            state.renodxAuroraRegionMaskSeen = true;
-        }
     }
 }
 
@@ -641,7 +604,6 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path, bool exten
     if (!data.milkywayTextureEnabled) {
         data.milkywayTexture.clear();
     }
-    if (!state.fogEnabledSeen) data.fogEnabled = !FloatNearlyEqual(data.fogPercent, 0.0f);
     if (!state.volumeFogScatterColorEnabledSeen) data.volumeFogScatterColorEnabled = false;
     if (!state.mieScatterColorEnabledSeen) data.mieScatterColorEnabled = false;
     if (!state.mieScaleHeightEnabledSeen) data.mieScaleHeightEnabled = false;
@@ -698,7 +660,6 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path, bool exten
     data.moonYaw = ClampPresetYaw(extendedSliderRange, data.moonYaw);
     data.moonPitch = ClampPresetPitch(extendedSliderRange, data.moonPitch);
     data.moonRoll = ClampPresetYaw(extendedSliderRange, data.moonRoll);
-    data.fogPercent = ClampPresetFogPercent(extendedSliderRange, data.fogPercent);
     data.wind = ClampPresetWind(extendedSliderRange, data.wind);
     data.puddleScale = ClampPresetPuddleScale(extendedSliderRange, data.puddleScale);
     data.cloudAmount = ClampPresetCloudAmount(extendedSliderRange, data.cloudAmount);
@@ -706,12 +667,6 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path, bool exten
     data.cloudDensity = ClampPresetCloudDensity(extendedSliderRange, data.cloudDensity);
     data.midClouds = ClampPresetCloudWide(extendedSliderRange, data.midClouds);
     data.highClouds = ClampPresetCloudWide(extendedSliderRange, data.highClouds);
-    data.renodxAuroraRegionMaskEnabled = state.renodxAuroraRegionMaskSeen;
-    if (data.renodxAuroraRegionMaskEnabled && !state.renodxAuroraGateEnabledSeen) {
-        data.renodxAuroraGateEnabled = true;
-    }
-    data.renodxAuroraRegionMask &= 126u;
-
     if (state.sawLegacyAlias) {
         Log("[preset] loaded legacy cloud aliases from %s\n", path);
     }
@@ -867,8 +822,6 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data, bool extende
     out += '\n';
 
     AppendPresetLine(out, "[Atmosphere]");
-    AppendPresetKeyValue(out, "FogEnabled", FormatPresetBool(data.fogEnabled));
-    AppendPresetKeyValue(out, "Fog", FormatPresetFloat(ClampPresetFogPercent(extendedSliderRange, data.fogPercent)));
     AppendPresetKeyValue(out, "NativeFogEnabled", FormatPresetBool(data.nativeFogEnabled));
     AppendPresetKeyValue(out, "NativeFog", FormatPresetFloat(ClampPresetNativeFog(extendedSliderRange, data.nativeFog)));
     AppendPresetKeyValue(out, "VolumeFogScatterColorEnabled", FormatPresetBool(data.volumeFogScatterColorEnabled));
@@ -896,13 +849,6 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data, bool extende
     AppendPresetKeyValue(out, "NoFog", FormatPresetBool(data.noFog));
     AppendPresetKeyValue(out, "Wind", FormatPresetFloat(ClampPresetWind(extendedSliderRange, data.wind)));
     AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
-    if (data.renodxAuroraRegionMaskEnabled) {
-        out += '\n';
-        AppendPresetLine(out, "[RenoDX]");
-        AppendPresetKeyValue(out, "AuroraEnabled", FormatPresetBool(data.renodxAuroraGateEnabled));
-        AppendPresetKeyValue(out, "AuroraRegionMask", std::to_string(data.renodxAuroraRegionMask & 126u));
-    }
-
     return out;
 }
 
@@ -1101,13 +1047,9 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         out += '\n';
     }
 
-    if (mask.fog || mask.nativeFog || mask.volumeFogScatterColor || mask.mieScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
+    if (mask.nativeFog || mask.volumeFogScatterColor || mask.mieScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
         mask.mieAerosolAbsorption || mask.heightFogBaseline || mask.heightFogFalloff || mask.noFog || mask.wind || mask.noWind) {
         AppendRegionSectionHeader(out, regionId, "Atmosphere");
-        if (mask.fog) {
-            AppendPresetKeyValue(out, "FogEnabled", FormatPresetBool(data.fogEnabled));
-            AppendPresetKeyValue(out, "Fog", FormatPresetFloat(ClampPresetFogPercent(extendedSliderRange, data.fogPercent)));
-        }
         if (mask.nativeFog) {
             AppendPresetKeyValue(out, "NativeFogEnabled", FormatPresetBool(data.nativeFogEnabled));
             AppendPresetKeyValue(out, "NativeFog", FormatPresetFloat(ClampPresetNativeFog(extendedSliderRange, data.nativeFog)));

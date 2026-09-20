@@ -45,7 +45,6 @@ enum class DevLaunchOption : uint8_t {
     IntensityHooks,
     WindHooks,
     FrameHooks,
-    FogHooks,
     RegionHook,
 };
 
@@ -60,6 +59,7 @@ bool DevLaunchOptionBypassesStartupHealth(DevLaunchOption option);
 inline Config g_cfg{};
 #if defined(CW_DEV_BUILD)
 inline std::atomic<DevLaunchOption> g_devLaunchOption{ DevLaunchOption::Full };
+inline std::atomic<bool> g_devPerformanceBenchmarkActive{ false };
 #endif
 inline FILE* g_logFile = nullptr;
 #if defined(CW_DEV_BUILD)
@@ -165,15 +165,12 @@ inline constexpr EffectSlot kSlots[] = {
 inline constexpr int kEffectCount = 9;
 
 typedef void(__fastcall* WeatherTick_fn)(long long self, float dt);
+typedef long long(__fastcall* WeatherCompose_fn)(long long weatherState, float dt);
 typedef void(__fastcall* ActivateEffect_fn)(long long self, int id, long long* slotA, long long* slotB, float v);
 typedef long long(__fastcall* DeactivateEffect_fn)(int* handle);
 typedef void(__fastcall* SetIntensity_fn)(long long particleMgr, int handle, float v);
 typedef __m128(__fastcall* GetWeatherIntensity_fn)(long long weatherState);
 typedef __m128(__fastcall* GetDustIntensity_fn)(long long weatherState);
-typedef void(__fastcall* AtmosFogBlend_fn)(long long ctx, long long outParams);
-typedef void(__fastcall* WeatherFrameUpdate_fn)(long long* self, float dt);
-typedef void(__fastcall* ProcessWindState_fn)(long long self);
-typedef void(__fastcall* WindPack_fn)(long long* windNodePtr, float* packedOut);
 typedef void*(__fastcall* SceneFrameUpdate_fn)(long long self, long long context);
 typedef long long(__fastcall* GameTimeGetter_fn)(unsigned char* source, long long outTime);
 typedef long long(__fastcall* GameTimeSetter_fn)(long long manager, long long time,
@@ -194,8 +191,6 @@ typedef uint32_t(__fastcall* AkPostEventById_fn)(
     uint32_t playingId);
 typedef long long(__fastcall* MinimapRegionLabels_fn)(long long self, unsigned short areaId, unsigned short subAreaId);
 typedef void(__fastcall* MinimapGameTimeUpdate_fn)(long long self, long long eventContext);
-typedef long long*(__fastcall* FogReceiverGetter_fn)(long long provider);
-typedef void(__fastcall* FogReceiverSet_fn)(long long* receiver, float value);
 typedef double(__fastcall* EnvGetTimeOfDay_fn)(void* envMgr);
 typedef void(__fastcall* EntitySetTimeOfDay_fn)(long long entity, float value);
 typedef void*(__fastcall* NativeToastCreateString_fn)(const char* text);
@@ -204,16 +199,12 @@ typedef void(__fastcall* NativeToastReleaseString_fn)(void* messageHandle);
 typedef long long(__fastcall* NativeToastShowAlert_fn)(void* uiRoot, const char* text, unsigned int textId);
 
 inline WeatherTick_fn g_pOriginalTick = nullptr;
+inline WeatherCompose_fn g_pOrigWeatherCompose = nullptr;
 inline ActivateEffect_fn g_pActivateEffect = nullptr;
 inline DeactivateEffect_fn g_pDeactivateEffect = nullptr;
 inline SetIntensity_fn g_pSetIntensity = nullptr;
 inline GetWeatherIntensity_fn g_pOrigGetRainIntensity = nullptr;
-inline GetWeatherIntensity_fn g_pOrigGetSnowIntensity = nullptr;
 inline GetDustIntensity_fn g_pOrigGetDustIntensity = nullptr;
-inline AtmosFogBlend_fn g_pOrigAtmosFogBlend = nullptr;
-inline WeatherFrameUpdate_fn g_pOrigWeatherFrameUpdate = nullptr;
-inline ProcessWindState_fn g_pOrigProcessWindState = nullptr;
-inline WindPack_fn g_pOrigWindPack = nullptr;
 inline SceneFrameUpdate_fn g_pOrigSceneFrameUpdate = nullptr;
 inline ptrdiff_t g_sceneFrameSourceOffset = 0;
 inline ptrdiff_t g_sceneFrameOwnerOffset = 0;
@@ -240,15 +231,9 @@ inline uint8_t* g_pWeatherEffectGateByte = nullptr;
 inline bool g_weatherEffectGateEnabledWhenZero = false;
 inline int* g_pNullSentinel = nullptr;
 inline void** g_pWeatherTickVtableSlot = nullptr;
-inline FogReceiverSet_fn g_pOrigFogSet[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
-inline uintptr_t g_addrFogSet[5] = { 0, 0, 0, 0, 0 };
-inline uintptr_t g_addrWeatherFrameUpdateResolved = 0;
-inline std::atomic<float> g_forcedFogSet[5];
 inline std::atomic<float> g_windMul{ 1.0f };
 inline ptrdiff_t g_envWeatherStateOffset = 0xEE0;
 inline ptrdiff_t g_weatherNodeContainerOffset = 0x60;
-inline std::atomic<bool> g_fogSetHooksAttempted{ false };
-inline std::atomic<bool> g_fogSetHooksInstalled{ false };
 inline std::atomic<bool> g_timeLayoutReady{ false };
 inline ptrdiff_t g_tdLowerLimit = TD::LOWER_LIMIT_DEF;
 inline ptrdiff_t g_tdUpperLimit = TD::UPPER_LIMIT_DEF;
@@ -298,6 +283,7 @@ inline constexpr int kStartupLogLineLength = 96;
 
 enum class AobTargetId : uint8_t {
     WeatherTick = 0,
+    WeatherCompose,
     GetRainIntensity,
     GetSnowIntensity,
     GetDustIntensity,
@@ -305,8 +291,6 @@ enum class AobTargetId : uint8_t {
     ActivateEffect,
     SetIntensity,
     WindPack,
-    WeatherFrameUpdate,
-    AtmosFogBlend,
     SceneFrameUpdate,
     EnvManagerPtr,
     NullSentinel,
@@ -348,19 +332,12 @@ enum class RuntimeFeatureId : uint8_t {
 
 enum class RuntimeHookId : uint8_t {
     WeatherTick = 0,
-    GetRainIntensity,
+    WeatherCompose,
     GetSnowIntensity,
     GetDustIntensity,
     ProcessWindState,
     WindPack,
     SceneFrameUpdate,
-    WeatherFrameUpdate,
-    AtmosFogBlend,
-    FogSet0,
-    FogSet1,
-    FogSet2,
-    FogSet3,
-    FogSet4,
     MinimapRegionLabels,
     MinimapGameTimeUpdate,
     GameTimeGetter,
@@ -469,7 +446,6 @@ inline SliderOverride g_oSnowAccumBoundaryA;
 inline SliderOverride g_oSnowAccumBoundaryB;
 inline SliderOverride g_oSnowCoverageThreshold;
 inline std::atomic<bool> g_snowCoverageGlobalsDirty{ true };
-inline SliderOverride g_oFog;
 inline SliderOverride g_oCloudAmount;
 inline SliderOverride g_oCloudSpdX;
 inline SliderOverride g_oCloudSpdY;
@@ -510,7 +486,6 @@ inline SliderOverride g_oOzoneRatio;
 inline ColorOverride g_oRayleighScatteringColor;
 inline ColorOverride g_oVolumeFogScatterColor;
 inline ColorOverride g_oMieScatterColor;
-inline std::atomic<float> g_thunderSchedulerRainBias{ 0.0f };
 inline std::atomic<bool> g_forceClear{ false };
 inline std::atomic<bool> g_noRain{ false };
 inline std::atomic<bool> g_noDust{ false };
@@ -602,24 +577,6 @@ inline std::atomic<unsigned long long> g_gameTimeProbeMinuteChangeCount{ 0 };
 inline std::atomic<unsigned long long> g_gameTimeProbeMinuteDeltaMinMs{ 0 };
 inline std::atomic<unsigned long long> g_gameTimeProbeMinuteDeltaMaxMs{ 0 };
 inline std::atomic<unsigned long long> g_gameTimeProbeMinuteDeltaTotalMs{ 0 };
-inline std::atomic<bool> g_devGameTimeOverrideEnabled{ false };
-inline std::atomic<int> g_devGameTimeOverrideMode{ 0 };
-inline std::atomic<int> g_devGameTimeOffsetMinutes{ 0 };
-inline std::atomic<int> g_devGameTimeFixedHour{ 12 };
-inline std::atomic<int> g_devGameTimeFixedMinute{ 0 };
-inline std::atomic<float> g_devGameTimeScale{ 1.0f };
-inline std::atomic<int> g_devGameTimeMinuteMs{ 5000 };
-inline std::atomic<bool> g_devGameTimeResetAnchor{ false };
-inline std::atomic<bool> g_devGameTimeWriteNative{ false };
-inline std::atomic<bool> g_devGameTimeCommitOnce{ false };
-inline std::atomic<bool> g_devGameTimeAnchorValid{ false };
-inline std::atomic<long long> g_devGameTimeAnchorNativeMs{ 0 };
-inline std::atomic<long long> g_devGameTimeAnchorVirtualMs{ 0 };
-inline std::atomic<long long> g_devGameTimeLastNativeMs{ 0 };
-inline std::atomic<long long> g_devGameTimeLastVirtualMs{ 0 };
-inline std::atomic<unsigned long long> g_devGameTimeLastStorage{ 0 };
-inline std::atomic<unsigned long long> g_devGameTimeWriteCount{ 0 };
-inline std::atomic<unsigned long long> g_devGameTimeOverrideCallCount{ 0 };
 inline std::atomic<float> g_timeOriginalHour{ 12.0f };
 inline std::atomic<bool> g_timeOriginalHourValid{ false };
 inline std::atomic<bool> g_timeDomainKnown{ false };
@@ -630,12 +587,6 @@ inline std::atomic<float> g_timeBaseUpper{ 1.0f };
 inline std::atomic<bool> g_timeFreezeApplied{ false };
 inline std::atomic<int> g_timeSetHoldTicks{ 0 };
 inline std::atomic<float> g_timeFrozenRaw{ -9999.0f };
-inline std::atomic<bool> g_cloudBaseValid{ false };
-inline std::atomic<float> g_cloudBaseTop{ 1.0f };
-inline std::atomic<float> g_cloudBaseThick{ 1.0f };
-inline std::atomic<float> g_cloudBaseBase{ 1.0f };
-inline std::atomic<float> g_cloudBaseShapeA{ 1.0f };
-inline std::atomic<float> g_cloudBaseShapeC{ 1.0f };
 inline std::atomic<bool> g_windPackBaseValid{ false };
 inline std::atomic<float> g_windPackBase23{ 0.0f };
 inline std::atomic<float> g_windPackBase24{ 0.0f };
@@ -760,13 +711,8 @@ void StopHotkeyService();
 
 bool RunAOBScan();
 void RestoreRuntimePatches();
-__m128 __fastcall Hooked_GetRainIntensity(long long ws);
-__m128 __fastcall Hooked_GetSnowIntensity(long long ws);
+long long __fastcall Hooked_WeatherCompose(long long weatherState, float dt);
 __m128 __fastcall Hooked_GetDustIntensity(long long ws);
-void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams);
-void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt);
-void __fastcall Hooked_ProcessWindState(long long self);
-void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut);
 void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context);
 long long __fastcall Hooked_MinimapRegionLabels(long long self, unsigned short areaId, unsigned short subAreaId);
 void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventContext);

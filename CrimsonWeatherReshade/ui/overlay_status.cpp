@@ -322,7 +322,7 @@ void DrawStatusTab() {
             DrawStatusRowBlocked(snapshot, "Snow", snapshot.regionSource.forceClearSky, "Force Clear Sky is active, so snow is not applied.");
         } else {
             if (!RainHookReady()) {
-                DrawStatusRowHookDisabled(snapshot, "Rain", RuntimeHookId::GetRainIntensity);
+                DrawStatusRowHookDisabled(snapshot, "Rain", RuntimeHookId::WeatherCompose);
             } else if (snapshot.effective.noRain) {
                 DrawStatusRowBlocked(snapshot, "Rain", snapshot.regionSource.noRain, "No Rain is active, so Crimson Weather forces rain to zero.");
             } else {
@@ -341,7 +341,7 @@ void DrawStatusTab() {
                 DrawStatusRowNativeFloat(snapshot, "Dust", snapshot.effective.dust, 0.0f, "%.3f", snapshot.regionSource.dust, "Crimson Weather currently forces dust to %s.");
             }
             if (!SnowHookReady()) {
-                DrawStatusRowHookDisabled(snapshot, "Snow", RuntimeHookId::GetSnowIntensity);
+                DrawStatusRowHookDisabled(snapshot, "Snow", RuntimeHookId::WeatherCompose);
             } else if (snapshot.effective.noSnow) {
                 DrawStatusRowBlocked(snapshot, "Snow", snapshot.regionSource.noSnow, "No Snow is active, so Crimson Weather forces snow to zero.");
             } else {
@@ -351,7 +351,7 @@ void DrawStatusTab() {
         if (RainHookReady()) {
             DrawStatusRowBool(snapshot, "No Rain", snapshot.effective.noRain, snapshot.regionSource.noRain, "Crimson Weather currently disables rain.");
         } else {
-            DrawStatusRowHookDisabled(snapshot, "No Rain", RuntimeHookId::GetRainIntensity);
+            DrawStatusRowHookDisabled(snapshot, "No Rain", RuntimeHookId::WeatherCompose);
         }
         if (DustHookReady()) {
             DrawStatusRowBool(snapshot, "No Dust", snapshot.effective.noDust, snapshot.regionSource.noDust, "Crimson Weather currently disables dust.");
@@ -361,7 +361,7 @@ void DrawStatusTab() {
         if (SnowHookReady()) {
             DrawStatusRowBool(snapshot, "No Snow", snapshot.effective.noSnow, snapshot.regionSource.noSnow, "Crimson Weather currently disables snow.");
         } else {
-            DrawStatusRowHookDisabled(snapshot, "No Snow", RuntimeHookId::GetSnowIntensity);
+            DrawStatusRowHookDisabled(snapshot, "No Snow", RuntimeHookId::WeatherCompose);
         }
 
         if (WeatherTickReady()) {
@@ -523,19 +523,9 @@ void DrawStatusTab() {
 
         const bool fogForcedZero = snapshot.effective.forceClearSky || snapshot.effective.noFog;
         const bool fogForceSource = snapshot.effective.forceClearSky ? snapshot.regionSource.forceClearSky : snapshot.regionSource.noFog;
-        const char* fogForceTooltip = snapshot.effective.forceClearSky
-            ? "Force Clear Sky is active, so Crimson Weather forces legacy fog to zero."
-            : "No Fog is active, so Crimson Weather forces legacy fog to zero.";
         const char* nativeFogForceTooltip = snapshot.effective.forceClearSky
             ? "Force Clear Sky is active, so Crimson Weather forces native fog to zero."
             : "No Fog is active, so Crimson Weather forces native fog to zero.";
-        if (!WeatherFrameReady()) {
-            DrawStatusRowHookDisabled(snapshot, "Fog [LEGACY]", RuntimeHookId::WeatherFrameUpdate);
-        } else if (fogForcedZero) {
-            DrawStatusRowBlocked(snapshot, "Fog [LEGACY]", fogForceSource, fogForceTooltip);
-        } else {
-            DrawStatusRowEnabledFloat(snapshot, "Fog [LEGACY]", snapshot.effective.fogEnabled, snapshot.effective.fogPercent, "%.1f%%", snapshot.regionSource.fog, "Crimson Weather currently forces legacy fog to %s.");
-        }
         if (!WindPackReady()) {
             DrawStatusRowHookDisabled(snapshot, "Fog", RuntimeHookId::WindPack);
             DrawStatusRowHookDisabled(snapshot, "Volume Fog Scatter Color", RuntimeHookId::WindPack);
@@ -564,10 +554,10 @@ void DrawStatusTab() {
             DrawStatusRowEnabledFloat(snapshot, "Fog Height Baseline", snapshot.effective.heightFogBaselineEnabled, snapshot.effective.heightFogBaseline, "%.1f", snapshot.regionSource.heightFogBaseline, "Crimson Weather currently sets fog height baseline to %s.");
             DrawStatusRowEnabledFloat(snapshot, "Fog Height Falloff", snapshot.effective.heightFogFalloffEnabled, snapshot.effective.heightFogFalloff, "%.4f", snapshot.regionSource.heightFogFalloff, "Crimson Weather currently sets fog height falloff to %s.");
         }
-        if (WeatherFrameReady() || WindPackReady()) {
+        if (WindPackReady()) {
             DrawStatusRowBool(snapshot, "No Fog", snapshot.effective.noFog, snapshot.regionSource.noFog, "Crimson Weather currently disables fog.");
         } else {
-            DrawStatusRowHookDisabled(snapshot, "No Fog", RuntimeHookId::WeatherFrameUpdate);
+            DrawStatusRowHookDisabled(snapshot, "No Fog", RuntimeHookId::WeatherCompose);
         }
         if (!WindPackReady()) {
             DrawStatusRowHookDisabled(snapshot, "Wind", RuntimeHookId::WindPack);

@@ -7,14 +7,11 @@ const UPDATE_LATEST_VERSION = "0.7.1";
 const UPDATE_ARTIFACT_MAX_BYTES = 128 * 1024 * 1024;
 const UPDATE_CHANGELOG = `Update 0.7.1
 - Updated for Crimson Desert 1.10.00
-- Hide RenoDX interaction controls when renodx-crimsondesert.addon64 is not detected
 Update 0.6.9
 - Added Real In-Game Time controls with adjustable day and night world-time scales
 - Added a safety warning before enabling real world-clock controls
 - Improved the Time Schedule editor and collapsed Hook Controls by default
 Update 0.6.8
-- Added RenoDX aurora region gating support
-- Added community preset upload validation for RenoDX aurora preset fields
 Update 0.6.6
 - Added toast notification configuration
 - Expanded community preset controls and update handling
@@ -169,7 +166,7 @@ Update 0.1.5
 - Fixed Fog slider
 - Added Force Clear sky box`;
 const ALLOWED_SECTIONS = new Set([
-  "Meta", "Weather", "Time", "Cloud", "Experiment", "Celestial", "Atmosphere", "RenoDX"
+  "Meta", "Weather", "Time", "Cloud", "Experiment", "Celestial", "Atmosphere"
 ]);
 const ALLOWED_KEYS = new Set([
   "FormatVersion", "Enabled",
@@ -194,15 +191,13 @@ const ALLOWED_KEYS = new Set([
   "MoonSize", "MoonLightIntensityEnabled", "MoonLightIntensity", "MoonYawEnabled",
   "MoonYaw", "MoonPitchEnabled", "MoonPitch", "MoonRollEnabled", "MoonRoll",
   "MoonTextureEnabled", "MoonTexture", "MilkywayTextureEnabled", "MilkywayTexture",
-  "FogEnabled", "Fog", "NativeFogEnabled", "NativeFog", "VolumeFogScatterColorEnabled",
+  "NativeFogEnabled", "NativeFog", "VolumeFogScatterColorEnabled",
   "VolumeFogScatterColorR", "VolumeFogScatterColorG", "VolumeFogScatterColorB",
   "VolumeFogScatterColorA", "MieScatterColorEnabled", "MieScatterColorR",
   "MieScatterColorG", "MieScatterColorB", "MieScatterColorA", "MieScaleHeightEnabled",
   "MieScaleHeight", "MieAerosolDensityEnabled", "MieAerosolDensity",
   "MieAerosolAbsorptionEnabled", "MieAerosolAbsorption", "HeightFogBaselineEnabled",
   "HeightFogBaseline", "HeightFogFalloffEnabled", "HeightFogFalloff", "NoFog", "Wind", "NoWind",
-  "AuroraEnabled", "AuroraGateEnabled", "RenoDxAuroraEnabled",
-  "AuroraRegionMask", "RenoDxAuroraRegionMask", "RenoDXAuroraRegionMask"
 ]);
 const STRING_KEYS = new Set(["MoonTexture", "MilkywayTexture"]);
 

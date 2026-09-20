@@ -92,7 +92,6 @@ float ClampPresetCloudAmount(bool extendedSliderRange, float value);
 float ClampPresetCloudHeight(bool extendedSliderRange, float value);
 float ClampPresetCloudDensity(bool extendedSliderRange, float value);
 float ClampPresetCloudWide(bool extendedSliderRange, float value);
-float ClampPresetFogPercent(bool extendedSliderRange, float value);
 float ClampPresetNativeFog(bool extendedSliderRange, float value);
 float ClampPresetWind(bool extendedSliderRange, float value);
 float ClampPresetPuddleScale(bool extendedSliderRange, float value);

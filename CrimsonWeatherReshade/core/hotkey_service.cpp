@@ -74,7 +74,13 @@ DWORD WINAPI HotkeyThreadProc(void*) {
 
     while (WaitForSingleObject(g_hotkeyStopEvent, 16) == WAIT_TIMEOUT) {
         const bool keyboardDown = g_cfg.effectToggleVK != 0 && (GetAsyncKeyState(g_cfg.effectToggleVK) & 0x8000) != 0;
-        if (keyboardDown && !keyboardWasDown) {
+        const bool benchmarkOwnsRuntime =
+#if defined(CW_DEV_BUILD)
+            g_devPerformanceBenchmarkActive.load();
+#else
+            false;
+#endif
+        if (!benchmarkOwnsRuntime && keyboardDown && !keyboardWasDown) {
             ToggleModEnabled();
             Log("[hotkey] effect toggle pressed (keyboard)\n");
         }
@@ -82,7 +88,7 @@ DWORD WINAPI HotkeyThreadProc(void*) {
 
         const WORD buttons = static_cast<WORD>(ReadControllerButtons());
         const bool controllerDown = IsControllerComboPressed(buttons, g_cfg.controllerEffectToggleMask);
-        if (controllerDown && !controllerWasDown) {
+        if (!benchmarkOwnsRuntime && controllerDown && !controllerWasDown) {
             ToggleModEnabled();
             Log("[hotkey] effect toggle pressed (controller)\n");
         }

@@ -50,28 +50,6 @@ void DrawExperimentTab() {
     }
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Legacy Fog");
-    const bool fogBlocked = detachedEdit ? (editData.forceClearSky || editData.noFog) : (g_forceClear.load() || g_noFog.load());
-    const bool fogFeatureAvailable = !fogBlocked &&
-                                     RuntimeFeatureAvailable(RuntimeFeatureId::FogControls) &&
-                                     WeatherFrameReady();
-    if (!fogFeatureAvailable) {
-        ImGui::BeginDisabled();
-    }
-    DrawSliderById("fog_legacy", &editData, &overrideMask, &editChanged);
-
-    if (!fogFeatureAvailable) {
-        ImGui::EndDisabled();
-        if (!fogBlocked) {
-            if (!RuntimeFeatureAvailable(RuntimeFeatureId::FogControls)) {
-                DrawFeatureUnavailable(RuntimeFeatureId::FogControls);
-            } else {
-                DrawHookUnavailable(RuntimeHookId::WeatherFrameUpdate);
-            }
-        }
-    }
-
-    ImGui::Spacing();
     ImGui::SeparatorText("Details");
     const bool detailEnabled = RuntimeFeatureAvailable(RuntimeFeatureId::DetailControls) && WeatherTickReady();
     if (!detailEnabled) {

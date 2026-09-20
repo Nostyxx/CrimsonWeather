@@ -47,7 +47,7 @@ void DrawWeatherTab() {
             if (!RuntimeFeatureAvailable(RuntimeFeatureId::Rain)) {
                 DrawFeatureUnavailable(RuntimeFeatureId::Rain);
             } else {
-                DrawHookUnavailable(RuntimeHookId::GetRainIntensity);
+                DrawHookUnavailable(RuntimeHookId::WeatherCompose);
             }
         }
     }
@@ -75,7 +75,7 @@ void DrawWeatherTab() {
             if (!RuntimeFeatureAvailable(RuntimeFeatureId::Snow)) {
                 DrawFeatureUnavailable(RuntimeFeatureId::Snow);
             } else {
-                DrawHookUnavailable(RuntimeHookId::GetSnowIntensity);
+                DrawHookUnavailable(RuntimeHookId::WeatherCompose);
             }
         }
     }

@@ -37,7 +37,6 @@ bool SnowHookReady();
 bool DustHookReady();
 bool WindPackReady();
 bool SceneFrameReady();
-bool WeatherFrameReady();
 bool RealGameTimeReady();
 bool DrawResetButton(const char* id);
 bool DrawOverrideToggle(bool* enabled);
@@ -86,8 +85,6 @@ void DrawControlById(
     bool* editChanged = nullptr);
 void DrawTimeControls();
 void DrawGeneralControls();
-void DrawRenoDxInteractionControls();
-
 bool IsSliderTextEditActive(const char* id);
 bool ConsumeSliderTextEditFocusRequest();
 void BeginSliderTextEdit(const char* id);

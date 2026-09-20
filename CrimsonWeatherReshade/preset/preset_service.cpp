@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "runtime_shared.h"
 #include "preset_service.h"
-#include "renodx_bridge.h"
 #include "sky_texture_override.h"
 #include "preset_model.h"
 #include "preset_format.h"
@@ -123,7 +122,6 @@ std::string PresetMaskSummary(const WeatherPresetMask& mask) {
     AppendMaskField(out, mask.moonRoll, "moonRoll");
     AppendMaskField(out, mask.moonTexture, "moonTexture");
     AppendMaskField(out, mask.milkywayTexture, "milkywayTexture");
-    AppendMaskField(out, mask.fog, "fog");
     AppendMaskField(out, mask.nativeFog, "nativeFog");
     AppendMaskField(out, mask.noFog, "noFog");
     AppendMaskField(out, mask.wind, "wind");
@@ -134,7 +132,7 @@ std::string PresetMaskSummary(const WeatherPresetMask& mask) {
 
 void LogPresetDataSummary(const char* tag, int regionId, const WeatherPresetData& data) {
     if (!kPresetVerboseTestLog) return;
-    Log("[preset-test] %s region=%s clear=%d noRain=%d rain=%.3f thunder=%.3f noDust=%d dust=%.3f noSnow=%d snow=%.3f time=%d progress=%d@%.2f/%.0fms wind=%.3f noWind=%d fog=%d/%.1f nativeFog=%d/%.2f noFog=%d cloudAmt=%d/%.2f cloudH=%d/%.2f cloudD=%d/%.2f puddle=%d/%.3f\n",
+    Log("[preset-test] %s region=%s clear=%d noRain=%d rain=%.3f thunder=%.3f noDust=%d dust=%.3f noSnow=%d snow=%.3f time=%d progress=%d@%.2f/%.0fms wind=%.3f noWind=%d nativeFog=%d/%.2f noFog=%d cloudAmt=%d/%.2f cloudH=%d/%.2f cloudD=%d/%.2f puddle=%d/%.3f\n",
         tag ? tag : "data",
         RegionDisplayName(regionId),
         data.forceClearSky ? 1 : 0,
@@ -151,8 +149,6 @@ void LogPresetDataSummary(const char* tag, int regionId, const WeatherPresetData
         ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f),
         data.wind,
         data.noWind ? 1 : 0,
-        data.fogEnabled ? 1 : 0,
-        data.fogPercent,
         data.nativeFogEnabled ? 1 : 0,
         data.nativeFog,
         data.noFog ? 1 : 0,
@@ -450,13 +446,6 @@ WeatherPresetData CaptureCurrentPresetData() {
     const int milkywayTextureOption = MilkywayTextureSelectedOption();
     data.milkywayTextureEnabled = milkywayTextureOption > 0;
     data.milkywayTexture = data.milkywayTextureEnabled ? MilkywayTextureOptionName(milkywayTextureOption) : "";
-    data.fogEnabled = g_oFog.active.load();
-    if (data.fogEnabled) {
-        const float fogN = sqrtf(max(0.0f, g_oFog.value.load() / 100.0f));
-        data.fogPercent = ClampPresetFogPercent(extendedSliderRange, fogN * 100.0f);
-    } else {
-        data.fogPercent = 0.0f;
-    }
     data.nativeFogEnabled = g_oNativeFog.active.load();
     data.nativeFog = data.nativeFogEnabled ? ClampPresetNativeFog(extendedSliderRange, g_oNativeFog.value.load()) : 1.0f;
     data.volumeFogScatterColorEnabled = g_oVolumeFogScatterColor.active.load();
@@ -488,9 +477,6 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.noWind = g_noWind.load();
     data.puddleScaleEnabled = g_oCloudThk.active.load();
     data.puddleScale = data.puddleScaleEnabled ? ClampPresetPuddleScale(extendedSliderRange, g_oCloudThk.value.load()) : 0.0f;
-    data.renodxAuroraRegionMaskEnabled = RenoDxBridgeIsAddonPresent();
-    data.renodxAuroraGateEnabled = RenoDxBridgeIsAuroraGateEnabled();
-    data.renodxAuroraRegionMask = RenoDxBridgeGetAuroraRegionMask();
     return data;
 }
 
@@ -594,13 +580,6 @@ void ApplyPresetData(const WeatherPresetData& data) {
     MoonTextureSelectByName(data.moonTextureEnabled ? data.moonTexture.c_str() : nullptr);
     MilkywayTextureSelectByName(data.milkywayTextureEnabled ? data.milkywayTexture.c_str() : nullptr);
 
-    const float fogPct = ClampPresetFogPercent(extendedSliderRange, data.fogPercent);
-    if (data.fogEnabled) {
-        const float t = fogPct * 0.01f;
-        const float fogBoost = t * t * 100.0f;
-        g_oFog.set(fogBoost);
-    } else g_oFog.clear();
-
     const float nativeFog = ClampPresetNativeFog(extendedSliderRange, data.nativeFog);
     if (data.nativeFogEnabled && fabsf(nativeFog - 1.0f) > 0.001f) g_oNativeFog.set(nativeFog);
     else g_oNativeFog.clear();
@@ -618,9 +597,6 @@ void ApplyPresetData(const WeatherPresetData& data) {
     g_windMul.store(wind);
     g_noWind.store(data.noWind);
     ApplyEnabledOverride(g_oCloudThk, data.puddleScaleEnabled, ClampPresetPuddleScale(extendedSliderRange, data.puddleScale), 0.0f, 5.0f);
-    if (data.renodxAuroraRegionMaskEnabled) {
-        RenoDxBridgeApplyPresetAuroraSettings(data.renodxAuroraGateEnabled, data.renodxAuroraRegionMask);
-    }
 }
 
 bool SanitizeMissingMoonTexture(WeatherPresetData& data, const char* scopeLabel) {
@@ -1002,21 +978,6 @@ void Preset_SetEditRegionDataWithOverrides(const WeatherPresetData& data, const 
     MarkAutoSavePending();
 }
 
-void Preset_SetRenoDxAuroraSettings(bool enabled, uint32_t mask) {
-    EnsureEditDraft();
-    if (!HasSelectedPresetIndexInternal()) {
-        g_newPresetDraftActive = true;
-    }
-    TimeSchedulePinCurrentEntryForUserEdit();
-    g_editDraftPackage.global.renodxAuroraRegionMaskEnabled = RenoDxBridgeIsAddonPresent();
-    g_editDraftPackage.global.renodxAuroraGateEnabled = enabled;
-    g_editDraftPackage.global.renodxAuroraRegionMask = mask & 126u;
-    Log("[preset] edit-global RenoDX aurora enabled=%u mask=0x%02X\n",
-        enabled ? 1u : 0u,
-        g_editDraftPackage.global.renodxAuroraRegionMask);
-    MarkAutoSavePending();
-}
-
 void Preset_ResetEditRegion() {
     EnsureEditDraft();
     if (!HasSelectedPresetIndexInternal()) {
@@ -1065,6 +1026,11 @@ bool Preset_CanSaveCurrent() {
 }
 
 void Preset_AutoSaveTick(bool uiEditActive) {
+#if defined(CW_DEV_BUILD)
+    if (g_devPerformanceBenchmarkActive.load()) {
+        return;
+    }
+#endif
     if (!g_cfg.autoSaved) {
         g_autoSavePending = false;
         return;
@@ -1529,6 +1495,11 @@ void Preset_ArmAutoApplyRemembered() {
 }
 
 bool Preset_NeedsWorldTick() {
+#if defined(CW_DEV_BUILD)
+    if (g_devPerformanceBenchmarkActive.load()) {
+        return false;
+    }
+#endif
     EnsureTimeScheduleLoaded();
     if (ScheduleNeedsWorldTick()) {
         return true;
@@ -1561,6 +1532,11 @@ bool Preset_NeedsWorldTick() {
 }
 
 void Preset_OnWorldTick(bool worldReady, float dt) {
+#if defined(CW_DEV_BUILD)
+    if (g_devPerformanceBenchmarkActive.load()) {
+        return;
+    }
+#endif
     const bool scheduleBlending = TimeScheduleRuntimeTick(worldReady);
     if (scheduleBlending) {
         (void)dt;

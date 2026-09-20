@@ -63,8 +63,7 @@ enum class FavoritePresetMode {
 enum class FavoriteRuntimeMode {
     OverrideClearAtNative,
     OverrideAlways,
-    WindMultiplier,
-    LegacyFog
+    WindMultiplier
 };
 
 enum class FavoriteGate {
@@ -80,7 +79,6 @@ enum class FavoriteGate {
     CelestialWind,
     CelestialScene,
     Experiment,
-    LegacyFog,
     Detail
 };
 
@@ -185,7 +183,6 @@ const FavoriteSliderSpec kSliderSpecs[] = {
     { "2c", "Experiment", "2C", 0.0f, 15.0f, 0.0f, 50.0f, "x%.2f", &WeatherPresetData::exp2C, &WeatherPresetData::exp2CEnabled, &WeatherPresetSourceMask::exp2C, &g_oExpCloud2C, FavoriteNativeSource::One, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Experiment },
     { "2d", "Experiment", "2D", 0.0f, 15.0f, 0.0f, 50.0f, "x%.2f", &WeatherPresetData::exp2D, &WeatherPresetData::exp2DEnabled, &WeatherPresetSourceMask::exp2D, &g_oExpCloud2D, FavoriteNativeSource::One, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Experiment },
     { "cloud_variation", "Experiment", "Cloud Variation [32]", 0.0f, 15.0f, 0.0f, 50.0f, "x%.2f", &WeatherPresetData::cloudVariation, &WeatherPresetData::cloudVariationEnabled, &WeatherPresetSourceMask::cloudVariation, &g_oCloudVariation, FavoriteNativeSource::One, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Experiment },
-    { "fog_legacy", "Experiment", "Fog [LEGACY]", 0.0f, 100.0f, 0.0f, 500.0f, "%.1f%%", &WeatherPresetData::fogPercent, &WeatherPresetData::fogEnabled, &WeatherPresetSourceMask::fog, &g_oFog, FavoriteNativeSource::Zero, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::LegacyFog, FavoriteGate::LegacyFog },
     { "puddle", "Experiment", "Puddle Scale", 0.0f, 1.0f, 0.0f, 5.0f, "%.3f", &WeatherPresetData::puddleScale, &WeatherPresetData::puddleScaleEnabled, &WeatherPresetSourceMask::puddleScale, &g_oCloudThk, FavoriteNativeSource::Zero, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideAlways, FavoriteGate::Detail },
 };
 
@@ -323,8 +320,6 @@ bool IsGateEnabled(FavoriteGate gate, const WeatherPresetData& data, bool detach
         return RuntimeFeatureAvailable(RuntimeFeatureId::CelestialControls) && SceneFrameReady();
     case FavoriteGate::Experiment:
         return !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::ExperimentControls) && WindPackReady();
-    case FavoriteGate::LegacyFog:
-        return !forceClear && !noFog && RuntimeFeatureAvailable(RuntimeFeatureId::FogControls) && WeatherFrameReady();
     case FavoriteGate::Detail:
         return RuntimeFeatureAvailable(RuntimeFeatureId::DetailControls) && WeatherTickReady();
     }
@@ -446,11 +441,6 @@ void DrawFavoriteSlider(
     } else if (spec.runtimeMode == FavoriteRuntimeMode::WindMultiplier) {
         value = g_windMul.load();
         nativeDisplay = fabsf(value - nativeValue) <= kNativeEpsilon;
-    } else if (spec.runtimeMode == FavoriteRuntimeMode::LegacyFog) {
-        nativeDisplay = !spec.runtimeValue->active.load();
-        if (!nativeDisplay) {
-            value = sqrtf(max(0.0f, spec.runtimeValue->value.load() / 100.0f)) * 100.0f;
-        }
     } else {
         nativeDisplay = !spec.runtimeValue->active.load();
         value = nativeDisplay ? nativeValue : spec.runtimeValue->value.load();
@@ -509,9 +499,6 @@ void DrawFavoriteSlider(
             editChanged = true;
         } else if (spec.runtimeMode == FavoriteRuntimeMode::WindMultiplier) {
             g_windMul.store(value);
-        } else if (spec.runtimeMode == FavoriteRuntimeMode::LegacyFog) {
-            const float normalized = value * 0.01f;
-            spec.runtimeValue->set(normalized * normalized * 100.0f);
         } else if (spec.runtimeMode == FavoriteRuntimeMode::OverrideClearAtNative &&
                    fabsf(value - nativeValue) <= kNativeEpsilon) {
             spec.runtimeValue->clear();
@@ -570,7 +557,7 @@ void DrawFavoriteToggle(
         valueField = &WeatherPresetData::noRain; maskField = &WeatherPresetSourceMask::noRain;
         runtimeValue = &g_noRain; enabledStatus = "No Rain enabled"; disabledStatus = "No Rain disabled";
         enabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Rain) && RainHookReady();
-        unavailableHook = RuntimeHookId::GetRainIntensity;
+        unavailableHook = RuntimeHookId::WeatherCompose;
         showUnavailableHook = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Rain);
         break;
     case FavoriteExtraKind::NoDust:
@@ -586,7 +573,7 @@ void DrawFavoriteToggle(
         valueField = &WeatherPresetData::noSnow; maskField = &WeatherPresetSourceMask::noSnow;
         runtimeValue = &g_noSnow; enabledStatus = "No Snow enabled"; disabledStatus = "No Snow disabled";
         enabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Snow) && SnowHookReady();
-        unavailableHook = RuntimeHookId::GetSnowIntensity;
+        unavailableHook = RuntimeHookId::WeatherCompose;
         showUnavailableHook = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::Snow);
         break;
     case FavoriteExtraKind::NoWind:
@@ -602,12 +589,10 @@ void DrawFavoriteToggle(
         label = "No Fog"; id = "no_fog";
         valueField = &WeatherPresetData::noFog; maskField = &WeatherPresetSourceMask::noFog;
         runtimeValue = &g_noFog; enabledStatus = "No Fog enabled"; disabledStatus = "No Fog disabled";
-        enabled = (RuntimeFeatureAvailable(RuntimeFeatureId::FogControls) && WeatherFrameReady()) ||
-            (RuntimeFeatureAvailable(RuntimeFeatureId::WindControls) && WindPackReady());
+        enabled = RuntimeFeatureAvailable(RuntimeFeatureId::FogControls) && WindPackReady();
         unavailableFeature = RuntimeFeatureId::FogControls;
-        unavailableHook = RuntimeHookId::WeatherFrameUpdate;
-        showUnavailableFeature = !RuntimeFeatureAvailable(RuntimeFeatureId::FogControls) &&
-            !RuntimeFeatureAvailable(RuntimeFeatureId::WindControls);
+        unavailableHook = RuntimeHookId::WeatherCompose;
+        showUnavailableFeature = !RuntimeFeatureAvailable(RuntimeFeatureId::FogControls);
         showUnavailableHook = !showUnavailableFeature;
         break;
     default:

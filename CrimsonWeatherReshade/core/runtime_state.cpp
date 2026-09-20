@@ -336,8 +336,6 @@ const char* DevLaunchOptionName(DevLaunchOption option) {
         return "windhooks";
     case DevLaunchOption::FrameHooks:
         return "framehooks";
-    case DevLaunchOption::FogHooks:
-        return "foghooks";
     case DevLaunchOption::RegionHook:
         return "regionhook";
     case DevLaunchOption::Full:
@@ -360,8 +358,6 @@ const char* DevLaunchOptionDescription(DevLaunchOption option) {
         return "DEV isolation: ProcessWindState and WindPack hooks only.";
     case DevLaunchOption::FrameHooks:
         return "DEV isolation: production SceneFrameUpdate hook only.";
-    case DevLaunchOption::FogHooks:
-        return "DEV isolation: WeatherFrameUpdate and AtmosFogBlend hooks only.";
     case DevLaunchOption::RegionHook:
         return "DEV isolation: minimap region hook only.";
     case DevLaunchOption::Full:
@@ -402,10 +398,6 @@ DevLaunchOption ParseDevLaunchOption(const char* text) {
         strcmp(normalized, "frame") == 0 || strcmp(normalized, "scene") == 0) {
         return DevLaunchOption::FrameHooks;
     }
-    if (strcmp(normalized, "foghooks") == 0 || strcmp(normalized, "foghook") == 0 ||
-        strcmp(normalized, "fog") == 0) {
-        return DevLaunchOption::FogHooks;
-    }
     if (strcmp(normalized, "regionhook") == 0 || strcmp(normalized, "regionhooks") == 0 ||
         strcmp(normalized, "minimaphook") == 0 || strcmp(normalized, "minimap") == 0 ||
         strcmp(normalized, "region") == 0) {
@@ -443,6 +435,8 @@ const char* AobTargetLabel(AobTargetId id) {
     switch (id) {
     case AobTargetId::WeatherTick:
         return "WeatherTick";
+    case AobTargetId::WeatherCompose:
+        return "WeatherCompose";
     case AobTargetId::GetRainIntensity:
         return "GetRainIntensity";
     case AobTargetId::GetSnowIntensity:
@@ -457,10 +451,6 @@ const char* AobTargetLabel(AobTargetId id) {
         return "SetIntensity";
     case AobTargetId::WindPack:
         return "WindPack";
-    case AobTargetId::WeatherFrameUpdate:
-        return "WeatherFrameUpdate";
-    case AobTargetId::AtmosFogBlend:
-        return "AtmosFogBlend";
     case AobTargetId::SceneFrameUpdate:
         return "SceneFrameUpdate";
     case AobTargetId::EnvManagerPtr:
@@ -855,7 +845,6 @@ void ResetAllSliders() {
     g_oSnowAccumBoundaryB.clear();
     g_oSnowCoverageThreshold.clear();
     g_snowCoverageGlobalsDirty.store(true);
-    g_oFog.clear();
     g_oCloudAmount.clear();
     g_oCloudSpdX.clear();
     g_oCloudSpdY.clear();
@@ -924,7 +913,6 @@ void ResetAllSliders() {
     g_timeOriginalHourValid.store(false);
     g_timeSetHoldTicks.store(0);
     g_timeFrozenRaw.store(-9999.0f);
-    g_cloudBaseValid.store(false);
     g_windPackBaseValid.store(false);
     g_windPackBase32Valid.store(false);
     g_windPackBase32.store(0.0f);
@@ -1002,7 +990,7 @@ void ResetAllSliders() {
 
 bool AnyCustomWeatherSliderActive() {
     return g_forceClear.load() ||
-           g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() || g_oFog.active.load() ||
+           g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() ||
            g_oSnowAccumBoundaryA.active.load() || g_oSnowAccumBoundaryB.active.load() ||
            g_oSnowCoverageThreshold.active.load() ||
            g_oCloudAmount.active.load() ||

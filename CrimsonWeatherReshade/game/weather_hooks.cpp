@@ -51,39 +51,6 @@ static bool CaptureMinimapGameTime(long long eventContext) {
     return true;
 }
 
-static float DustSliderToNative(float dust) {
-    float d = max(0.0f, dust);
-    return d * 15.0f;
-}
-
-static float DustSliderToFogB(float dust) {
-    return 0.28f + max(0.0f, dust) * 0.14f;
-}
-
-static float DustSliderToThreshold(float dust) {
-    return -15.0f - max(0.0f, dust) * 7.5f;
-}
-
-static float DustSliderToStorm(float dust) {
-    return 40.0f + DustSliderToNative(dust);
-}
-
-static float DustWindControlMultiplier() {
-    float mul = g_windMul.load();
-    if (!std::isfinite(mul)) {
-        mul = 1.0f;
-    }
-    return min(3.0f, max(0.0f, mul));
-}
-
-static float DustSliderToWindScale(float dust) {
-    return max(0.0f, dust) * 0.60f * DustWindControlMultiplier();
-}
-
-static bool DustForcesCalmWind() {
-    return g_oDust.active.load() && DustWindControlMultiplier() <= 0.001f;
-}
-
 static bool IsReadableTickPtr(uintptr_t addr, size_t bytes) {
     if (!addr || bytes == 0) {
         return false;
@@ -136,13 +103,14 @@ static ResolvedEnv ResolveTickEnvCurrentBuild() {
             return r;
         }
 
+        const ptrdiff_t particleManagerOffset = g_envWeatherStateOffset + sizeof(long long);
         if (!IsReadableTickPtr(static_cast<uintptr_t>(r.entity + g_envWeatherStateOffset), sizeof(long long)) ||
-            !IsReadableTickPtr(static_cast<uintptr_t>(r.entity + 0xEE8), sizeof(long long))) {
+            !IsReadableTickPtr(static_cast<uintptr_t>(r.entity + particleManagerOffset), sizeof(long long))) {
             return r;
         }
 
         r.weatherState = *reinterpret_cast<long long*>(r.entity + g_envWeatherStateOffset);
-        r.particleMgr = *reinterpret_cast<long long*>(r.entity + 0xEE8);
+        r.particleMgr = *reinterpret_cast<long long*>(r.entity + particleManagerOffset);
         if (!r.weatherState || !IsReadableTickPtr(static_cast<uintptr_t>(r.weatherState),
                                                   g_weatherNodeContainerOffset + sizeof(long long))) {
             return r;
@@ -397,448 +365,356 @@ static void UpdateRegionState(const ResolvedEnv& env, float dt) {
     g_regionStateValid.store(true);
 }
 
-// Intensity hooks feed slider overrides into the engine weather blend inputs.
-__m128 __fastcall Hooked_GetRainIntensity(long long ws) {
-    if (!g_modEnabled.load()) {
-        return g_pOrigGetRainIntensity ? g_pOrigGetRainIntensity(ws) : PackScalar(0.0f);
-    }
-    if (g_forceClear.load()) return PackScalar(0.0f);
-    const float thunderRainBias = g_thunderSchedulerRainBias.load();
-    if (std::isfinite(thunderRainBias) && thunderRainBias > 0.0001f) {
-        const float baseRain = (!g_noRain.load() && g_oRain.active.load()) ? g_oRain.value.load() : 0.0f;
-        return PackScalar(max(baseRain, thunderRainBias));
-    }
-    if (g_noRain.load()) return PackScalar(0.0f);
-    if (g_oRain.active.load())
-        return PackScalar(g_oRain.value.load());
-    return g_pOrigGetRainIntensity ? g_pOrigGetRainIntensity(ws) : PackScalar(0.0f);
+namespace WeatherTableField {
+    constexpr ptrdiff_t WindSpeed = 0x138;
+    constexpr ptrdiff_t AltitudeWindRatio = 0x158;
+    constexpr ptrdiff_t Snow = 0x168;
+    constexpr ptrdiff_t Rain = 0x16C;
+    constexpr ptrdiff_t WindBlendContribution = 0x1A4;
 }
 
-__m128 __fastcall Hooked_GetSnowIntensity(long long ws) {
-    if (!g_modEnabled.load()) {
-        return g_pOrigGetSnowIntensity ? g_pOrigGetSnowIntensity(ws) : PackScalar(0.0f);
+namespace AtmosphereTableField {
+    constexpr ptrdiff_t SunLightIntensity = 0x18;
+    constexpr ptrdiff_t MoonLightIntensity = 0x20;
+    constexpr ptrdiff_t RayleighScatteringColor = 0x30;
+    constexpr ptrdiff_t CloudScatteringCoefficient = 0x44;
+    constexpr ptrdiff_t CloudPhaseFront = 0x48;
+    constexpr ptrdiff_t SunSize = 0x60;
+    constexpr ptrdiff_t MoonSize = 0x6C;
+    constexpr ptrdiff_t EarthAxisTilt = 0x78;
+    constexpr ptrdiff_t Latitude = 0x7C;
+    constexpr ptrdiff_t RayleighHeight = 0x80;
+    constexpr ptrdiff_t MieScaleHeight = 0x84;
+    constexpr ptrdiff_t MieAerosolDensity = 0x88;
+    constexpr ptrdiff_t MieAerosolAbsorption = 0x90;
+    constexpr ptrdiff_t OzoneRatio = 0x94;
+    constexpr ptrdiff_t NativeFogSecondary = 0x9C;
+    constexpr ptrdiff_t HeightFogBaseline = 0xA0;
+    constexpr ptrdiff_t HeightFogFalloff = 0xA4;
+    constexpr ptrdiff_t CloudAmount = 0xA8;
+    constexpr ptrdiff_t CloudAlpha = 0xB0;
+    constexpr ptrdiff_t CloudFlow = 0xB4;
+    constexpr ptrdiff_t CloudHeight = 0xB8;
+    constexpr ptrdiff_t CloudShape = 0xBC;
+    constexpr ptrdiff_t CloudVisibleRange = 0xC0;
+    constexpr ptrdiff_t CloudFadeRange = 0xC4;
+    constexpr ptrdiff_t CloudDetailRatio = 0xC8;
+    constexpr ptrdiff_t CloudBaseDensity = 0xD0;
+    constexpr ptrdiff_t CloudBaseContrast = 0xD4;
+    constexpr ptrdiff_t HighCloudAmount = 0xD8;
+    constexpr ptrdiff_t MidCloudAmount = 0xDC;
+    constexpr ptrdiff_t CloudVariation = 0xE4;
+    constexpr ptrdiff_t VolumeFogScatterColor = 0xEC;
+    constexpr ptrdiff_t MieScatterColor = 0xF0;
+}
+
+enum class RainTableMode : int {
+    Native = 0,
+    Slider,
+    NoRain,
+    ForceClear,
+};
+
+enum class SnowTableMode : int {
+    Native = 0,
+    Slider,
+    NoSnow,
+    ForceClear,
+};
+
+enum class WindTableMode : int {
+    Native = 0,
+    Multiplier,
+    NoWind,
+};
+
+struct ComposedWeatherFields {
+    uintptr_t parent = 0;
+    uintptr_t child1 = 0;
+    uintptr_t atmosphereSlot = 0;
+    uintptr_t atmosphereNode = 0;
+    float* windSpeed = nullptr;
+    float* altitudeWindRatio = nullptr;
+    float* snow = nullptr;
+    float* rain = nullptr;
+    float* windBlendContribution = nullptr;
+};
+
+static std::atomic<uint64_t> g_rainComposeCalls{ 0 };
+static std::atomic<uint64_t> g_rainTableWrites{ 0 };
+static std::atomic<uint64_t> g_rainTableChanges{ 0 };
+static std::atomic<uint64_t> g_rainTableInvalidLayout{ 0 };
+static std::atomic<int> g_rainTableLastMode{ static_cast<int>(RainTableMode::Native) };
+static std::atomic<DWORD64> g_rainTableLastStatsTick{ 0 };
+static std::atomic<DWORD64> g_rainTableLastInvalidLogTick{ 0 };
+static std::atomic<bool> g_rainTableCaptured{ false };
+static std::atomic<uint64_t> g_snowTableWrites{ 0 };
+static std::atomic<uint64_t> g_snowTableChanges{ 0 };
+static std::atomic<int> g_snowTableLastMode{ static_cast<int>(SnowTableMode::Native) };
+static std::atomic<uint64_t> g_windTableWrites{ 0 };
+static std::atomic<uint64_t> g_windTableChanges{ 0 };
+static std::atomic<int> g_windTableLastMode{ static_cast<int>(WindTableMode::Native) };
+static void ApplyAtmosphereTableOverrides(uintptr_t atmosphereNode);
+
+static const char* RainTableModeName(RainTableMode mode) {
+    switch (mode) {
+    case RainTableMode::Slider: return "slider";
+    case RainTableMode::NoRain: return "no-rain";
+    case RainTableMode::ForceClear: return "force-clear";
+    default: return "native";
     }
-    if (g_forceClear.load() || g_noSnow.load()) return PackScalar(0.0f);
-    if (g_oSnow.active.load())
-        return PackScalar(g_oSnow.value.load());
-    return g_pOrigGetSnowIntensity ? g_pOrigGetSnowIntensity(ws) : PackScalar(0.0f);
+}
+
+static RainTableMode DesiredRainTableValue(float& outValue) {
+    outValue = 0.0f;
+    if (!g_modEnabled.load()) return RainTableMode::Native;
+    if (g_forceClear.load()) return RainTableMode::ForceClear;
+    if (g_noRain.load()) return RainTableMode::NoRain;
+    if (!g_oRain.active.load()) return RainTableMode::Native;
+
+    const float value = g_oRain.value.load();
+    if (!std::isfinite(value)) return RainTableMode::Native;
+    outValue = min(1.0f, max(0.0f, value));
+    return RainTableMode::Slider;
+}
+
+static const char* SnowTableModeName(SnowTableMode mode) {
+    switch (mode) {
+    case SnowTableMode::Slider: return "slider";
+    case SnowTableMode::NoSnow: return "no-snow";
+    case SnowTableMode::ForceClear: return "force-clear";
+    default: return "native";
+    }
+}
+
+static SnowTableMode DesiredSnowTableValue(float& outValue) {
+    outValue = 0.0f;
+    if (!g_modEnabled.load()) return SnowTableMode::Native;
+    if (g_forceClear.load()) return SnowTableMode::ForceClear;
+    if (g_noSnow.load()) return SnowTableMode::NoSnow;
+    if (!g_oSnow.active.load()) return SnowTableMode::Native;
+
+    const float value = g_oSnow.value.load();
+    if (!std::isfinite(value)) return SnowTableMode::Native;
+    outValue = min(1.0f, max(0.0f, value));
+    return SnowTableMode::Slider;
+}
+
+static const char* WindTableModeName(WindTableMode mode) {
+    switch (mode) {
+    case WindTableMode::Multiplier: return "multiplier";
+    case WindTableMode::NoWind: return "no-wind";
+    default: return "native";
+    }
+}
+
+static WindTableMode DesiredWindTableValue(float& outMultiplier) {
+    outMultiplier = 1.0f;
+    if (!g_modEnabled.load()) return WindTableMode::Native;
+    if (g_noWind.load()) {
+        outMultiplier = 0.0f;
+        return WindTableMode::NoWind;
+    }
+
+    const float multiplier = g_windMul.load();
+    if (!std::isfinite(multiplier)) return WindTableMode::Native;
+    outMultiplier = min(15.0f, max(0.0f, multiplier));
+    return fabsf(outMultiplier - 1.0f) > 0.0001f
+        ? WindTableMode::Multiplier
+        : WindTableMode::Native;
+}
+
+static bool ResolveComposedWeatherFields(long long weatherState, ComposedWeatherFields& out) {
+    out = ComposedWeatherFields{};
+    __try {
+        out.parent = *reinterpret_cast<uintptr_t*>(weatherState + g_weatherNodeContainerOffset);
+        if (!out.parent) return false;
+        out.child1 = *reinterpret_cast<uintptr_t*>(out.parent + 0x18);
+        if (!out.child1) return false;
+        out.atmosphereSlot = out.parent + 0x20;
+        out.atmosphereNode = *reinterpret_cast<uintptr_t*>(out.atmosphereSlot);
+        out.windSpeed = reinterpret_cast<float*>(out.child1 + WeatherTableField::WindSpeed);
+        out.altitudeWindRatio = reinterpret_cast<float*>(out.child1 + WeatherTableField::AltitudeWindRatio);
+        out.snow = reinterpret_cast<float*>(out.child1 + WeatherTableField::Snow);
+        out.rain = reinterpret_cast<float*>(out.child1 + WeatherTableField::Rain);
+        out.windBlendContribution = reinterpret_cast<float*>(out.child1 + WeatherTableField::WindBlendContribution);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = ComposedWeatherFields{};
+        return false;
+    }
+
+}
+
+long long __fastcall Hooked_WeatherCompose(long long weatherState, float dt) {
+    if (!g_pOrigWeatherCompose) return 0;
+    const long long result = g_pOrigWeatherCompose(weatherState, dt);
+    g_rainComposeCalls.fetch_add(1, std::memory_order_relaxed);
+
+    float desiredRain = 0.0f;
+    float desiredSnow = 0.0f;
+    float desiredWindMultiplier = 1.0f;
+    const RainTableMode rainMode = DesiredRainTableValue(desiredRain);
+    const SnowTableMode snowMode = DesiredSnowTableValue(desiredSnow);
+    const WindTableMode windMode = DesiredWindTableValue(desiredWindMultiplier);
+    ComposedWeatherFields fields{};
+    if (!ResolveComposedWeatherFields(weatherState, fields)) {
+        g_rainTableInvalidLayout.fetch_add(1, std::memory_order_relaxed);
+        const DWORD64 now = GetTickCount64();
+        DWORD64 last = g_rainTableLastInvalidLogTick.load(std::memory_order_relaxed);
+        if (now - last >= 10000 &&
+            g_rainTableLastInvalidLogTick.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
+            Log("[weather-table] layout unavailable state=%p parent=%p child1=%p count=%llu\n",
+                reinterpret_cast<void*>(weatherState), reinterpret_cast<void*>(fields.parent),
+                reinterpret_cast<void*>(fields.child1),
+                static_cast<unsigned long long>(g_rainTableInvalidLayout.load(std::memory_order_relaxed)));
+        }
+        return result;
+    }
+
+    ApplyAtmosphereTableOverrides(fields.atmosphereNode);
+
+    float nativeRain = 0.0f;
+    float nativeSnow = 0.0f;
+    float nativeWindSpeed = 0.0f;
+    float nativeAltitudeWindRatio = 0.0f;
+    float nativeWindBlendContribution = 0.0f;
+    float writtenWindSpeed = 0.0f;
+    float writtenAltitudeWindRatio = 0.0f;
+    float writtenWindBlendContribution = 0.0f;
+    bool rainWriteSucceeded = false;
+    bool snowWriteSucceeded = false;
+    bool windWriteSucceeded = false;
+    __try {
+        nativeRain = *fields.rain;
+        nativeSnow = *fields.snow;
+        nativeWindSpeed = *fields.windSpeed;
+        nativeAltitudeWindRatio = *fields.altitudeWindRatio;
+        nativeWindBlendContribution = *fields.windBlendContribution;
+        if (rainMode != RainTableMode::Native) {
+            *fields.rain = desiredRain;
+            rainWriteSucceeded = true;
+        }
+        if (snowMode != SnowTableMode::Native) {
+            *fields.snow = desiredSnow;
+            snowWriteSucceeded = true;
+        }
+        if (windMode != WindTableMode::Native) {
+            writtenWindSpeed = nativeWindSpeed * desiredWindMultiplier;
+            writtenAltitudeWindRatio = nativeAltitudeWindRatio * desiredWindMultiplier;
+            writtenWindBlendContribution = nativeWindBlendContribution * desiredWindMultiplier;
+            if (std::isfinite(writtenWindSpeed) && std::isfinite(writtenAltitudeWindRatio) &&
+                std::isfinite(writtenWindBlendContribution)) {
+                *fields.windSpeed = writtenWindSpeed;
+                *fields.altitudeWindRatio = writtenAltitudeWindRatio;
+                *fields.windBlendContribution = writtenWindBlendContribution;
+                windWriteSucceeded = true;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_rainTableInvalidLayout.fetch_add(1, std::memory_order_relaxed);
+        return result;
+    }
+
+    if (rainWriteSucceeded) {
+        g_rainTableWrites.fetch_add(1, std::memory_order_relaxed);
+        if (fabsf(nativeRain - desiredRain) > 0.0001f) {
+            g_rainTableChanges.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (snowWriteSucceeded) {
+        g_snowTableWrites.fetch_add(1, std::memory_order_relaxed);
+        if (fabsf(nativeSnow - desiredSnow) > 0.0001f) {
+            g_snowTableChanges.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (windWriteSucceeded) {
+        g_windTableWrites.fetch_add(1, std::memory_order_relaxed);
+        if (fabsf(nativeWindSpeed - writtenWindSpeed) > 0.0001f ||
+            fabsf(nativeAltitudeWindRatio - writtenAltitudeWindRatio) > 0.0001f ||
+            fabsf(nativeWindBlendContribution - writtenWindBlendContribution) > 0.0001f) {
+            g_windTableChanges.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    const DWORD64 now = GetTickCount64();
+    bool expectedCapture = false;
+    if (g_rainTableCaptured.compare_exchange_strong(expectedCapture, true, std::memory_order_relaxed)) {
+        g_rainTableLastStatsTick.store(now, std::memory_order_relaxed);
+        Log("[weather-table] captured state=%p parent=%p child1=%p atmosphere=%p native={rain=%.3f snow=%.3f wind=%.3f altitude=%.3f blend=%.3f} thread=%lu\n",
+            reinterpret_cast<void*>(weatherState), reinterpret_cast<void*>(fields.parent),
+            reinterpret_cast<void*>(fields.child1), reinterpret_cast<void*>(fields.atmosphereNode),
+            nativeRain, nativeSnow, nativeWindSpeed,
+            nativeAltitudeWindRatio, nativeWindBlendContribution,
+            GetCurrentThreadId());
+    }
+
+    const int previousRainMode = g_rainTableLastMode.exchange(static_cast<int>(rainMode), std::memory_order_relaxed);
+    if (previousRainMode != static_cast<int>(rainMode)) {
+        Log("[weather-table] rain mode %s -> %s native=%.3f written=%.3f\n",
+            RainTableModeName(static_cast<RainTableMode>(previousRainMode)), RainTableModeName(rainMode),
+            nativeRain, rainMode == RainTableMode::Native ? nativeRain : desiredRain);
+    }
+    const int previousSnowMode = g_snowTableLastMode.exchange(static_cast<int>(snowMode), std::memory_order_relaxed);
+    if (previousSnowMode != static_cast<int>(snowMode)) {
+        Log("[weather-table] snow mode %s -> %s native=%.3f written=%.3f\n",
+            SnowTableModeName(static_cast<SnowTableMode>(previousSnowMode)), SnowTableModeName(snowMode),
+            nativeSnow, snowMode == SnowTableMode::Native ? nativeSnow : desiredSnow);
+    }
+    const int previousWindMode = g_windTableLastMode.exchange(static_cast<int>(windMode), std::memory_order_relaxed);
+    if (previousWindMode != static_cast<int>(windMode)) {
+        Log("[weather-table] wind mode %s -> %s multiplier=x%.3f native={speed=%.3f altitude=%.3f blend=%.3f} written={speed=%.3f altitude=%.3f blend=%.3f}\n",
+            WindTableModeName(static_cast<WindTableMode>(previousWindMode)), WindTableModeName(windMode),
+            desiredWindMultiplier, nativeWindSpeed, nativeAltitudeWindRatio, nativeWindBlendContribution,
+            windMode == WindTableMode::Native ? nativeWindSpeed : writtenWindSpeed,
+            windMode == WindTableMode::Native ? nativeAltitudeWindRatio : writtenAltitudeWindRatio,
+            windMode == WindTableMode::Native ? nativeWindBlendContribution : writtenWindBlendContribution);
+    }
+
+    if (rainMode != RainTableMode::Native || snowMode != SnowTableMode::Native ||
+        windMode != WindTableMode::Native) {
+        DWORD64 last = g_rainTableLastStatsTick.load(std::memory_order_relaxed);
+        if (now - last >= 30000 &&
+            g_rainTableLastStatsTick.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
+            Log("[weather-table] stats rain={mode=%s native=%.3f written=%.3f writes=%llu changed=%llu} snow={mode=%s native=%.3f written=%.3f writes=%llu changed=%llu} wind={mode=%s multiplier=x%.3f writes=%llu changed=%llu} calls=%llu invalid=%llu\n",
+                RainTableModeName(rainMode), nativeRain, desiredRain,
+                static_cast<unsigned long long>(g_rainTableWrites.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(g_rainTableChanges.load(std::memory_order_relaxed)),
+                SnowTableModeName(snowMode), nativeSnow, desiredSnow,
+                static_cast<unsigned long long>(g_snowTableWrites.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(g_snowTableChanges.load(std::memory_order_relaxed)),
+                WindTableModeName(windMode), desiredWindMultiplier,
+                static_cast<unsigned long long>(g_windTableWrites.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(g_windTableChanges.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(g_rainComposeCalls.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(g_rainTableInvalidLayout.load(std::memory_order_relaxed)));
+        }
+    }
+    return result;
 }
 
 __m128 __fastcall Hooked_GetDustIntensity(long long ws) {
+    const __m128 native = g_pOrigGetDustIntensity ? g_pOrigGetDustIntensity(ws) : PackScalar(0.0f);
+#if defined(CW_WIND_ONLY)
     if (!g_modEnabled.load()) {
-        return g_pOrigGetDustIntensity ? g_pOrigGetDustIntensity(ws) : PackScalar(0.0f);
+        return native;
     }
-    if (g_noDust.load() || g_noWind.load())
+    if (g_noWind.load())
         return PackScalar(0.0f);
     float mul = g_windMul.load();
     if (mul < 0.0f) mul = 0.0f;
     if (mul > 15.0f) mul = 15.0f;
-    if (g_oDust.active.load()) {
-        return PackScalar(DustSliderToNative(g_oDust.value.load()) * mul);
-    }
-    float v = g_pOrigGetDustIntensity ? ExtractScalar(g_pOrigGetDustIntensity(ws)) : 0.0f;
-    return PackScalar(v * mul);
-}
-
-static constexpr uint32_t kFogReceiverOverrideMask = 0x1F;
-static constexpr float kFogOverdriveNormAt100 = 2.4f;
-static constexpr float kFogDenseMax = 500.0f;
-static inline void ApplyAuthoritativeFogProfile(float fogValue,
-                                                float& v0, float& v1, float& v2, float& v3, float& v4) {
-    float fog = max(0.0f, fogValue);       
-    float fogN = (fog * 0.01f) * kFogOverdriveNormAt100; 
-    if (fogN <= 0.01f) {
-        v0 = 0.0f;
-        v1 = 0.0f;
-        v2 = 0.0f;
-        v3 = 0.0f;
-        v4 = 2.0f;
-        return;
-    }
-
-    float dense = min(kFogDenseMax, (fogN * fogN) * (6.0f + 14.0f * fogN));
-    v0 = dense;
-    v1 = dense;
-    v2 = dense;
-    v3 = dense;
-    v4 = max(0.01f, 2.0f * (1.0f - 0.995f * fogN));
-}
-
-struct FogProfile {
-    float v[5];
-};
-
-static bool BuildForcedFogProfile(FogProfile& out) {
-    const bool forceClear = g_forceClear.load();
-    const bool noFog = g_noFog.load();
-    if (forceClear || noFog) {
-        out.v[0] = 0.0f;
-        out.v[1] = 0.0f;
-        out.v[2] = 0.0f;
-        out.v[3] = 0.0f;
-        out.v[4] = 2.0f;
-        return true;
-    }
-    if (!g_oFog.active.load()) {
-        return false;
-    }
-    ApplyAuthoritativeFogProfile(max(0.0f, g_oFog.value.load()), out.v[0], out.v[1], out.v[2], out.v[3], out.v[4]);
-    return true;
-}
-
-static void StoreForcedFogProfile(const FogProfile& profile) {
-    for (int i = 0; i < 5; ++i) {
-        g_forcedFogSet[i].store(profile.v[i]);
-    }
-}
-
-static bool FogProfileNearlyEqual(const FogProfile& a, const FogProfile& b) {
-    for (int i = 0; i < 5; ++i) {
-        if (fabsf(a.v[i] - b.v[i]) > 0.0005f) {
-            return false;
-        }
-    }
-    return true;
-}
-
-void __fastcall Hooked_AtmosFogBlend(long long ctx, long long outParams) {
-    if (g_pOrigAtmosFogBlend) g_pOrigAtmosFogBlend(ctx, outParams);
-    if (!g_modEnabled.load()) return;
-    if (!outParams) return;
-
-    FogProfile profile{};
-    if (BuildForcedFogProfile(profile)) {
-        __try {
-            float* p = reinterpret_cast<float*>(outParams + 0x10);
-            for (int i = 0; i < 5; ++i) {
-                p[i] = profile.v[i];
-            }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
-}
-
-static bool AnyPackedCelestialOverrideActive() {
-    return g_oSunSize.active.load() || g_oMoonSize.active.load() || g_oExpNightSkyRot.active.load();
-}
-
-static float ResolveFogSetValue(int idx, float incoming) {
-    if (!g_modEnabled.load()) return incoming;
-    if (idx < 0 || idx >= 5) return incoming;
-    if ((kFogReceiverOverrideMask & (1u << idx)) == 0) return incoming;
-    if (g_forceClear.load() || g_noFog.load()) {
-        static constexpr float kClearFogProfile[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 2.0f };
-        return kClearFogProfile[idx];
-    }
-    if (!g_oFog.active.load()) return incoming;
-    float forced = g_forcedFogSet[idx].load();
-    return std::isfinite(forced) ? forced : incoming;
-}
-
-template <int Index>
-static void __fastcall Hooked_FogSetImpl(long long* receiver, float value) {
-    float outV = ResolveFogSetValue(Index, value);
-    auto fn = g_pOrigFogSet[Index];
-    if (fn) fn(receiver, outV);
-}
-
-void __fastcall Hooked_FogSet0(long long* receiver, float value) {
-    Hooked_FogSetImpl<0>(receiver, value);
-}
-void __fastcall Hooked_FogSet1(long long* receiver, float value) {
-    Hooked_FogSetImpl<1>(receiver, value);
-}
-void __fastcall Hooked_FogSet2(long long* receiver, float value) {
-    Hooked_FogSetImpl<2>(receiver, value);
-}
-void __fastcall Hooked_FogSet3(long long* receiver, float value) {
-    Hooked_FogSetImpl<3>(receiver, value);
-}
-void __fastcall Hooked_FogSet4(long long* receiver, float value) {
-    Hooked_FogSetImpl<4>(receiver, value);
-}
-
-static void TryInstallFogSetHooks(uintptr_t* rVt) {
-    if (!rVt) return;
-    bool expected = false;
-    if (!g_fogSetHooksAttempted.compare_exchange_strong(expected, true)) return;
-
-    struct HookDesc { int idx; int vtOff; void* detour; const char* name; };
-    const HookDesc kHooks[5] = {
-        {0, 0x08, (void*)&Hooked_FogSet0, "FogSet0"},
-        {1, 0x10, (void*)&Hooked_FogSet1, "FogSet1"},
-        {2, 0x18, (void*)&Hooked_FogSet2, "FogSet2"},
-        {3, 0x28, (void*)&Hooked_FogSet3, "FogSet3"},
-        {4, 0x20, (void*)&Hooked_FogSet4, "FogSet4"},
-    };
-
-    bool anyInstalled = false;
-    for (const auto& h : kHooks) {
-        uintptr_t addr = rVt[h.vtOff / 8];
-        g_addrFogSet[h.idx] = addr;
-        if (!addr) {
-            continue;
-        }
-
-        bool dup = false;
-        for (int i = 0; i < h.idx; ++i) {
-            if (g_addrFogSet[i] == addr) {
-                dup = true;
-                break;
-            }
-        }
-        if (dup) {
-            continue;
-        }
-
-        bool ok = InstallHook((void*)addr, h.detour, (void**)&g_pOrigFogSet[h.idx], h.name, false);
-        if (ok && g_pOrigFogSet[h.idx]) anyInstalled = true;
-    }
-
-    g_fogSetHooksInstalled.store(anyInstalled);
-}
-
-static bool ResolveFogReceiverFromFrame(long long* self, long long*& receiver, FogReceiverSet_fn* setters) {
-    receiver = nullptr;
-    if (setters) {
-        for (int i = 0; i < 5; ++i) {
-            setters[i] = nullptr;
-        }
-    }
-    if (!self) return false;
-    __try {
-        long long provider = *reinterpret_cast<long long*>(reinterpret_cast<uint8_t*>(self) + 0x48);
-        if (!provider) return false;
-        auto pVt = *reinterpret_cast<uintptr_t**>(provider);
-        if (!pVt) return false;
-        auto getReceiver = reinterpret_cast<FogReceiverGetter_fn>(pVt[0x190 / 8]);
-        if (!getReceiver) return false;
-        receiver = getReceiver(provider);
-        if (!receiver) return false;
-        auto rVt = *reinterpret_cast<uintptr_t**>(receiver);
-        if (!rVt) return false;
-
-        TryInstallFogSetHooks(rVt);
-        if (setters) {
-            setters[0] = reinterpret_cast<FogReceiverSet_fn>(rVt[0x08 / 8]);
-            setters[1] = reinterpret_cast<FogReceiverSet_fn>(rVt[0x10 / 8]);
-            setters[2] = reinterpret_cast<FogReceiverSet_fn>(rVt[0x18 / 8]);
-            setters[3] = reinterpret_cast<FogReceiverSet_fn>(rVt[0x28 / 8]);
-            setters[4] = reinterpret_cast<FogReceiverSet_fn>(rVt[0x20 / 8]);
-        }
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        receiver = nullptr;
-        return false;
-    }
-}
-
-static void ForceApplyFogFromFrame(long long* self) {
-    FogProfile profile{};
-    if (!BuildForcedFogProfile(profile)) return;
-    StoreForcedFogProfile(profile);
-
-    static FogProfile s_lastProfile{ { NAN, NAN, NAN, NAN, NAN } };
-    static uintptr_t s_lastReceiver = 0;
-    static DWORD64 s_lastRefreshMs = 0;
-    const DWORD64 now = GetTickCount64();
-    const bool profileChanged = !FogProfileNearlyEqual(profile, s_lastProfile);
-    const bool refreshDue = now - s_lastRefreshMs >= 250;
-    if (!profileChanged && !refreshDue) {
-        return;
-    }
-
-    long long* receiver = nullptr;
-    FogReceiverSet_fn setters[5] = {};
-    if (!ResolveFogReceiverFromFrame(self, receiver, setters)) {
-        return;
-    }
-
-    const uintptr_t receiverAddr = reinterpret_cast<uintptr_t>(receiver);
-    const bool receiverChanged = receiverAddr != s_lastReceiver;
-    if (!profileChanged && !receiverChanged && !refreshDue) {
-        return;
-    }
-
-    __try {
-        if ((kFogReceiverOverrideMask & (1u << 0)) != 0 && setters[0]) setters[0](receiver, profile.v[0]);
-        if ((kFogReceiverOverrideMask & (1u << 1)) != 0 && setters[1]) setters[1](receiver, profile.v[1]);
-        if ((kFogReceiverOverrideMask & (1u << 2)) != 0 && setters[2]) setters[2](receiver, profile.v[2]);
-        if ((kFogReceiverOverrideMask & (1u << 3)) != 0 && setters[3]) setters[3](receiver, profile.v[3]);
-        if ((kFogReceiverOverrideMask & (1u << 4)) != 0 && setters[4]) setters[4](receiver, profile.v[4]);
-        s_lastProfile = profile;
-        s_lastReceiver = receiverAddr;
-        s_lastRefreshMs = now;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        s_lastReceiver = 0;
-    }
-}
-
-static bool WeatherFrameFogWorkNeeded() {
-    return g_forceClear.load() || g_noFog.load() || g_oFog.active.load();
-}
-
-static void ResetFogBlendWeightsForNativeRefresh(long long* self) {
-    if (!self) {
-        return;
-    }
-    __try {
-        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x98) = 0.0f;
-        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x9C) = 0.0f;
-        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0xA0) = 0.0f;
-        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0xA4) = 0.0f;
-        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0xA8) = 0.0f;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
+    return PackScalar(ExtractScalar(native) * mul);
+#else
+    if (!g_modEnabled.load()) return native;
+    if (g_forceClear.load() || g_noDust.load()) return PackScalar(0.0f);
+    return native;
+#endif
 }
 
 static float ThunderRateCurve(float thunder) {
     thunder = min(1.0f, max(0.0f, thunder));
     return powf(thunder, 0.55f);
-}
-
-static constexpr float kCloudGeometryMax = 64.0f;
-
-struct CloudGeometry {
-    float top;
-    float thick;
-    float base;
-    float shapeA;
-    float shapeC;
-};
-
-static void ClampCloudGeometry(CloudGeometry& g) {
-    g.top = max(0.0f, g.top);
-    g.thick = max(0.0f, g.thick);
-    g.base = max(0.0f, g.base);
-    g.shapeA = max(0.0f, g.shapeA);
-    g.shapeC = max(0.0f, g.shapeC);
-}
-
-static bool IsReasonableCloudGeometry(const CloudGeometry& g) {
-    return std::isfinite(g.top) && std::isfinite(g.thick) && std::isfinite(g.base) &&
-        std::isfinite(g.shapeA) && std::isfinite(g.shapeC) &&
-        g.top <= kCloudGeometryMax && g.thick <= kCloudGeometryMax &&
-        g.base <= kCloudGeometryMax && g.shapeA <= kCloudGeometryMax &&
-        g.shapeC <= kCloudGeometryMax;
-}
-
-static bool ReadCloudGeometry(long long cloudNode, CloudGeometry& out) {
-    if (!cloudNode) return false;
-    const float top = At<float>(cloudNode, CN::CLOUD_TOP);
-    const float thick = At<float>(cloudNode, CN::CLOUD_THICK);
-    const float base = At<float>(cloudNode, CN::CLOUD_BASE);
-    const float sA = At<float>(cloudNode, CN::CLOUD_SHAPE_A);
-    const float sC = At<float>(cloudNode, CN::CLOUD_SHAPE_C);
-    if (!std::isfinite(top) || !std::isfinite(thick) || !std::isfinite(base) ||
-        !std::isfinite(sA) || !std::isfinite(sC)) {
-        return false;
-    }
-    out = { top, thick, base, sA, sC };
-    ClampCloudGeometry(out);
-    return IsReasonableCloudGeometry(out);
-}
-
-static bool LoadStoredCloudBase(CloudGeometry& out) {
-    if (!g_cloudBaseValid.load()) return false;
-    out.top = max(0.0f, g_cloudBaseTop.load());
-    out.thick = max(0.0f, g_cloudBaseThick.load());
-    out.base = max(0.0f, g_cloudBaseBase.load());
-    out.shapeA = max(0.0f, g_cloudBaseShapeA.load());
-    out.shapeC = max(0.0f, g_cloudBaseShapeC.load());
-    return IsReasonableCloudGeometry(out);
-}
-
-static bool BuildEffectiveCloudGeometry(long long cloudNode, CloudGeometry& base,
-                                        CloudGeometry& effective) {
-    if (!LoadStoredCloudBase(base) && !ReadCloudGeometry(cloudNode, base)) {
-        return false;
-    }
-    effective = base;
-    return true;
-}
-
-static void ApplyCloudShapeMultipliers(const CloudGeometry& source, float mulX, float mulZ,
-                                       CloudGeometry& out) {
-    out = source;
-    const float center = 0.5f * (source.top + source.base);
-    const float halfSpan = max(0.0f, 0.5f * (source.top - source.base)) * mulX;
-    out.top = max(0.0f, center + halfSpan);
-    out.base = max(0.0f, center - halfSpan);
-    out.shapeA = max(0.0f, source.shapeA * mulZ);
-    out.shapeC = max(0.0f, source.shapeC * mulZ);
-}
-
-static void CaptureCloudBaseline(const ResolvedEnv& env) {
-    if (!env.valid) return;
-    const bool hadBaseline = g_cloudBaseValid.load();
-    const bool cloudShapeOverrideActive = g_oCloudSpdY.active.load();
-    CloudGeometry live{};
-    if (ReadCloudGeometry(env.cloudNode, live)) {
-        if (!(cloudShapeOverrideActive && hadBaseline)) {
-            g_cloudBaseTop.store(live.top);
-            g_cloudBaseThick.store(live.thick);
-            g_cloudBaseBase.store(live.base);
-            g_cloudBaseShapeA.store(live.shapeA);
-            g_cloudBaseShapeC.store(live.shapeC);
-            g_cloudBaseValid.store(true);
-        }
-
-    }
-
-}
-
-static void ApplyCloudOverrides(const ResolvedEnv& env) {
-    if (!env.valid) return;
-    const bool cloudShapeActive = g_oCloudSpdY.active.load();
-    if (!cloudShapeActive) return;
-
-    const float mulX = 1.0f;
-    const float mulZ = cloudShapeActive ? min(10.0f, max(0.0f, g_oCloudSpdY.get(1.0f))) : 1.0f;
-
-    if (cloudShapeActive && env.cloudNode) {
-        CloudGeometry base{};
-        CloudGeometry effective{};
-        if (BuildEffectiveCloudGeometry(env.cloudNode, base, effective)) {
-
-            CloudGeometry rendered = effective;
-            ApplyCloudShapeMultipliers(effective, mulX, mulZ, rendered);
-
-            At<float>(env.cloudNode, CN::CLOUD_TOP) = rendered.top;
-            At<float>(env.cloudNode, CN::CLOUD_BASE) = rendered.base;
-            At<float>(env.cloudNode, CN::CLOUD_SHAPE_A) = rendered.shapeA;
-            At<float>(env.cloudNode, CN::CLOUD_SHAPE_C) = rendered.shapeC;
-        }
-    }
-}
-
-struct AtmosphereCloudPack {
-    float baseScale;
-    float visibleRange;
-    float density;
-    float contrast;
-    float alpha;
-    float scroll;
-    float altitude;
-    float thickness;
-    float nearPlane;
-};
-
-static bool ReadAtmosphereCloudPack(const float* packedOut, AtmosphereCloudPack& out) {
-    if (!packedOut) return false;
-    out.baseScale = packedOut[0x04];
-    out.visibleRange = packedOut[0x0A];
-    out.density = packedOut[0x2C];
-    out.contrast = packedOut[0x2D];
-    out.alpha = packedOut[0x2F];
-    out.scroll = packedOut[0x30];
-    out.altitude = packedOut[0x31];
-    out.thickness = packedOut[0x32];
-    out.nearPlane = packedOut[0x33];
-    return std::isfinite(out.baseScale) && std::isfinite(out.visibleRange) &&
-           std::isfinite(out.density) && std::isfinite(out.contrast) &&
-           std::isfinite(out.alpha) && std::isfinite(out.scroll) &&
-           std::isfinite(out.altitude) && std::isfinite(out.thickness) &&
-           std::isfinite(out.nearPlane);
 }
 
 static float CloudAmountUiToMultiplier(float ui) {
@@ -860,15 +736,370 @@ static float CloudHeightUiToMultiplier(float ui) {
     return 1.0f + ((ui - 1.0f) * (9.0f / 14.0f));
 }
 
-static constexpr int kPackedSunSize = 0x02;
-static constexpr int kPackedSunSizeCos = 0x03;
-static constexpr int kPackedSunDirection = 0x04;
-static constexpr int kPackedMoonSize = 0x07;
-static constexpr int kPackedMoonSizeCos = 0x08;
-static constexpr int kPackedMoonDirection = 0x09;
-static constexpr int kPackedEarthAxisTilt = 0x0A;
-static constexpr int kPackedLatitude = 0x0B;
-static constexpr float kPackedAngleToRad = 0.01745329251994329577f;
+static unsigned int PackAtmosphereColor(float r, float g, float b, float a) {
+    const auto toByte = [](float value) -> unsigned int {
+        return static_cast<unsigned int>(min(1.0f, max(0.0f, value)) * 255.0f + 0.5f);
+    };
+    return (toByte(a) << 24) | (toByte(r) << 16) | (toByte(g) << 8) | toByte(b);
+}
+
+static float AtmosphereColorChannel(unsigned int color, unsigned int shift) {
+    return static_cast<float>((color >> shift) & 0xFFu) / 255.0f;
+}
+
+static void ApplyAtmosphereTableOverrides(uintptr_t atmosphereNode) {
+    if (!atmosphereNode || !g_modEnabled.load()) return;
+
+    __try {
+        const auto read = [atmosphereNode](ptrdiff_t offset) -> float {
+            return *reinterpret_cast<float*>(atmosphereNode + offset);
+        };
+        const auto write = [atmosphereNode](ptrdiff_t offset, float value) {
+            *reinterpret_cast<float*>(atmosphereNode + offset) = value;
+        };
+        const auto readColor = [atmosphereNode](ptrdiff_t offset) -> unsigned int {
+            return *reinterpret_cast<unsigned int*>(atmosphereNode + offset);
+        };
+        const auto writeColor = [atmosphereNode](ptrdiff_t offset, unsigned int value) {
+            *reinterpret_cast<unsigned int*>(atmosphereNode + offset) = value;
+        };
+
+        const float sunSize = read(AtmosphereTableField::SunSize);
+        const float moonSize = read(AtmosphereTableField::MoonSize);
+        const float earthAxisTilt = read(AtmosphereTableField::EarthAxisTilt);
+        const float latitude = read(AtmosphereTableField::Latitude);
+        if (!g_oSunSize.active.load() && std::isfinite(sunSize)) {
+            g_atmoBaseSunSize.store(sunSize);
+        }
+        if (!g_oMoonSize.active.load() && std::isfinite(moonSize)) {
+            g_atmoBaseMoonSize.store(moonSize);
+        }
+        if (!g_oExpNightSkyRot.active.load() && std::isfinite(earthAxisTilt)) {
+            g_windPackBase0A.store(earthAxisTilt);
+            g_windPackBase0AValid.store(true);
+        }
+        if (!g_oExpNightSkyRot.active.load() && std::isfinite(latitude)) {
+            g_windPackBase0B.store(latitude);
+            g_windPackBase0BValid.store(true);
+        }
+        if (std::isfinite(sunSize) && std::isfinite(moonSize)) {
+            g_atmoCelestialBaseValid.store(true);
+        }
+
+        const float sunLight = read(AtmosphereTableField::SunLightIntensity);
+        if (!g_oSunLightIntensity.active.load() && std::isfinite(sunLight)) {
+            g_windPackBase00.store(sunLight);
+            g_windPackBase00Valid.store(true);
+        }
+        const float moonLight = read(AtmosphereTableField::MoonLightIntensity);
+        if (!g_oMoonLightIntensity.active.load() && std::isfinite(moonLight)) {
+            g_windPackBase05.store(moonLight);
+            g_windPackBase05Valid.store(true);
+        }
+        const unsigned int rayleighColor = readColor(AtmosphereTableField::RayleighScatteringColor);
+        if (!g_oRayleighScatteringColor.active.load()) {
+            g_windPackBase0FBits.store(rayleighColor);
+            g_windPackBase0FValid.store(true);
+        }
+        const float rayleighHeight = read(AtmosphereTableField::RayleighHeight);
+        if (!g_oRayleighHeight.active.load() && std::isfinite(rayleighHeight)) {
+            g_windPackBase0E.store(rayleighHeight);
+            g_windPackBase0EValid.store(true);
+        }
+        const float ozoneRatio = read(AtmosphereTableField::OzoneRatio);
+        if (!g_oOzoneRatio.active.load() && std::isfinite(ozoneRatio)) {
+            g_windPackBase14.store(ozoneRatio);
+            g_windPackBase14Valid.store(true);
+        }
+
+        if (g_oSunLightIntensity.active.load() && std::isfinite(g_oSunLightIntensity.value.load())) {
+            write(AtmosphereTableField::SunLightIntensity,
+                  min(100.0f, max(0.0f, g_oSunLightIntensity.value.load())));
+        }
+        if (g_oMoonLightIntensity.active.load() && std::isfinite(g_oMoonLightIntensity.value.load())) {
+            write(AtmosphereTableField::MoonLightIntensity,
+                  min(100.0f, max(0.0f, g_oMoonLightIntensity.value.load())));
+        }
+        if (g_oRayleighScatteringColor.active.load()) {
+            writeColor(AtmosphereTableField::RayleighScatteringColor,
+                       PackAtmosphereColor(g_oRayleighScatteringColor.r.load(),
+                                           g_oRayleighScatteringColor.g.load(),
+                                           g_oRayleighScatteringColor.b.load(), 0.0f));
+        }
+        if (g_oRayleighHeight.active.load() && std::isfinite(g_oRayleighHeight.value.load())) {
+            write(AtmosphereTableField::RayleighHeight,
+                  min(200000.0f, max(1.0f, g_oRayleighHeight.value.load())));
+        }
+        if (g_oOzoneRatio.active.load() && std::isfinite(g_oOzoneRatio.value.load())) {
+            write(AtmosphereTableField::OzoneRatio,
+                  min(100.0f, max(0.0f, g_oOzoneRatio.value.load())));
+        }
+        if (g_oSunSize.active.load()) {
+            write(AtmosphereTableField::SunSize,
+                  min(10.0f, max(0.01f, g_oSunSize.value.load())));
+        }
+        if (g_oMoonSize.active.load()) {
+            write(AtmosphereTableField::MoonSize,
+                  min(100.0f, max(0.001f, g_oMoonSize.value.load())));
+        }
+        if (g_oExpNightSkyRot.active.load() && g_windPackBase0BValid.load()) {
+            const float pitch = min(89.0f, max(-89.0f, g_oExpNightSkyRot.value.load()));
+            write(AtmosphereTableField::EarthAxisTilt,
+                  pitch - 90.0f + g_windPackBase0B.load());
+        }
+
+        const float mieScaleHeight = read(AtmosphereTableField::MieScaleHeight);
+        if (!g_oMieScaleHeight.active.load() && std::isfinite(mieScaleHeight)) {
+            g_windPackBase10.store(mieScaleHeight);
+            g_windPackBase10Valid.store(true);
+        }
+        const float mieDensity = read(AtmosphereTableField::MieAerosolDensity);
+        if (!g_oNativeFog.active.load() && !g_oMieAerosolDensity.active.load() &&
+            std::isfinite(mieDensity)) {
+            g_windPackBase11.store(mieDensity);
+            g_windPackBase11Valid.store(true);
+        }
+        const float mieAbsorption = read(AtmosphereTableField::MieAerosolAbsorption);
+        if (!g_oMieAerosolAbsorption.active.load() && std::isfinite(mieAbsorption)) {
+            g_windPackBase12.store(mieAbsorption);
+            g_windPackBase12Valid.store(true);
+        }
+        const float nativeFogSecondary = read(AtmosphereTableField::NativeFogSecondary);
+        if (!g_oNativeFog.active.load() && std::isfinite(nativeFogSecondary)) {
+            g_windPackBase17.store(nativeFogSecondary);
+            g_windPackBase17Valid.store(true);
+        }
+        const float heightFogBaseline = read(AtmosphereTableField::HeightFogBaseline);
+        if (!g_oHeightFogBaseline.active.load() && std::isfinite(heightFogBaseline)) {
+            g_windPackBase18.store(heightFogBaseline);
+            g_windPackBase18Valid.store(true);
+        }
+        const float heightFogFalloff = read(AtmosphereTableField::HeightFogFalloff);
+        if (!g_oHeightFogFalloff.active.load() && std::isfinite(heightFogFalloff)) {
+            g_windPackBase19.store(heightFogFalloff);
+            g_windPackBase19Valid.store(true);
+        }
+        const unsigned int volumeFogColor = readColor(AtmosphereTableField::VolumeFogScatterColor);
+        if (!g_oVolumeFogScatterColor.active.load()) {
+            g_windPackBase34.store(AtmosphereColorChannel(volumeFogColor, 16));
+            g_windPackBase35.store(AtmosphereColorChannel(volumeFogColor, 8));
+            g_windPackBase36.store(AtmosphereColorChannel(volumeFogColor, 0));
+            g_windPackBase37.store(AtmosphereColorChannel(volumeFogColor, 24));
+            g_windPackBaseVolumeFogColorValid.store(true);
+        }
+        const unsigned int mieScatterColor = readColor(AtmosphereTableField::MieScatterColor);
+        if (!g_oMieScatterColor.active.load()) {
+            g_windPackBase38.store(AtmosphereColorChannel(mieScatterColor, 16));
+            g_windPackBase39.store(AtmosphereColorChannel(mieScatterColor, 8));
+            g_windPackBase3A.store(AtmosphereColorChannel(mieScatterColor, 0));
+            g_windPackBase3B.store(AtmosphereColorChannel(mieScatterColor, 24));
+            g_windPackBaseMieScatterColorValid.store(true);
+        }
+
+        const float cloudHeight = read(AtmosphereTableField::CloudHeight);
+        const float cloudShape = read(AtmosphereTableField::CloudShape);
+        const float highCloudAmount = read(AtmosphereTableField::HighCloudAmount);
+        const float midCloudAmount = read(AtmosphereTableField::MidCloudAmount);
+        if (std::isfinite(cloudHeight) && std::isfinite(cloudShape) &&
+            std::isfinite(highCloudAmount) && std::isfinite(midCloudAmount) &&
+            !g_windPackBaseValid.load()) {
+            g_windPackBase23.store(cloudHeight);
+            g_windPackBase24.store(cloudShape);
+            g_windPackBase2F.store(highCloudAmount);
+            g_windPackBase30.store(midCloudAmount);
+            g_windPackBaseValid.store(true);
+        }
+
+        const float cloudAmount = read(AtmosphereTableField::CloudAmount);
+        if (!g_oCloudAmount.active.load() && std::isfinite(cloudAmount)) {
+            g_windPackBase1B.store(cloudAmount);
+            g_windPackBase1BValid.store(true);
+        }
+        if (!g_oHighClouds.active.load() && std::isfinite(midCloudAmount)) {
+            g_windPackBase30.store(midCloudAmount);
+        }
+        if (!g_oAtmoAlpha.active.load() && std::isfinite(highCloudAmount)) {
+            g_windPackBase2F.store(highCloudAmount);
+        }
+
+        const float baseDensity = read(AtmosphereTableField::CloudBaseDensity);
+        if (!g_oExpCloud2C.active.load() && std::isfinite(baseDensity)) {
+            g_windPackBase2C.store(baseDensity);
+            g_windPackBase2CValid.store(true);
+        }
+        const float baseContrast = read(AtmosphereTableField::CloudBaseContrast);
+        if (!g_oExpCloud2D.active.load() && std::isfinite(baseContrast)) {
+            g_windPackBase2D.store(baseContrast);
+            g_windPackBase2DValid.store(true);
+        }
+        const float variation = read(AtmosphereTableField::CloudVariation);
+        if (!g_oCloudVariation.active.load() && std::isfinite(variation)) {
+            g_windPackBase32.store(variation);
+            g_windPackBase32Valid.store(true);
+        }
+
+        const float cloudAlpha = read(AtmosphereTableField::CloudAlpha);
+        if (!g_oCloudAlpha.active.load() && std::isfinite(cloudAlpha)) {
+            g_windPackBase1E.store(cloudAlpha);
+            g_windPackBase1EValid.store(true);
+        }
+        const float cloudFlow = read(AtmosphereTableField::CloudFlow);
+        if (!g_oCloudFlow.active.load() && std::isfinite(cloudFlow)) {
+            g_windPackBase1F.store(cloudFlow);
+            g_windPackBase1FValid.store(true);
+        }
+        const float scattering = read(AtmosphereTableField::CloudScatteringCoefficient);
+        if (!g_oCloudScatteringCoefficient.active.load() && std::isfinite(scattering)) {
+            g_windPackBase20.store(scattering);
+            g_windPackBase20Valid.store(true);
+        }
+        const float phaseFront = read(AtmosphereTableField::CloudPhaseFront);
+        if (!g_oCloudPhaseFront.active.load() && std::isfinite(phaseFront)) {
+            g_windPackBase21.store(phaseFront);
+            g_windPackBase21Valid.store(true);
+        }
+        const float visibleRange = read(AtmosphereTableField::CloudVisibleRange);
+        if (!g_oCloudVisibleRange.active.load() && std::isfinite(visibleRange)) {
+            g_windPackBase25.store(visibleRange);
+            g_windPackBase25Valid.store(true);
+        }
+        const float fadeRange = read(AtmosphereTableField::CloudFadeRange);
+        if (!g_oCloudFadeRange.active.load() && std::isfinite(fadeRange)) {
+            g_windPackBase27.store(fadeRange);
+            g_windPackBase27Valid.store(true);
+        }
+        const float detailRatio = read(AtmosphereTableField::CloudDetailRatio);
+        if (!g_oCloudDetailRatio.active.load() && std::isfinite(detailRatio)) {
+            g_windPackBase28.store(detailRatio);
+            g_windPackBase28Valid.store(true);
+        }
+
+        if (g_forceClear.load()) {
+            write(AtmosphereTableField::CloudAmount, 0.0f);
+            write(AtmosphereTableField::MieAerosolDensity, 0.0f);
+            write(AtmosphereTableField::NativeFogSecondary, 0.0f);
+            return;
+        }
+
+        const bool noFog = g_noFog.load();
+        if (noFog) {
+            write(AtmosphereTableField::MieAerosolDensity, 0.0f);
+            write(AtmosphereTableField::NativeFogSecondary, 0.0f);
+        }
+
+        if ((g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load()) && g_windPackBaseValid.load()) {
+            const float heightMul = CloudHeightUiToMultiplier(g_oCloudSpdX.get(1.0f));
+            const float shapeMul = min(10.0f, max(0.0f, g_oCloudSpdY.get(1.0f)));
+            write(AtmosphereTableField::CloudHeight, g_windPackBase23.load() * heightMul);
+            write(AtmosphereTableField::CloudShape, g_windPackBase24.load() * shapeMul);
+        }
+        if (g_oCloudAmount.active.load() && g_windPackBase1BValid.load()) {
+            const float mul = CloudAmountUiToMultiplier(g_oCloudAmount.get(1.0f));
+            write(AtmosphereTableField::CloudAmount,
+                  min(3.0f, max(0.0f, g_windPackBase1B.load() * mul)));
+        }
+        if (g_oHighClouds.active.load() && g_windPackBaseValid.load()) {
+            const float mul = min(15.0f, max(0.0f, g_oHighClouds.get(1.0f)));
+            write(AtmosphereTableField::MidCloudAmount, g_windPackBase30.load() * mul);
+        }
+        if (g_oAtmoAlpha.active.load() && g_windPackBaseValid.load()) {
+            const float mul = min(15.0f, max(0.0f, g_oAtmoAlpha.get(1.0f)));
+            write(AtmosphereTableField::HighCloudAmount, g_windPackBase2F.load() * mul);
+        }
+        if (g_oExpCloud2C.active.load() && g_windPackBase2CValid.load()) {
+            const float mul = min(15.0f, max(0.0f, g_oExpCloud2C.get(1.0f)));
+            write(AtmosphereTableField::CloudBaseDensity, g_windPackBase2C.load() * mul);
+        }
+        if (g_oExpCloud2D.active.load() && g_windPackBase2DValid.load()) {
+            const float mul = min(15.0f, max(0.0f, g_oExpCloud2D.get(1.0f)));
+            write(AtmosphereTableField::CloudBaseContrast, g_windPackBase2D.load() * mul);
+        }
+        if (g_oCloudVariation.active.load() && g_windPackBase32Valid.load()) {
+            const float mul = min(15.0f, max(0.0f, g_oCloudVariation.get(1.0f)));
+            write(AtmosphereTableField::CloudVariation, g_windPackBase32.load() * mul);
+        }
+        if (g_oCloudAlpha.active.load()) {
+            write(AtmosphereTableField::CloudAlpha,
+                  min(100.0f, max(0.0f, g_oCloudAlpha.value.load())));
+        }
+        if (g_oCloudScatteringCoefficient.active.load()) {
+            write(AtmosphereTableField::CloudScatteringCoefficient,
+                  min(100.0f, max(kCloudScatteringCoefficientMin,
+                                  g_oCloudScatteringCoefficient.value.load())));
+        }
+        if (g_oCloudFlow.active.load()) {
+            write(AtmosphereTableField::CloudFlow,
+                  min(50.0f, max(0.0f, g_oCloudFlow.value.load())));
+        }
+        if (g_oCloudVisibleRange.active.load() && g_windPackBase25Valid.load()) {
+            const float mul = min(10.0f, max(0.0f, g_oCloudVisibleRange.value.load()));
+            write(AtmosphereTableField::CloudVisibleRange, g_windPackBase25.load() * mul);
+        }
+        if (g_oCloudPhaseFront.active.load()) {
+            write(AtmosphereTableField::CloudPhaseFront,
+                  min(1.0f, max(-1.0f, g_oCloudPhaseFront.value.load())));
+        }
+        if (g_oCloudFadeRange.active.load()) {
+            write(AtmosphereTableField::CloudFadeRange,
+                  min(200000.0f, max(0.0f, g_oCloudFadeRange.value.load())));
+        }
+        if (g_oCloudDetailRatio.active.load()) {
+            write(AtmosphereTableField::CloudDetailRatio,
+                  min(1.5f, max(0.0f, g_oCloudDetailRatio.value.load())));
+        }
+
+        if (!noFog && g_oNativeFog.active.load()) {
+            const float fogMul = 1.0f + min(15.0f, max(0.0f, g_oNativeFog.value.load()));
+            if (g_windPackBase11Valid.load()) {
+                write(AtmosphereTableField::MieAerosolDensity, g_windPackBase11.load() * fogMul);
+            }
+            if (g_windPackBase17Valid.load()) {
+                write(AtmosphereTableField::NativeFogSecondary, g_windPackBase17.load() * fogMul);
+            }
+        }
+        if (!noFog) {
+            if (g_oMieScaleHeight.active.load()) {
+                write(AtmosphereTableField::MieScaleHeight,
+                      min(200000.0f, max(1.0f, g_oMieScaleHeight.value.load())));
+            }
+            if (g_oMieAerosolDensity.active.load()) {
+                write(AtmosphereTableField::MieAerosolDensity,
+                      min(100.0f, max(0.0f, g_oMieAerosolDensity.value.load())));
+            }
+            if (g_oMieAerosolAbsorption.active.load()) {
+                write(AtmosphereTableField::MieAerosolAbsorption,
+                      min(100.0f, max(0.0f, g_oMieAerosolAbsorption.value.load())));
+            }
+            if (g_oHeightFogBaseline.active.load()) {
+                write(AtmosphereTableField::HeightFogBaseline,
+                      min(50000.0f, max(-50000.0f, g_oHeightFogBaseline.value.load())));
+            }
+            if (g_oHeightFogFalloff.active.load()) {
+                write(AtmosphereTableField::HeightFogFalloff,
+                      min(100.0f, max(0.0f, g_oHeightFogFalloff.value.load())));
+            }
+            if (g_oVolumeFogScatterColor.active.load()) {
+                writeColor(AtmosphereTableField::VolumeFogScatterColor,
+                           PackAtmosphereColor(g_oVolumeFogScatterColor.r.load(),
+                                               g_oVolumeFogScatterColor.g.load(),
+                                               g_oVolumeFogScatterColor.b.load(),
+                                               g_oVolumeFogScatterColor.a.load()));
+            }
+            if (g_oMieScatterColor.active.load()) {
+                writeColor(AtmosphereTableField::MieScatterColor,
+                           PackAtmosphereColor(g_oMieScatterColor.r.load(),
+                                               g_oMieScatterColor.g.load(),
+                                               g_oMieScatterColor.b.load(),
+                                               g_oMieScatterColor.a.load()));
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("[W] atmosphere table override exception node=%p\n",
+            reinterpret_cast<void*>(atmosphereNode));
+    }
+}
+
 static constexpr float kDegToRad = 0.01745329251994329577f;
 static constexpr float kRadToDeg = 57.295779513082320876f;
 static constexpr int kSceneTimeW = 3;
@@ -891,19 +1122,6 @@ static unsigned int FloatBits(float value) {
     unsigned int bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     return bits;
-}
-
-static float FloatFromBits(unsigned int bits) {
-    float value = 0.0f;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
-}
-
-static unsigned int PackRgbBits(float r, float g, float b) {
-    const auto toByte = [](float value) -> unsigned int {
-        return static_cast<unsigned int>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
-    };
-    return (toByte(r) << 16) | (toByte(g) << 8) | toByte(b);
 }
 
 static float NormalizeSignedDegrees(float v) {
@@ -982,77 +1200,6 @@ static void StoreMoonBasis(float* scene, CwVec3 moonDir, float rollDegrees) {
     StoreFloat4Direction(scene, kSceneMoonUp, up);
 }
 
-static void CapturePackedCelestialBase(const float* packedOut) {
-    if (!packedOut) return;
-    if (!std::isfinite(packedOut[kPackedSunSize]) ||
-        !std::isfinite(packedOut[kPackedSunDirection]) ||
-        !std::isfinite(packedOut[kPackedMoonSize]) ||
-        !std::isfinite(packedOut[kPackedMoonDirection])) {
-        return;
-    }
-
-    if (!g_oSunSize.active.load()) {
-        g_atmoBaseSunSize.store(packedOut[kPackedSunSize]);
-    }
-    if (!g_oMoonSize.active.load()) {
-        g_atmoBaseMoonSize.store(packedOut[kPackedMoonSize]);
-    }
-    if (!g_oExpNightSkyRot.active.load() && std::isfinite(packedOut[kPackedEarthAxisTilt])) {
-        g_windPackBase0A.store(packedOut[kPackedEarthAxisTilt]);
-        g_windPackBase0AValid.store(true);
-    }
-    if (!g_oExpNightSkyRot.active.load() && std::isfinite(packedOut[kPackedLatitude])) {
-        g_windPackBase0B.store(packedOut[kPackedLatitude]);
-        g_windPackBase0BValid.store(true);
-    }
-
-    if (!g_atmoCelestialBaseValid.load()) {
-        g_atmoCelestialBaseValid.store(true);
-    }
-}
-
-static void ApplyPackedCelestialOverrides(float* packedOut) {
-    if (!packedOut) return;
-    CapturePackedCelestialBase(packedOut);
-
-    if (g_oSunLightIntensity.active.load() && std::isfinite(g_oSunLightIntensity.value.load())) {
-        packedOut[0x00] = ClampFloat(g_oSunLightIntensity.value.load(), 0.0f, 100.0f);
-    }
-    if (g_oMoonLightIntensity.active.load() && std::isfinite(g_oMoonLightIntensity.value.load())) {
-        packedOut[0x05] = ClampFloat(g_oMoonLightIntensity.value.load(), 0.0f, 100.0f);
-    }
-    if (g_oRayleighScatteringColor.active.load()) {
-        packedOut[0x0F] = FloatFromBits(PackRgbBits(
-            g_oRayleighScatteringColor.r.load(),
-            g_oRayleighScatteringColor.g.load(),
-            g_oRayleighScatteringColor.b.load()));
-    }
-    if (g_oRayleighHeight.active.load() && std::isfinite(g_oRayleighHeight.value.load())) {
-        packedOut[0x0E] = ClampFloat(g_oRayleighHeight.value.load(), 1.0f, 200000.0f);
-    }
-    if (g_oOzoneRatio.active.load() && std::isfinite(g_oOzoneRatio.value.load())) {
-        packedOut[0x14] = ClampFloat(g_oOzoneRatio.value.load(), 0.0f, 100.0f);
-    }
-
-    if (!AnyPackedCelestialOverrideActive() || !g_atmoCelestialBaseValid.load()) return;
-
-    if (g_oSunSize.active.load()) {
-        const float size = ClampFloat(g_oSunSize.value.load(), 0.01f, 10.0f);
-        packedOut[kPackedSunSize] = size;
-        packedOut[kPackedSunSizeCos] = cosf(size * kPackedAngleToRad);
-    }
-    if (g_oMoonSize.active.load()) {
-        const float size = ClampFloat(g_oMoonSize.value.load(), 0.001f, 100.0f);
-        packedOut[kPackedMoonSize] = size;
-        packedOut[kPackedMoonSizeCos] = cosf(size * kPackedAngleToRad);
-    }
-    if (g_oExpNightSkyRot.active.load() && g_windPackBase0BValid.load()) {
-        const float pitch = ClampFloat(g_oExpNightSkyRot.value.load(), -89.0f, 89.0f);
-        packedOut[kPackedEarthAxisTilt] = pitch - 90.0f + g_windPackBase0B.load();
-    }
-
-}
-
 static void CaptureSceneCelestialBase(const float* scene) {
     if (!scene) return;
     CwVec3 sunDir{ scene[kSceneSunDirection + 0], scene[kSceneSunDirection + 1], scene[kSceneSunDirection + 2] };
@@ -1085,13 +1232,16 @@ static void CaptureSceneCelestialBase(const float* scene) {
     }
 }
 
+static bool AnySceneCelestialOverrideActive() {
+    return g_oSunDirX.active.load() || g_oSunDirY.active.load() ||
+           g_oMoonDirX.active.load() || g_oMoonDirY.active.load() ||
+           g_oMoonRoll.active.load() || g_oNightSkyYaw.active.load();
+}
+
 static bool ApplySceneCelestialOverrides(float* scene) {
-    if (!scene) return false;
+    if (!scene || !AnySceneCelestialOverrideActive()) return false;
     CaptureSceneCelestialBase(scene);
-    const bool sceneOverrideActive = g_oSunDirX.active.load() || g_oSunDirY.active.load() ||
-                                     g_oMoonDirX.active.load() || g_oMoonDirY.active.load() ||
-                                     g_oMoonRoll.active.load() || g_oNightSkyYaw.active.load();
-    if (!sceneOverrideActive || !g_sceneCelestialBaseValid.load()) return false;
+    if (!g_sceneCelestialBaseValid.load()) return false;
 
     if (g_oSunDirX.active.load() || g_oSunDirY.active.load()) {
         const float yaw = g_oSunDirX.active.load() ? g_oSunDirX.value.load() : g_sceneBaseSunYaw.load();
@@ -1117,7 +1267,7 @@ static bool ApplySceneCelestialOverrides(float* scene) {
 
 void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context) {
     void* result = g_pOrigSceneFrameUpdate ? g_pOrigSceneFrameUpdate(self, context) : nullptr;
-    if (!g_modEnabled.load() || !self ||
+    if (!g_modEnabled.load() || !AnySceneCelestialOverrideActive() || !self ||
         !g_sceneFrameSourceOffset || !g_sceneFrameOwnerOffset) {
         return result;
     }
@@ -1143,316 +1293,10 @@ void* __fastcall Hooked_SceneFrameUpdate(long long self, long long context) {
     return result;
 }
 
-void __fastcall Hooked_WindPack(long long* windNodePtr, float* packedOut) {
-    const bool modEnabled = g_modEnabled.load();
-    if (g_pOrigWindPack) g_pOrigWindPack(windNodePtr, packedOut);
-    if (!packedOut) return;
-    if (!modEnabled) return;
-
-    ApplyPackedCelestialOverrides(packedOut);
-
-    AtmosphereCloudPack nativeCloudPack{};
-    const bool nativeCloudValid = ReadAtmosphereCloudPack(packedOut, nativeCloudPack);
-    float v23 = packedOut[0x23], v24 = packedOut[0x24];
-    float v2F = packedOut[0x2F], v30 = packedOut[0x30];
-    bool finiteAll = std::isfinite(v23) && std::isfinite(v24) &&
-                     std::isfinite(v2F) && std::isfinite(v30);
-    if (finiteAll && !g_windPackBaseValid.load()) {
-        g_windPackBase23.store(v23);
-        g_windPackBase24.store(v24);
-        g_windPackBase2F.store(v2F);
-        g_windPackBase30.store(v30);
-        g_windPackBaseValid.store(true);
-    }
-    if (nativeCloudValid) {
-        if (!g_oHighClouds.active.load() && std::isfinite(nativeCloudPack.scroll)) {
-            g_windPackBase30.store(nativeCloudPack.scroll);
-        }
-        if (!g_oAtmoAlpha.active.load() && std::isfinite(nativeCloudPack.alpha)) {
-            g_windPackBase2F.store(nativeCloudPack.alpha);
-        }
-        if (!g_oCloudVariation.active.load() && std::isfinite(nativeCloudPack.thickness)) {
-            g_windPackBase32.store(nativeCloudPack.thickness);
-            g_windPackBase32Valid.store(true);
-        }
-    }
-    if (!g_oExpCloud2C.active.load() && std::isfinite(packedOut[0x2C])) {
-        g_windPackBase2C.store(packedOut[0x2C]);
-        g_windPackBase2CValid.store(true);
-    }
-    if (!g_oExpCloud2D.active.load() && std::isfinite(packedOut[0x2D])) {
-        g_windPackBase2D.store(packedOut[0x2D]);
-        g_windPackBase2DValid.store(true);
-    }
-    if (!g_oNativeFog.active.load() && !g_oMieAerosolDensity.active.load() && std::isfinite(packedOut[0x11])) {
-        g_windPackBase11.store(packedOut[0x11]);
-        g_windPackBase11Valid.store(true);
-    }
-    if (!g_oNativeFog.active.load() && std::isfinite(packedOut[0x17])) {
-        g_windPackBase17.store(packedOut[0x17]);
-        g_windPackBase17Valid.store(true);
-    }
-    if (std::isfinite(packedOut[0x1B])) {
-        g_windPackBase1B.store(packedOut[0x1B]);
-        g_windPackBase1BValid.store(true);
-    }
-    if (!g_oSunLightIntensity.active.load() && std::isfinite(packedOut[0x00])) {
-        g_windPackBase00.store(packedOut[0x00]);
-        g_windPackBase00Valid.store(true);
-    }
-    if (!g_oMoonLightIntensity.active.load() && std::isfinite(packedOut[0x05])) {
-        g_windPackBase05.store(packedOut[0x05]);
-        g_windPackBase05Valid.store(true);
-    }
-    if (!g_oRayleighScatteringColor.active.load()) {
-        g_windPackBase0FBits.store(FloatBits(packedOut[0x0F]));
-        g_windPackBase0FValid.store(true);
-    }
-    if (!g_oRayleighHeight.active.load() && std::isfinite(packedOut[0x0E])) {
-        g_windPackBase0E.store(packedOut[0x0E]);
-        g_windPackBase0EValid.store(true);
-    }
-    if (!g_oOzoneRatio.active.load() && std::isfinite(packedOut[0x14])) {
-        g_windPackBase14.store(packedOut[0x14]);
-        g_windPackBase14Valid.store(true);
-    }
-    if (!g_oMieScaleHeight.active.load() && std::isfinite(packedOut[0x10])) {
-        g_windPackBase10.store(packedOut[0x10]);
-        g_windPackBase10Valid.store(true);
-    }
-    if (!g_oMieAerosolAbsorption.active.load() && std::isfinite(packedOut[0x12])) {
-        g_windPackBase12.store(packedOut[0x12]);
-        g_windPackBase12Valid.store(true);
-    }
-    if (!g_oHeightFogBaseline.active.load() && std::isfinite(packedOut[0x18])) {
-        g_windPackBase18.store(packedOut[0x18]);
-        g_windPackBase18Valid.store(true);
-    }
-    if (!g_oHeightFogFalloff.active.load() && std::isfinite(packedOut[0x19])) {
-        g_windPackBase19.store(packedOut[0x19]);
-        g_windPackBase19Valid.store(true);
-    }
-    if (!g_oCloudAlpha.active.load() && std::isfinite(packedOut[0x1E])) {
-        g_windPackBase1E.store(packedOut[0x1E]);
-        g_windPackBase1EValid.store(true);
-    }
-    if (!g_oCloudFlow.active.load() && std::isfinite(packedOut[0x1F])) {
-        g_windPackBase1F.store(packedOut[0x1F]);
-        g_windPackBase1FValid.store(true);
-    }
-    if (!g_oCloudScatteringCoefficient.active.load() && std::isfinite(packedOut[0x20])) {
-        g_windPackBase20.store(packedOut[0x20]);
-        g_windPackBase20Valid.store(true);
-    }
-    if (!g_oCloudPhaseFront.active.load() && std::isfinite(packedOut[0x21])) {
-        g_windPackBase21.store(packedOut[0x21]);
-        g_windPackBase21Valid.store(true);
-    }
-    if (!g_oCloudVisibleRange.active.load() && std::isfinite(packedOut[0x25])) {
-        g_windPackBase25.store(packedOut[0x25]);
-        g_windPackBase25Valid.store(true);
-    }
-    if (!g_oCloudFadeRange.active.load() && std::isfinite(packedOut[0x27])) {
-        g_windPackBase27.store(packedOut[0x27]);
-        g_windPackBase27Valid.store(true);
-    }
-    if (!g_oCloudDetailRatio.active.load() && std::isfinite(packedOut[0x28])) {
-        g_windPackBase28.store(packedOut[0x28]);
-        g_windPackBase28Valid.store(true);
-    }
-    if (!g_oVolumeFogScatterColor.active.load() &&
-        std::isfinite(packedOut[0x34]) && std::isfinite(packedOut[0x35]) &&
-        std::isfinite(packedOut[0x36]) && std::isfinite(packedOut[0x37])) {
-        g_windPackBase34.store(packedOut[0x34]);
-        g_windPackBase35.store(packedOut[0x35]);
-        g_windPackBase36.store(packedOut[0x36]);
-        g_windPackBase37.store(packedOut[0x37]);
-        g_windPackBaseVolumeFogColorValid.store(true);
-    }
-    if (!g_oMieScatterColor.active.load() &&
-        std::isfinite(packedOut[0x38]) && std::isfinite(packedOut[0x39]) &&
-        std::isfinite(packedOut[0x3A]) && std::isfinite(packedOut[0x3B])) {
-        g_windPackBase38.store(packedOut[0x38]);
-        g_windPackBase39.store(packedOut[0x39]);
-        g_windPackBase3A.store(packedOut[0x3A]);
-        g_windPackBase3B.store(packedOut[0x3B]);
-        g_windPackBaseMieScatterColorValid.store(true);
-    }
-
-    const bool forceClear = g_forceClear.load();
-    const bool noFog = g_noFog.load();
-    if (forceClear) {
-        packedOut[0x1B] = 0.0f;
-        packedOut[0x11] = 0.0f;
-        packedOut[0x17] = 0.0f;
-        return;
-    }
-    if (noFog) {
-        packedOut[0x11] = 0.0f;
-        packedOut[0x17] = 0.0f;
-    }
-
-    const bool cloudActive = g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load();
-    if (cloudActive && g_windPackBaseValid.load()) {
-        float mulX = CloudHeightUiToMultiplier(g_oCloudSpdX.get(1.0f));
-        float mulZ = min(10.0f, max(0.0f, g_oCloudSpdY.get(1.0f)));
-
-        packedOut[0x23] = g_windPackBase23.load() * mulX;
-        packedOut[0x24] = g_windPackBase24.load() * mulZ;
-    }
-
-    if (g_oCloudAmount.active.load() && g_windPackBase1BValid.load()) {
-        const float mul = CloudAmountUiToMultiplier(g_oCloudAmount.get(1.0f));
-        packedOut[0x1B] = min(3.0f, max(0.0f, g_windPackBase1B.load() * mul));
-    }
-
-    if (g_oHighClouds.active.load() && g_windPackBaseValid.load()) {
-        const float midCloudsMul = min(15.0f, max(0.0f, g_oHighClouds.get(1.0f)));
-        packedOut[0x30] = g_windPackBase30.load() * midCloudsMul;
-    }
-
-    if (g_oAtmoAlpha.active.load() && g_windPackBaseValid.load()) {
-        const float highCloudsMul = min(15.0f, max(0.0f, g_oAtmoAlpha.get(1.0f)));
-        packedOut[0x2F] = g_windPackBase2F.load() * highCloudsMul;
-    }
-
-    const bool exp2CActive = g_oExpCloud2C.active.load() && g_windPackBase2CValid.load();
-    const bool exp2DActive = g_oExpCloud2D.active.load() && g_windPackBase2DValid.load();
-    if (exp2CActive) {
-        const float mul = min(15.0f, max(0.0f, g_oExpCloud2C.get(1.0f)));
-        packedOut[0x2C] = g_windPackBase2C.load() * mul;
-    }
-    if (exp2DActive) {
-        const float mul = min(15.0f, max(0.0f, g_oExpCloud2D.get(1.0f)));
-        packedOut[0x2D] = g_windPackBase2D.load() * mul;
-    }
-
-    if (g_oCloudVariation.active.load() && g_windPackBase32Valid.load()) {
-        const float mul = min(15.0f, max(0.0f, g_oCloudVariation.get(1.0f)));
-        packedOut[0x32] = g_windPackBase32.load() * mul;
-    }
-
-    if (!noFog && g_oNativeFog.active.load()) {
-        const float fogBoost = min(15.0f, max(0.0f, g_oNativeFog.value.load()));
-        const float fogMul = 1.0f + fogBoost;
-        if (g_windPackBase11Valid.load()) {
-            packedOut[0x11] = g_windPackBase11.load() * fogMul;
-        }
-        if (g_windPackBase17Valid.load()) {
-            packedOut[0x17] = g_windPackBase17.load() * fogMul;
-        }
-    }
-
-    if (!noFog) {
-        if (g_oMieScaleHeight.active.load()) {
-            packedOut[0x10] = ClampFloat(g_oMieScaleHeight.value.load(), 1.0f, 200000.0f);
-        }
-        if (g_oMieAerosolDensity.active.load()) {
-            packedOut[0x11] = ClampFloat(g_oMieAerosolDensity.value.load(), 0.0f, 100.0f);
-        }
-        if (g_oMieAerosolAbsorption.active.load()) {
-            packedOut[0x12] = ClampFloat(g_oMieAerosolAbsorption.value.load(), 0.0f, 100.0f);
-        }
-        if (g_oHeightFogBaseline.active.load()) {
-            packedOut[0x18] = ClampFloat(g_oHeightFogBaseline.value.load(), -50000.0f, 50000.0f);
-        }
-        if (g_oHeightFogFalloff.active.load()) {
-            packedOut[0x19] = ClampFloat(g_oHeightFogFalloff.value.load(), 0.0f, 100.0f);
-        }
-        if (g_oVolumeFogScatterColor.active.load()) {
-            packedOut[0x34] = g_oVolumeFogScatterColor.r.load();
-            packedOut[0x35] = g_oVolumeFogScatterColor.g.load();
-            packedOut[0x36] = g_oVolumeFogScatterColor.b.load();
-            packedOut[0x37] = g_oVolumeFogScatterColor.a.load();
-        }
-        if (g_oMieScatterColor.active.load()) {
-            packedOut[0x38] = g_oMieScatterColor.r.load();
-            packedOut[0x39] = g_oMieScatterColor.g.load();
-            packedOut[0x3A] = g_oMieScatterColor.b.load();
-            packedOut[0x3B] = g_oMieScatterColor.a.load();
-        }
-    }
-
-    if (g_oCloudAlpha.active.load()) {
-        packedOut[0x1E] = ClampFloat(g_oCloudAlpha.value.load(), 0.0f, 100.0f);
-    }
-    if (g_oCloudScatteringCoefficient.active.load()) {
-        packedOut[0x20] = ClampFloat(g_oCloudScatteringCoefficient.value.load(), kCloudScatteringCoefficientMin, 100.0f);
-    }
-    if (g_oCloudFlow.active.load()) {
-        packedOut[0x1F] = ClampFloat(g_oCloudFlow.value.load(), 0.0f, 50.0f);
-    }
-    if (g_oCloudVisibleRange.active.load() && g_windPackBase25Valid.load()) {
-        const float mul = ClampFloat(g_oCloudVisibleRange.value.load(), 0.0f, 10.0f);
-        packedOut[0x25] = g_windPackBase25.load() * mul;
-    }
-    if (g_oCloudPhaseFront.active.load()) {
-        packedOut[0x21] = ClampFloat(g_oCloudPhaseFront.value.load(), -1.0f, 1.0f);
-    }
-    if (g_oCloudFadeRange.active.load()) {
-        packedOut[0x27] = ClampFloat(g_oCloudFadeRange.value.load(), 0.0f, 200000.0f);
-    }
-    if (g_oCloudDetailRatio.active.load()) {
-        packedOut[0x28] = ClampFloat(g_oCloudDetailRatio.value.load(), 0.0f, 1.5f);
-    }
-
-}
-
-void __fastcall Hooked_WeatherFrameUpdate(long long* self, float dt) {
-    static bool s_fogOverrideWasActive = false;
-    const bool modEnabled = g_modEnabled.load();
-    const bool fogWorkNeeded = modEnabled && WeatherFrameFogWorkNeeded();
-    const bool restoreNativeFog = s_fogOverrideWasActive && !fogWorkNeeded;
-
-    if (!fogWorkNeeded && !restoreNativeFog) {
-        if (g_pOrigWeatherFrameUpdate) g_pOrigWeatherFrameUpdate(self, dt);
-        return;
-    }
-
-    if (restoreNativeFog) {
-        ResetFogBlendWeightsForNativeRefresh(self);
-    }
-
-    if (g_pOrigWeatherFrameUpdate) g_pOrigWeatherFrameUpdate(self, dt);
-
-    if (fogWorkNeeded) {
-        ForceApplyFogFromFrame(self);
-        s_fogOverrideWasActive = true;
-    } else if (restoreNativeFog) {
-        s_fogOverrideWasActive = false;
-    }
-
-    (void)dt;
-}
-
-// Clear weather parameters.
-static void ApplyClearWeatherParams(long long self, const ResolvedEnv& env) {
-    (void)self;
-    if (!env.valid) return;
-    if (env.cloudNode) {
-        At<float>(env.cloudNode, CN::FOG_A)       = 0.0f;
-        At<float>(env.cloudNode, CN::FOG_B)       = 0.0f;
-        At<float>(env.cloudNode, CN::STORM_THRESH) = 0.0f;
-        At<float>(env.cloudNode, CN::DUST_THRESH)  = 0.0f;
-    }
-}
-
 // Apply all weather parameters after the engine tick.
 static void ApplyWeatherParams(long long self, const ResolvedEnv& env) {
     if (!env.valid) return;
     if (env.cloudNode) {
-        float fogTotal = g_oFog.get(0.0f);
-        float dust = g_oDust.active.load() ? g_oDust.value.load() : 0.0f;
-        float nativeDust = DustSliderToNative(dust);
-        const bool noRain = g_noRain.load();
-        const bool noDust = g_noDust.load();
-        const bool noSnow = g_noSnow.load();
-        if (g_oFog.active.load()) {
-            float fogHalf = fogTotal * 0.5f;
-            At<float>(env.cloudNode, CN::FOG_A) = fogHalf;
-            At<float>(env.cloudNode, CN::FOG_B) = fogHalf;
-        }
-
         if (g_oCloudThk.active.load()) {
             float cThk = Clamp01(g_oCloudThk.get(0.0f));
             At<float>(env.cloudNode, CN::CLOUD_THICK) = cThk;
@@ -1465,30 +1309,7 @@ static void ApplyWeatherParams(long long self, const ResolvedEnv& env) {
             }
         }
 
-        if (noRain || noSnow) {
-            At<float>(env.cloudNode, CN::STORM_THRESH) = 0.0f;
-        }
-
-        if (noDust) {
-            At<float>(env.cloudNode, CN::DUST_BASE) = 0.0f;
-            At<float>(env.cloudNode, CN::DUST_ADD) = 0.0f;
-            At<float>(env.cloudNode, CN::DUST_WIND_SCALE) = 0.0f;
-            At<float>(env.cloudNode, CN::DUST_THRESH) = 0.0f;
-            At<float>(env.cloudNode, CN::STORM_THRESH) = 0.0f;
-        }
-
-        if (!noDust && g_oDust.active.load()) {
-            At<float>(env.cloudNode, CN::DUST_BASE) = nativeDust;
-            At<float>(env.cloudNode, CN::DUST_ADD) = nativeDust * 0.10f;
-            At<float>(env.cloudNode, CN::DUST_WIND_SCALE) = DustSliderToWindScale(dust);
-            At<float>(env.cloudNode, CN::DUST_THRESH) = min(At<float>(env.cloudNode, CN::DUST_THRESH), DustSliderToThreshold(dust));
-            At<float>(env.cloudNode, CN::STORM_THRESH) = max(At<float>(env.cloudNode, CN::STORM_THRESH), DustSliderToStorm(dust));
-            At<float>(env.cloudNode, CN::FOG_B) = max(At<float>(env.cloudNode, CN::FOG_B), DustSliderToFogB(dust));
-        }
-
     }
-
-    ApplyCloudOverrides(env);
 
     (void)self;
 }
@@ -1512,38 +1333,12 @@ static uint32_t ComputeCustomEffectMask() {
 static bool IsRainOnlyControlMode() {
     bool rainDriven = !g_noRain.load() && g_oRain.active.load();
     bool others = g_noSnow.load() || g_noDust.load() || g_oSnow.active.load() || g_oDust.active.load() ||
-                   g_oFog.active.load() ||
                    g_oCloudThk.active.load() ||
                    g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() ||
                    g_oHighClouds.active.load() ||
                    g_oAtmoAlpha.active.load() ||
                    g_oWindActual.active.load();
     return rainDriven && !others;
-}
-
-static void TickRainOnly(long long self, const ResolvedEnv& env, int nullSent) {
-    if (!g_pActivateEffect || !g_pSetIntensity || !env.particleMgr) return;
-    float rain = (!g_noRain.load() && g_oRain.active.load()) ? g_oRain.value.load() : 0.0f;
-
-    if (env.cloudNode) {
-        At<float>(env.cloudNode, CN::STORM_THRESH) = rain;
-        At<float>(env.cloudNode, CN::DUST_THRESH) = 0.0f;
-    }
-    auto UpdateEff = [&](int i, bool on, float intensity) {
-        int& handle = At<int>(self, WCO::HANDLE_ARRAY + i * 4);
-        if (on && handle == nullSent) {
-            const EffectSlot& s = kSlots[i];
-            g_pActivateEffect(self, s.id,
-                reinterpret_cast<long long*>(self + s.slotA),
-                reinterpret_cast<long long*>(self + s.slotB), 1.0f);
-        }
-        int h = At<int>(self, WCO::HANDLE_ARRAY + i * 4);
-        if (h != nullSent) g_pSetIntensity(env.particleMgr, h, on ? intensity : 0.0f);
-    };
-
-    UpdateEff(0, rain > 0.01f, rain);
-    UpdateEff(1, rain > 0.01f, rain);
-    UpdateEff(4, rain > 0.5f, max(0.0f, (rain - 0.5f) * 2.0f));
 }
 
 static void StopAllWeatherEffects(long long self) {
@@ -1571,53 +1366,8 @@ static void StopWeatherEffectsByMask(long long self, uint32_t effectMask) {
     }
 }
 
-static std::atomic<int> g_rainEffectCleanupTicks{ 0 };
-static std::atomic<bool> g_rainEffectWasWanted{ false };
 static std::atomic<int> g_snowEffectCleanupTicks{ 0 };
 static std::atomic<bool> g_snowEffectWasWanted{ false };
-
-static bool RainEffectWantedNow() {
-    return !g_forceClear.load() &&
-           !g_noRain.load() &&
-           g_oRain.active.load() &&
-           g_oRain.value.load() > 0.01f;
-}
-
-static void RequestRainEffectCleanup(const char* reason) {
-    constexpr int kRainCleanupTicks = 30;
-    g_rainEffectCleanupTicks.store(kRainCleanupTicks);
-    Log("[rain] cleanup requested: %s ticks=%d\n", reason ? reason : "rain disabled", kRainCleanupTicks);
-}
-
-static void UpdateRainEffectTransitionCleanup() {
-    const bool wanted = RainEffectWantedNow();
-    const bool wasWanted = g_rainEffectWasWanted.exchange(wanted);
-    if (wasWanted && !wanted) {
-        RequestRainEffectCleanup("rain transitioned off");
-    }
-}
-
-static bool RainEffectCleanupActive() {
-    return g_rainEffectCleanupTicks.load() > 0;
-}
-
-static void TickRainEffectCleanup(long long self, const ResolvedEnv& env) {
-    int ticks = g_rainEffectCleanupTicks.load();
-    if (ticks <= 0) {
-        return;
-    }
-
-    StopWeatherEffectsByMask(self, 0x013u);
-    if (env.cloudNode) {
-        At<float>(env.cloudNode, CN::STORM_THRESH) = 0.0f;
-    }
-
-    ticks = g_rainEffectCleanupTicks.fetch_sub(1) - 1;
-    if (ticks <= 0) {
-        g_rainEffectCleanupTicks.store(0);
-        Log("[rain] cleanup finished\n");
-    }
-}
 
 static uint32_t ComputeSuppressedWeatherEffectMask() {
     uint32_t mask = 0;
@@ -1631,24 +1381,6 @@ static void ApplyNoWindPolicy(long long self, const ResolvedEnv& env) {
     (void)env;
     At<int>(self, WCO::SOUND_WIND)    = 0;
     At<int>(self, WCO::SOUND_SKYWIND) = 0;
-}
-
-static void ApplyDustWindPolicy(long long self, const ResolvedEnv& env) {
-    (void)env;
-    if (!env.valid || !DustForcesCalmWind()) return;
-    At<int>(self, WCO::SOUND_WIND)    = 0;
-    At<int>(self, WCO::SOUND_SKYWIND) = 0;
-}
-
-// Process wind state hook.
-void __fastcall Hooked_ProcessWindState(long long self) {
-    if (g_pOrigProcessWindState) g_pOrigProcessWindState(self);
-    if (!g_modEnabled.load()) return;
-    const ResolvedEnv env = ResolveEnv();
-    if (env.valid) {
-        CaptureCloudBaseline(env);
-        ApplyCloudOverrides(env);
-    }
 }
 
 static void ApplyWindFromSlider(long long self, const ResolvedEnv& env) {
@@ -1690,7 +1422,6 @@ static void TickWeatherState(long long self, float dt) {
     const int nullSent = g_pNullSentinel ? *g_pNullSentinel : 0;
 
     if (IsRainOnlyControlMode()) {
-        TickRainOnly(self, env, nullSent);
         return;
     }
 
@@ -1699,6 +1430,11 @@ static void TickWeatherState(long long self, float dt) {
 
     if (g_pActivateEffect && g_pSetIntensity && env.particleMgr) {
         for (int i = 0; i < kEffectCount; ++i) {
+            // Rain slots are owned by the original WeatherTick, which consumes
+            // the finalized weather-table value through the native getter.
+            if (i == 0 || i == 1 || i == 4) {
+                continue;
+            }
             int& handle = At<int>(self, WCO::HANDLE_ARRAY + i * 4);
             if (mask & (1u << i)) {
                 const EffectSlot& slot = kSlots[i];
@@ -1748,7 +1484,7 @@ static int DeactivateWeatherEffectsByMask(long long self, uint32_t effectMask) {
                 handle = nullSent;
                 ++deactivated;
             } __except (EXCEPTION_EXECUTE_HANDLER) {
-                Log("[snow] native effect deactivation exception slot=%d handle=%d\n", i, handle);
+                Log("[weather-effects] native deactivation exception slot=%d handle=%d\n", i, handle);
             }
         }
     }
@@ -1897,30 +1633,6 @@ bool ReadGameClockCalendarStruct(long long outTime, GameClockCalendar& out) {
     }
 }
 
-long long CalendarToLinearMs(const GameClockCalendar& cal) {
-    const long long extraDays = cal.hour >= 24 ? (cal.hour / 24) : 0;
-    const long long hour = cal.hour >= 24 ? (cal.hour % 24) : cal.hour;
-    return ((((static_cast<long long>(cal.day) + extraDays) * 24ll + hour) * 60ll + cal.minute) * 60ll + cal.second) * 1000ll +
-        cal.millisecond;
-}
-
-GameClockCalendar LinearMsToCalendar(long long linearMs) {
-    if (linearMs < 0) {
-        linearMs = 0;
-    }
-
-    GameClockCalendar out;
-    out.millisecond = static_cast<int>(linearMs % 1000ll);
-    long long totalSeconds = linearMs / 1000ll;
-    out.second = static_cast<int>(totalSeconds % 60ll);
-    long long totalMinutes = totalSeconds / 60ll;
-    out.minute = static_cast<int>(totalMinutes % 60ll);
-    long long totalHours = totalMinutes / 60ll;
-    out.hour = static_cast<int>(totalHours % 24ll);
-    out.day = static_cast<int>(totalHours / 24ll);
-    return out;
-}
-
 long long CalendarToNativeClockTicks(const GameClockCalendar& cal) {
     const long long extraDays = cal.hour >= 24 ? (cal.hour / 24) : 0;
     const long long hour = cal.hour >= 24 ? (cal.hour % 24) : cal.hour;
@@ -2015,6 +1727,7 @@ struct SnapshotClockControllerState {
 };
 
 SnapshotClockControllerState g_snapshotClockController;
+std::atomic<bool> g_snapshotClockControllerActive{ false };
 
 bool CurrentGameClockUsesTlsSnapshot() {
     __try {
@@ -2147,6 +1860,7 @@ bool ApplyVirtualGameClockController(unsigned char* source,
                 commitOnExit = true;
             }
             g_snapshotClockController.active = false;
+            g_snapshotClockControllerActive.store(false, std::memory_order_release);
             g_snapshotClockController.anchorValid = false;
             g_snapshotClockController.lastStorage = 0;
             g_snapshotClockController.fractionalTicks = 0.0;
@@ -2163,6 +1877,7 @@ bool ApplyVirtualGameClockController(unsigned char* source,
         const long long nativeTick = CalendarToNativeClockTicks(sourceCal);
         if (!g_snapshotClockController.active || !g_snapshotClockController.anchorValid) {
             g_snapshotClockController.active = true;
+            g_snapshotClockControllerActive.store(true, std::memory_order_release);
             g_snapshotClockController.anchorValid = true;
             g_snapshotClockController.virtualTick = nativeTick;
             g_snapshotClockController.lastNativeTick = nativeTick;
@@ -2282,129 +1997,21 @@ bool ApplyVirtualGameClockController(unsigned char* source,
     return modified;
 }
 
-bool WriteNativeGameTimeStorage(unsigned char* source,
-                                long long outTime,
-                                const GameClockCalendar& nativeCal,
-                                const GameClockCalendar& virtualCal,
-                                bool allowGlobalFallback) {
-#if defined(CW_DEV_BUILD)
-    if (!outTime) {
-        return false;
-    }
-
-    uintptr_t storage = 0;
-    bool fieldStorage = false;
-    bool tlsStorage = false;
-    unsigned short areaId = 0xFFFF;
-    if (!ResolveCurrentGameClockSnapshot(source, storage, fieldStorage, tlsStorage, areaId) ||
-        (!fieldStorage && !allowGlobalFallback)) {
-        return false;
-    }
-
-    unsigned short rate = kNativeGameClockRate;
-    long long timestamp = 0;
-    __try {
-        rate = *reinterpret_cast<unsigned short*>(outTime + 0x16);
-        timestamp = *reinterpret_cast<long long*>(outTime + 0x18);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-
-    WriteGameClockSnapshotStruct(static_cast<long long>(storage), virtualCal,
-        rate ? rate : kNativeGameClockRate, timestamp);
-    WriteGameClockSnapshotStruct(outTime, virtualCal,
-        rate ? rate : kNativeGameClockRate, timestamp);
-    g_devGameTimeLastStorage.store(static_cast<unsigned long long>(storage));
-    const unsigned long long writes = g_devGameTimeWriteCount.fetch_add(1) + 1;
-    if (writes <= 8 || (writes % 300) == 0) {
-        Log("[time-probe] DEV writeback source=%s area=%u storage=%p native=day %d %02d:%02d:%02d.%03d virtual=day %d %02d:%02d:%02d.%03d rate=%u writes=%llu\n",
-            fieldStorage ? "field" : (tlsStorage ? "tls" : "primary"),
-            static_cast<unsigned>(areaId),
-            reinterpret_cast<void*>(storage),
-            nativeCal.day, nativeCal.hour, nativeCal.minute, nativeCal.second, nativeCal.millisecond,
-            virtualCal.day, virtualCal.hour, virtualCal.minute, virtualCal.second, virtualCal.millisecond,
-            static_cast<unsigned>(rate ? rate : kNativeGameClockRate),
-            writes);
-    }
-    return true;
-#else
-    (void)source;
-    (void)outTime;
-    (void)nativeCal;
-    (void)virtualCal;
-    (void)allowGlobalFallback;
-    return false;
-#endif
-}
-
-bool ApplyDevGameTimeOverride(unsigned char* source, long long outTime, const GameClockCalendar& nativeCal) {
-#if defined(CW_DEV_BUILD)
-    if (!g_devGameTimeOverrideEnabled.load()) {
-        g_devGameTimeAnchorValid.store(false);
-        return false;
-    }
-
-    const long long nativeMs = CalendarToLinearMs(nativeCal);
-    long long virtualMs = nativeMs;
-    const int mode = g_devGameTimeOverrideMode.load();
-    if (mode == 0) {
-        virtualMs = nativeMs + static_cast<long long>(g_devGameTimeOffsetMinutes.load()) * 60ll * 1000ll;
-    } else if (mode == 1) {
-        const int fixedHour = std::clamp(g_devGameTimeFixedHour.load(), 0, 23);
-        const int fixedMinute = std::clamp(g_devGameTimeFixedMinute.load(), 0, 59);
-        virtualMs = (((static_cast<long long>(nativeCal.day) * 24ll + fixedHour) * 60ll + fixedMinute) * 60ll) * 1000ll;
-    } else {
-        if (g_devGameTimeResetAnchor.exchange(false) || !g_devGameTimeAnchorValid.load()) {
-            g_devGameTimeAnchorNativeMs.store(nativeMs);
-            g_devGameTimeAnchorVirtualMs.store(nativeMs);
-            g_devGameTimeAnchorValid.store(true);
-        }
-        const long long anchorNativeMs = g_devGameTimeAnchorNativeMs.load();
-        const long long anchorVirtualMs = g_devGameTimeAnchorVirtualMs.load();
-        const int targetMinuteMs = std::max(1, g_devGameTimeMinuteMs.load());
-        const float sliderScale = std::max(0.0f, g_devGameTimeScale.load());
-        const double scaleFromMinuteMs = 5000.0 / static_cast<double>(targetMinuteMs);
-        const double effectiveScale = sliderScale * scaleFromMinuteMs;
-        virtualMs = anchorVirtualMs + static_cast<long long>(static_cast<double>(nativeMs - anchorNativeMs) * effectiveScale);
-    }
-
-    const GameClockCalendar virtualCal = LinearMsToCalendar(virtualMs);
-    const bool commitOnce = g_devGameTimeCommitOnce.exchange(false);
-    const bool shouldWriteNative = g_devGameTimeWriteNative.load() || commitOnce;
-    if (shouldWriteNative) {
-        WriteNativeGameTimeStorage(source, outTime, nativeCal, virtualCal, commitOnce);
-    }
-    WriteGameClockCalendarStruct(outTime, virtualCal);
-    g_devGameTimeLastNativeMs.store(nativeMs);
-    g_devGameTimeLastVirtualMs.store(virtualMs);
-    const unsigned long long calls = g_devGameTimeOverrideCallCount.fetch_add(1) + 1;
-    if (calls <= 8 || (calls % 300) == 0) {
-        Log("[time-probe] DEV override mode=%d native=%02d:%02d:%02d.%03d virtual=%02d:%02d:%02d.%03d calls=%llu\n",
-            mode,
-            nativeCal.hour,
-            nativeCal.minute,
-            nativeCal.second,
-            nativeCal.millisecond,
-            virtualCal.hour,
-            virtualCal.minute,
-            virtualCal.second,
-            virtualCal.millisecond,
-            calls);
-    }
-    return true;
-#else
-    (void)source;
-    (void)outTime;
-    (void)nativeCal;
-    return false;
-#endif
-}
-
-
 void StoreGameTimeGetterSample(unsigned char* source, long long outTime) {
     // The TLS snapshot belongs to a separate simulation context and can lag the
     // primary world clock by days. It must not repaint the user-facing clock UI.
     if (CurrentGameClockUsesTlsSnapshot()) {
+        return;
+    }
+
+    constexpr unsigned long long kSampleIntervalMs = 50;
+    const unsigned long long now = GetTickCount64();
+    unsigned long long lastRealtimeMs = g_gameTimeProbeLastGetterRealtimeMs.load(std::memory_order_relaxed);
+    if (lastRealtimeMs && now - lastRealtimeMs < kSampleIntervalMs) {
+        return;
+    }
+    if (!g_gameTimeProbeLastGetterRealtimeMs.compare_exchange_strong(
+            lastRealtimeMs, now, std::memory_order_relaxed)) {
         return;
     }
 
@@ -2413,9 +2020,7 @@ void StoreGameTimeGetterSample(unsigned char* source, long long outTime) {
         return;
     }
 
-    const unsigned long long now = GetTickCount64();
     const unsigned long long calls = g_gameTimeProbeGetterCallCount.fetch_add(1) + 1;
-    const unsigned long long lastRealtimeMs = g_gameTimeProbeLastGetterRealtimeMs.exchange(now);
     const unsigned long long elapsedRealtimeMs = (lastRealtimeMs && now >= lastRealtimeMs) ? (now - lastRealtimeMs) : 0;
 
     g_gameTimeProbeLastGetterFrameMs.store(elapsedRealtimeMs);
@@ -2464,12 +2069,22 @@ long long __fastcall Hooked_GameTimeGetter(unsigned char* source, long long outT
         result = g_pOrigGameTimeGetter(source, outTime);
     }
 
+    const bool realTimeEnabled = g_modEnabled.load(std::memory_order_relaxed) &&
+        g_realGameTimeEnabled.load(std::memory_order_relaxed);
+    const bool controllerActive = g_snapshotClockControllerActive.load(std::memory_order_acquire);
+    if (!realTimeEnabled && !controllerActive) {
+        return result;
+    }
+
     GameClockCalendar nativeCal;
     if (ReadGameClockCalendarStruct(outTime, nativeCal)) {
-        ApplyVirtualGameClockController(source, outTime, nativeCal);
-        ApplyDevGameTimeOverride(source, outTime, nativeCal);
+        if (realTimeEnabled || controllerActive) {
+            ApplyVirtualGameClockController(source, outTime, nativeCal);
+        }
+        if (realTimeEnabled) {
+            StoreGameTimeGetterSample(source, outTime);
+        }
     }
-    StoreGameTimeGetterSample(source, outTime);
     return result;
 }
 
@@ -2648,10 +2263,10 @@ static void TryPlayThunderAudio() {
     }
 }
 
-static void TickNativeLightningBridge(long long self, float dt) {
+static void TickNativeLightningBridge(long long self, float dt, long long weatherState) {
     constexpr float kThunderSchedulerTickSeconds = 0.10f;
 
-    if (!g_pNativeLightningScheduler || !g_pWeatherEffectGateByte || !self) {
+    if (!g_pNativeLightningScheduler || !g_pWeatherEffectGateByte || !self || !weatherState) {
         return;
     }
 
@@ -2683,6 +2298,13 @@ static void TickNativeLightningBridge(long long self, float dt) {
     }
 
     uint8_t gate = 0;
+    ComposedWeatherFields weatherFields{};
+    if (!ResolveComposedWeatherFields(weatherState, weatherFields) || !weatherFields.rain) {
+        return;
+    }
+
+    float savedRain = 0.0f;
+    bool rainTemporarilyRaised = false;
     __try {
         gate = *g_pWeatherEffectGateByte;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -2723,14 +2345,26 @@ static void TickNativeLightningBridge(long long self, float dt) {
         if (std::isfinite(nextDelay) && nextDelay > maxDelay) {
             nextDelay = maxDelay;
         }
-        g_thunderSchedulerRainBias.store(schedulerRain);
+        savedRain = *weatherFields.rain;
+        if (std::isfinite(savedRain) && savedRain < schedulerRain) {
+            *weatherFields.rain = schedulerRain;
+            rainTemporarilyRaised = true;
+        }
         g_pNativeLightningScheduler(self);
-        g_thunderSchedulerRainBias.store(0.0f);
+        if (rainTemporarilyRaised) {
+            *weatherFields.rain = savedRain;
+            rainTemporarilyRaised = false;
+        }
         if (std::isfinite(nextDelay) && nextDelay > maxDelay) {
             nextDelay = maxDelay;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        g_thunderSchedulerRainBias.store(0.0f);
+        if (rainTemporarilyRaised && weatherFields.rain) {
+            __try {
+                *weatherFields.rain = savedRain;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+        }
         Log("[thunder] scheduler exception self=%p gate=%u\n", reinterpret_cast<void*>(self), gate);
         return;
     }
@@ -2767,10 +2401,6 @@ static bool WeatherTickTimeWorkNeeded() {
         g_timeApplyRequest.load() ||
         g_timeFreezeApplied.load() ||
         g_timeSetHoldTicks.load() > 0;
-}
-
-static bool WeatherTickCloudShapeWorkNeeded() {
-    return g_oCloudSpdY.active.load();
 }
 
 struct SnowCoverageGlobal {
@@ -2852,14 +2482,12 @@ static bool WeatherTickRuntimeWorkNeeded(bool resetStopNow, bool modSuspendNow, 
     if (g_forceClear.load() ||
         AnyCustomWeatherSliderActive() ||
         g_activeWeather == kCustomWeather ||
-        RainEffectCleanupActive() ||
         SnowEffectCleanupActive() ||
         g_noRain.load() ||
         g_noSnow.load() ||
         g_noDust.load() ||
         g_oThunder.active.load() ||
-        g_noWind.load() ||
-        DustForcesCalmWind()) {
+        g_noWind.load()) {
         return true;
     }
     return false;
@@ -2914,7 +2542,6 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     if (presetNeedsTick) {
         Preset_OnWorldTick(worldReady, serviceDt);
     }
-    UpdateRainEffectTransitionCleanup();
     UpdateSnowEffectTransitionCleanup();
 
     if (!modEnabled) {
@@ -2931,10 +2558,8 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     if (g_forceClear.load()) {
         g_pOriginalTick(self, dt);
         ApplySnowCoverageGlobalOverrides(modEnabled);
-        StopWeatherEffectsByMask(self, 0x1DFu);
-        TickRainEffectCleanup(self, env);
+        StopWeatherEffectsByMask(self, 0x1CCu);
         TickSnowEffectCleanup(self);
-        ApplyClearWeatherParams(self, env);
         if (resetStopNow) {
             StopAllWeatherEffects(self);
         }
@@ -2954,21 +2579,15 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     if (g_activeWeather == kCustomWeather) {
         TickWeatherState(self, serviceDt);
     }
-    TickRainEffectCleanup(self, env);
     TickSnowEffectCleanup(self);
     const uint32_t suppressedWeatherMask = ComputeSuppressedWeatherEffectMask();
     if (suppressedWeatherMask) {
-        StopWeatherEffectsByMask(self, suppressedWeatherMask);
+        StopWeatherEffectsByMask(self, suppressedWeatherMask & ~0x013u);
     }
-    TickNativeLightningBridge(self, serviceDt);
+    TickNativeLightningBridge(self, serviceDt, env.weatherState);
     if (resetStopNow) {
         StopAllWeatherEffects(self);
     }
-    if (env.valid && WeatherTickCloudShapeWorkNeeded()) {
-        CaptureCloudBaseline(env);
-        ApplyCloudOverrides(env);
-    }
-    ApplyDustWindPolicy(self, env);
     if (g_noWind.load()) {
         ApplyNoWindPolicy(self, env);
     }

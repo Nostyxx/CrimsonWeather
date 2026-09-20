@@ -25,41 +25,10 @@ bool g_timeEditHadFocus = false;
 int g_realClockDialPendingMinute = -1;
 bool g_hideRealGameTimeWarningThisSession = false;
 bool g_suppressRealGameTimeWarningChoice = false;
-void LogTimeUiAction(
-    const char* action,
-    bool detachedEdit,
-    bool regionScoped,
-    bool overrideMaskTime,
-    const WeatherPresetData& editData) {
-    const PresetScheduleStatus schedule = PresetSchedule_GetStatus();
-    Log("[time-ui] action=%s detached=%u regionScoped=%u editRegion=%d maskTime=%u "
-        "schedule{enabled=%u active=%u entry=%d preset=%s blending=%u} "
-        "runtime{ctrl=%u freeze=%u progress=%u matchGame=%u cadence=%.0f target=%.4f current=%.4f currentValid=%u applyReq=%u} "
-        "edit{override=%u progress=%u matchGame=%u cadence=%.0f hour=%.4f}\n",
+void LogTimeUiAction(const char* action, bool detachedEdit) {
+    Log("[time-ui] action=%s scope=%s\n",
         action ? action : "unknown",
-        detachedEdit ? 1u : 0u,
-        regionScoped ? 1u : 0u,
-        Preset_GetEditRegion(),
-        overrideMaskTime ? 1u : 0u,
-        schedule.enabled ? 1u : 0u,
-        schedule.active ? 1u : 0u,
-        schedule.activeEntryIndex,
-        schedule.activePresetFile.empty() ? "<none>" : schedule.activePresetFile.c_str(),
-        schedule.blending ? 1u : 0u,
-        g_timeCtrlActive.load() ? 1u : 0u,
-        g_timeFreeze.load() ? 1u : 0u,
-        g_timeProgressVisualTime.load() ? 1u : 0u,
-        g_timeProgressMatchGameTime.load() ? 1u : 0u,
-        g_timeProgressCadenceMs.load(),
-        g_timeTargetHour.load(),
-        g_timeCurrentHour.load(),
-        g_timeCurrentHourValid.load() ? 1u : 0u,
-        g_timeApplyRequest.load() ? 1u : 0u,
-        editData.visualTimeOverride ? 1u : 0u,
-        editData.progressVisualTime ? 1u : 0u,
-        editData.progressVisualTimeMatchGameTime ? 1u : 0u,
-        editData.progressVisualTimeIntervalMs,
-        editData.timeHour);
+        detachedEdit ? "preset-edit" : "runtime");
 }
 
 void DisableScheduleForManualTimeEdit(const char* action) {
@@ -207,7 +176,7 @@ void DrawTimeControls() {
             }
             g_timeApplyRequest.store(true);
         }
-        LogTimeUiAction("time-mode", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        LogTimeUiAction("time-mode", detachedEdit);
         manualTimeEditChanged = true;
         g_cfg.realGameTimeEnabled = g_realGameTimeEnabled.load();
         SaveGeneralConfig();
@@ -261,7 +230,7 @@ void DrawTimeControls() {
             g_timeFreeze.store(visualTimeOverride);
             g_timeApplyRequest.store(true);
         }
-        LogTimeUiAction("progress-toggle", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        LogTimeUiAction("progress-toggle", detachedEdit);
         manualTimeEditChanged = true;
         GUI_SetStatus(progressVisualTime ? "Progress Visual Time enabled" : "Progress Visual Time disabled");
     }
@@ -322,7 +291,7 @@ void DrawTimeControls() {
             g_timeEditFocusRequest = false;
             g_timeEditHadFocus = false;
         }
-        LogTimeUiAction("progress-match-game-time-toggle", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        LogTimeUiAction("progress-match-game-time-toggle", detachedEdit);
         manualTimeEditChanged = true;
         GUI_SetStatus(progressVisualTimeMatchGameTime ? "Match In-Game Clock enabled" : "Match In-Game Clock disabled");
     }
@@ -389,7 +358,6 @@ void DrawTimeControls() {
                 g_timeProgressLastTick.store(0);
             }
         }
-        LogTimeUiAction("progress-interval", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
         manualTimeEditChanged = true;
         GUI_SetStatus("Advance interval changed");
     }
@@ -533,7 +501,6 @@ void DrawTimeControls() {
             g_timeProgressMatchPendingMs.store(0);
             g_timeApplyRequest.store(true);
         }
-        LogTimeUiAction("clock-dial", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
         manualTimeEditChanged = true;
         FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), targetClock, sizeof(targetClock));
         FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), g_timeEditText, sizeof(g_timeEditText));
@@ -592,10 +559,9 @@ void DrawTimeControls() {
             timeMinutes = typedMinutes;
             FormatGameClockFromHour(MinuteOfDayToHour(timeMinutes), g_timeEditText, sizeof(g_timeEditText));
             g_timeEditLastMinute = timeMinutes;
-            LogTimeUiAction("time-text-submit", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
         } else {
             GUI_SetStatus("Invalid time");
-            LogTimeUiAction("time-text-invalid", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+            LogTimeUiAction("time-text-invalid", detachedEdit);
         }
         g_timeEditActive = false;
         g_timeEditFocusRequest = false;
@@ -628,7 +594,7 @@ void DrawTimeControls() {
             g_timeProgressMatchPendingMs.store(0);
             g_timeApplyRequest.store(true);
         }
-        LogTimeUiAction("time-reset", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        LogTimeUiAction("time-reset", detachedEdit);
         manualTimeEditChanged = true;
         g_timeEditActive = false;
         g_timeEditFocusRequest = false;
@@ -656,7 +622,7 @@ void DrawTimeControls() {
             g_timeProgressMatchPendingMs.store(0);
             g_timeApplyRequest.store(true);
         }
-        LogTimeUiAction("time-text-apply", detachedEdit, regionScoped, regionScoped ? overrideMask.time : true, editData);
+        LogTimeUiAction("time-text-apply", detachedEdit);
         manualTimeEditChanged = true;
     }
     if (manualClockDisabled) {
@@ -714,7 +680,6 @@ void DrawGeneralControls() {
     }
     DrawTimeControls();
     DrawWindControls();
-    DrawRenoDxInteractionControls();
 }
 
 void DrawGeneralTab() {
