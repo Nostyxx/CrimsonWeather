@@ -65,13 +65,26 @@ bool IsTransientWinHttpError(unsigned long errorCode) {
     }
 }
 
+bool SetCancelledIfRequested(
+    const std::atomic<bool>* stopRequested,
+    CommunityHttpResponse& response,
+    const char* stage) {
+    if (!stopRequested || !stopRequested->load()) return false;
+    response.transportErrorCode = ERROR_CANCELLED;
+    response.transportStage = stage ? stage : "cancelled";
+    response.error = "Request cancelled";
+    return true;
+}
+
 bool CommunityHttp_RequestOnce(
     const char* method,
     const std::string& url,
     const std::vector<CommunityHttpHeader>& headers,
     const std::string& body,
-    CommunityHttpResponse& outResponse) {
+    CommunityHttpResponse& outResponse,
+    const std::atomic<bool>* stopRequested) {
     outResponse = CommunityHttpResponse{};
+    if (SetCancelledIfRequested(stopRequested, outResponse, "before request")) return false;
     const std::wstring wideUrl = Utf8ToWide(url);
     URL_COMPONENTSW parts{};
     parts.dwStructSize = sizeof(parts);
@@ -180,6 +193,9 @@ bool CommunityHttp_RequestOnce(
     outResponse.statusCode = static_cast<int>(status);
 
     for (;;) {
+        if (SetCancelledIfRequested(stopRequested, outResponse, "reading response")) {
+            break;
+        }
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(request, &available)) {
             SetWinHttpError(outResponse, "WinHttpQueryDataAvailable");
@@ -217,13 +233,15 @@ bool CommunityHttp_Request(
     const std::string& url,
     const std::vector<CommunityHttpHeader>& headers,
     const std::string& body,
-    CommunityHttpResponse& outResponse) {
+    CommunityHttpResponse& outResponse,
+    const std::atomic<bool>* stopRequested) {
     const char* requestMethod = method && method[0] ? method : "GET";
     const bool idempotent = _stricmp(requestMethod, "GET") == 0 || _stricmp(requestMethod, "HEAD") == 0;
     const int maxAttempts = idempotent ? 3 : 1;
 
     for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
-        if (CommunityHttp_RequestOnce(requestMethod, url, headers, body, outResponse)) {
+        if (SetCancelledIfRequested(stopRequested, outResponse, "before retry")) return false;
+        if (CommunityHttp_RequestOnce(requestMethod, url, headers, body, outResponse, stopRequested)) {
             if (attempt > 1) {
                 Log("[http] request recovered method=%s attempts=%d\n",
                     requestMethod, attempt);

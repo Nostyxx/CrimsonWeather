@@ -14,9 +14,6 @@ TEMP/
 *.idb
 *.iobj
 *.ipdb
-*.json
-!services/community-presets/package.json
-!services/community-presets/package-lock.json
 *.local.md
 .dev.vars
 .wrangler/
@@ -37,3 +34,7 @@ CrimsonWeatherReshade/*.vcxproj.user
 CrimsonWeatherReshade/dev/
 CrimsonWeatherReshade/include/dev_mcp_server.h
 tools/
+services/community/node_modules/
+services/community/.wrangler/
+services/community/dist/
+services/community/*.local.toml

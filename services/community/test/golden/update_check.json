@@ -1,0 +1,301 @@
+[
+  {
+    "step": "default update info",
+    "request": "GET /api/v1/update",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "ok": true,
+      "channel": "stable",
+      "currentVersion": "",
+      "updateAvailable": true,
+      "version": "0.6.8",
+      "title": "Crimson Weather 0.6.8",
+      "changelog": "Update 0.6.8\n- Added RenoDX aurora region gating support\n- Added community preset upload validation for RenoDX aurora preset fields\nUpdate 0.6.6\n- Added toast notification configuration\n- Expanded community preset controls and update handling\n- Added texture browser and Time Schedule improvements\nUpdate 0.6.5\n- Updated for the latest game patch\n- Added a TextureSwitcher config flag\n- Fixed region detection after the latest game patch\n- Fixed rain effects sometimes staying on screen after rain was disabled\nUpdate 0.6.4\n- Added V1 Animated Moon support (download the Miscellaneous file for setup info and examples)\n- Added DX10 support for DDS Moon/Milky Way textures\n- Added mipmap support for DDS Moon/Milky Way textures\n- Added update detection for downloaded community presets\n- Increased the height of the community preset browser UI\n- Improved validation for unsupported DDS mip chains\n- Fixed a bug where presets using the \"Match In-Game Clock\" setting did not apply properly when selected\n- Preset upload and My Uploads sections now collapse by default\nUpdate 0.6.3\n- Added a \"Match In-Game Clock\" box (for use with Progress Visual Time)\n- Added Cloud Visible Range slider\n- Added Snow Accumulation Boundary A slider\n- Added Snow Accumulation Boundary B slider\n- Added Snow Coverage Threshold slider\n- Moved Rain/Dust/Snow settings to their own new \"Weather\" tab\nUpdate 0.6.2\n- Added Community Preset browser (see below for more info)\n- Fixed Visual Time Override flickering when disabling Crimson Weather\nUpdate 0.6.1\n- Added a Time Schedule system\n- Added Mie Scatter Color option\n- Added Cloud Flow slider\n- Added Rayleigh Height slider\n- Added Ozone Ratio slider\n- Added Cloud Fade Range slider\n- Added Cloud Detail Ratio slider\n- Added config auto-saving\n- Fixed a data race in slot.status\n- Fixed a bug from the 0.6.0 optimization where the Advance Interval was delayed by 0.20 seconds\n- Fixed a bug where the No Rain/Dust/Snow box could still produce dust\nUpdate 0.6.0\n- Fixed performance issues (hopefully)\n- Added Sunlight Intensity slider\n- Added Moonlight Intensity slider\n- Added Cloud Alpha slider\n- Added Cloud Phase Front slider\n- Added Cloud Scattering Coefficient slider\n- Added Rayleigh Scattering Color option\n- Added Volume Fog Scatter Color option\n- Added Aerosol Height slider\n- Added Aerosol Density slider\n- Added Aerosol Absorption slider\n- Added the ability to collapse both the Milky Way and Moon texture-switcher UIs\nUpdate 0.5.9\n- Added hook control (If you experience FPS drops, try disabling the hooks you don't need in the Status tab. This is a temporary workaround until I return to fix it properly.)\n- Fixed an issue where texture-switching was unavailable on some machines\nUpdate 0.5.8\n- Added Progress Visual Time box with an Advance Interval slider\n- Added Extended Slider Range box\n- Improved the texture-switching gate\nUpdate 0.5.7\n- Added Milky Way texture switching (now we just need someone to make textures for it :D)\n- Added ability to right click sliders to directly type values\n- Improved Moon/Milky Way texture switching stability\n- Moon/Milky Way texture folders are now created automatically if missing\n- Improved Thunder slider stability\n- Code cleanup\nUpdate 0.5.6\n- Moon texture switching now also supports .png\nUpdate 0.5.5\n- Added runtime moon texture switching (see below for more info)\n- Fixed region override sometimes acting as a global preset\nUpdate 0.5.3\n- Added Thunder slider\n- Added No Rain box\n- Added No Dust box\n- Added No Snow box\n- Sliders now show \"NATIVE\" when they are not overriding game values\n- Fixed crash issues when using the Snow slider\n- Improved Weather tab UI\nUpdate 0.5.2\n- Added Celestial tab\n- Added Sun Size slider\n- Added Sun Yaw slider\n- Added Sun Pitch slider\n- Added Moon Size slider\n- Added Moon Yaw slider\n- Added Moon Pitch slider\n- Added Moon Rotation slider\n- Added Night Sky Tilt slider\n- Added Night Sky Phase slider\n- Added No fog box\n- Code cleanup\nUpdate 0.5.1\n- Updated for 1.06.00\n- Added region override system (you can now set a global preset and also set different preset for each region)\n- Added Auto Start config\n- Added Status tab\n- Improved startup flow\nUpdate 0.5.0\n- Crimson Weather is now a .addon64, an Ultimate ASI loader is no longer required. But you must now open the ReShade overlay and press \"Start Crimson Weather\" manually every time you start the game\n- Added Cloud Amount slider (you should now be able to add clouds to scenes with no clouds)\n- Added Experimental Cloud Variation slider\n- Improved Cloud Height slider\n- Improved UI\n- Fixed presets not automatically applying\nUpdate 0.4.2\n- Updated for 1.05.00\nUpdate 0.4.1\n- Updated for 1.04.01\n- Reworked the fog slider\n- Improved time slider accuracy\nUpdate 0.3.0\n- Rewritten to use ReShade as the GUI overlay\nUpdate 0.2.3\n- Added Mid clouds slider\n- Added High clouds slider\n- Added Experiment tab\n- Expanded Fog and Wind slider range\n- Fixed Cloud Density no longer affecting cloud movement\n- Rain now release back to native weather when set to 0\n- Improved preset loading and compatibility\n- Hardened AOB scanning\nUpdate 0.2.2\n- Fixed Crashing when using FSR-FG\n- Fixed DualSense support\nUpdate 0.2.1\n- Fixed Crashing when using FSR-FG\n- Added DualSense support\n- Added Toggle Weather hotkey\nUpdate 0.2.0\n- Added presets loading and saving\n- Added Show GUI on startup box\n- Added Auto Apply on startup\n- Added individual reset buttons\n- More robust DXGI hook\n- Fixed OptiScaler compatibility\nUpdate 0.1.8\n- Fixed Reset All button\n- Added Cloud Density slider\n- Added Cloud Height slider\n- Added Controller support\n- Added UI scale slider\nUpdate 0.1.7\n- Added Visual Time Override (Override game time visually)\nUpdate 0.1.5\n- Added ImGui GUI\n- Added separate sliders for Rain, Snow, and Dust\n- Removed Cloud sliders (until i got it working properly)\n- Fixed Wind slider\n- Added No wind box\n- Fixed Fog slider\n- Added Force Clear sky box",
+      "downloadPageUrl": "https://www.nexusmods.com/crimsondesert/mods/632?tab=files",
+      "addonDownloadUrl": "",
+      "addonSha256": "",
+      "addonSizeBytes": 0,
+      "publishedAt": "",
+      "critical": false
+    }
+  },
+  {
+    "step": "default update info with version",
+    "request": "GET /api/v1/update?version=0.6.8",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "ok": true,
+      "channel": "stable",
+      "currentVersion": "0.6.8",
+      "updateAvailable": false,
+      "version": "0.6.8",
+      "title": "Crimson Weather 0.6.8",
+      "changelog": "Update 0.6.8\n- Added RenoDX aurora region gating support\n- Added community preset upload validation for RenoDX aurora preset fields\nUpdate 0.6.6\n- Added toast notification configuration\n- Expanded community preset controls and update handling\n- Added texture browser and Time Schedule improvements\nUpdate 0.6.5\n- Updated for the latest game patch\n- Added a TextureSwitcher config flag\n- Fixed region detection after the latest game patch\n- Fixed rain effects sometimes staying on screen after rain was disabled\nUpdate 0.6.4\n- Added V1 Animated Moon support (download the Miscellaneous file for setup info and examples)\n- Added DX10 support for DDS Moon/Milky Way textures\n- Added mipmap support for DDS Moon/Milky Way textures\n- Added update detection for downloaded community presets\n- Increased the height of the community preset browser UI\n- Improved validation for unsupported DDS mip chains\n- Fixed a bug where presets using the \"Match In-Game Clock\" setting did not apply properly when selected\n- Preset upload and My Uploads sections now collapse by default\nUpdate 0.6.3\n- Added a \"Match In-Game Clock\" box (for use with Progress Visual Time)\n- Added Cloud Visible Range slider\n- Added Snow Accumulation Boundary A slider\n- Added Snow Accumulation Boundary B slider\n- Added Snow Coverage Threshold slider\n- Moved Rain/Dust/Snow settings to their own new \"Weather\" tab\nUpdate 0.6.2\n- Added Community Preset browser (see below for more info)\n- Fixed Visual Time Override flickering when disabling Crimson Weather\nUpdate 0.6.1\n- Added a Time Schedule system\n- Added Mie Scatter Color option\n- Added Cloud Flow slider\n- Added Rayleigh Height slider\n- Added Ozone Ratio slider\n- Added Cloud Fade Range slider\n- Added Cloud Detail Ratio slider\n- Added config auto-saving\n- Fixed a data race in slot.status\n- Fixed a bug from the 0.6.0 optimization where the Advance Interval was delayed by 0.20 seconds\n- Fixed a bug where the No Rain/Dust/Snow box could still produce dust\nUpdate 0.6.0\n- Fixed performance issues (hopefully)\n- Added Sunlight Intensity slider\n- Added Moonlight Intensity slider\n- Added Cloud Alpha slider\n- Added Cloud Phase Front slider\n- Added Cloud Scattering Coefficient slider\n- Added Rayleigh Scattering Color option\n- Added Volume Fog Scatter Color option\n- Added Aerosol Height slider\n- Added Aerosol Density slider\n- Added Aerosol Absorption slider\n- Added the ability to collapse both the Milky Way and Moon texture-switcher UIs\nUpdate 0.5.9\n- Added hook control (If you experience FPS drops, try disabling the hooks you don't need in the Status tab. This is a temporary workaround until I return to fix it properly.)\n- Fixed an issue where texture-switching was unavailable on some machines\nUpdate 0.5.8\n- Added Progress Visual Time box with an Advance Interval slider\n- Added Extended Slider Range box\n- Improved the texture-switching gate\nUpdate 0.5.7\n- Added Milky Way texture switching (now we just need someone to make textures for it :D)\n- Added ability to right click sliders to directly type values\n- Improved Moon/Milky Way texture switching stability\n- Moon/Milky Way texture folders are now created automatically if missing\n- Improved Thunder slider stability\n- Code cleanup\nUpdate 0.5.6\n- Moon texture switching now also supports .png\nUpdate 0.5.5\n- Added runtime moon texture switching (see below for more info)\n- Fixed region override sometimes acting as a global preset\nUpdate 0.5.3\n- Added Thunder slider\n- Added No Rain box\n- Added No Dust box\n- Added No Snow box\n- Sliders now show \"NATIVE\" when they are not overriding game values\n- Fixed crash issues when using the Snow slider\n- Improved Weather tab UI\nUpdate 0.5.2\n- Added Celestial tab\n- Added Sun Size slider\n- Added Sun Yaw slider\n- Added Sun Pitch slider\n- Added Moon Size slider\n- Added Moon Yaw slider\n- Added Moon Pitch slider\n- Added Moon Rotation slider\n- Added Night Sky Tilt slider\n- Added Night Sky Phase slider\n- Added No fog box\n- Code cleanup\nUpdate 0.5.1\n- Updated for 1.06.00\n- Added region override system (you can now set a global preset and also set different preset for each region)\n- Added Auto Start config\n- Added Status tab\n- Improved startup flow\nUpdate 0.5.0\n- Crimson Weather is now a .addon64, an Ultimate ASI loader is no longer required. But you must now open the ReShade overlay and press \"Start Crimson Weather\" manually every time you start the game\n- Added Cloud Amount slider (you should now be able to add clouds to scenes with no clouds)\n- Added Experimental Cloud Variation slider\n- Improved Cloud Height slider\n- Improved UI\n- Fixed presets not automatically applying\nUpdate 0.4.2\n- Updated for 1.05.00\nUpdate 0.4.1\n- Updated for 1.04.01\n- Reworked the fog slider\n- Improved time slider accuracy\nUpdate 0.3.0\n- Rewritten to use ReShade as the GUI overlay\nUpdate 0.2.3\n- Added Mid clouds slider\n- Added High clouds slider\n- Added Experiment tab\n- Expanded Fog and Wind slider range\n- Fixed Cloud Density no longer affecting cloud movement\n- Rain now release back to native weather when set to 0\n- Improved preset loading and compatibility\n- Hardened AOB scanning\nUpdate 0.2.2\n- Fixed Crashing when using FSR-FG\n- Fixed DualSense support\nUpdate 0.2.1\n- Fixed Crashing when using FSR-FG\n- Added DualSense support\n- Added Toggle Weather hotkey\nUpdate 0.2.0\n- Added presets loading and saving\n- Added Show GUI on startup box\n- Added Auto Apply on startup\n- Added individual reset buttons\n- More robust DXGI hook\n- Fixed OptiScaler compatibility\nUpdate 0.1.8\n- Fixed Reset All button\n- Added Cloud Density slider\n- Added Cloud Height slider\n- Added Controller support\n- Added UI scale slider\nUpdate 0.1.7\n- Added Visual Time Override (Override game time visually)\nUpdate 0.1.5\n- Added ImGui GUI\n- Added separate sliders for Rain, Snow, and Dust\n- Removed Cloud sliders (until i got it working properly)\n- Fixed Wind slider\n- Added No wind box\n- Fixed Fog slider\n- Added Force Clear sky box",
+      "downloadPageUrl": "https://www.nexusmods.com/crimsondesert/mods/632?tab=files",
+      "addonDownloadUrl": "",
+      "addonSha256": "",
+      "addonSizeBytes": 0,
+      "publishedAt": "",
+      "critical": false
+    }
+  },
+  {
+    "step": "artifact not configured",
+    "request": "GET /api/v1/update/artifact",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Update artifact is not configured."
+    }
+  },
+  {
+    "step": "published notice, no artifact yet",
+    "request": "GET /api/v1/update",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "ok": true,
+      "channel": "stable",
+      "currentVersion": "0.8.0",
+      "updateAvailable": true,
+      "version": "0.8.1",
+      "title": "Crimson Weather 0.8.1",
+      "changelog": "Update 0.8.1\n- Updated for 2.03.00",
+      "downloadPageUrl": "https://www.nexusmods.com/crimsondesert/mods/632?tab=files",
+      "addonDownloadUrl": "",
+      "addonSha256": "",
+      "addonSizeBytes": 0,
+      "publishedAt": "",
+      "critical": false
+    }
+  },
+  {
+    "step": "older client sees update",
+    "request": "GET /api/v1/update",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "ok": true,
+      "channel": "stable",
+      "currentVersion": "0.8.0",
+      "updateAvailable": true,
+      "version": "0.8.1",
+      "title": "Crimson Weather 0.8.1",
+      "changelog": "Update 0.8.1\n- Updated for 2.03.00",
+      "downloadPageUrl": "https://www.nexusmods.com/crimsondesert/mods/632?tab=files",
+      "addonDownloadUrl": "https://cw.test/api/v1/update/artifact?version=0.8.1",
+      "addonSha256": "aa962c423e39366aaf0a9374ebad5a5994ddf0a1969b3f87963103bcadaf2acb",
+      "addonSizeBytes": 19,
+      "publishedAt": "",
+      "critical": false
+    }
+  },
+  {
+    "step": "same version: no update",
+    "request": "GET /api/v1/update?version=0.8.1",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "ok": true,
+      "channel": "stable",
+      "currentVersion": "0.8.1",
+      "updateAvailable": false,
+      "version": "0.8.1",
+      "title": "Crimson Weather 0.8.1",
+      "changelog": "Update 0.8.1\n- Updated for 2.03.00",
+      "downloadPageUrl": "https://www.nexusmods.com/crimsondesert/mods/632?tab=files",
+      "addonDownloadUrl": "https://cw.test/api/v1/update/artifact?version=0.8.1",
+      "addonSha256": "aa962c423e39366aaf0a9374ebad5a5994ddf0a1969b3f87963103bcadaf2acb",
+      "addonSizeBytes": 19,
+      "publishedAt": "",
+      "critical": false
+    }
+  },
+  {
+    "step": "newer client: no update",
+    "request": "GET /api/v1/update?version=v0.9.0 beta",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "ok": true,
+      "channel": "stable",
+      "currentVersion": "0.9.0",
+      "updateAvailable": false,
+      "version": "0.8.1",
+      "title": "Crimson Weather 0.8.1",
+      "changelog": "Update 0.8.1\n- Updated for 2.03.00",
+      "downloadPageUrl": "https://www.nexusmods.com/crimsondesert/mods/632?tab=files",
+      "addonDownloadUrl": "https://cw.test/api/v1/update/artifact?version=0.8.1",
+      "addonSha256": "aa962c423e39366aaf0a9374ebad5a5994ddf0a1969b3f87963103bcadaf2acb",
+      "addonSizeBytes": 19,
+      "publishedAt": "",
+      "critical": false
+    }
+  },
+  {
+    "step": "channel header echoed",
+    "request": "GET /api/v1/update",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "ok": true,
+      "channel": "beta",
+      "currentVersion": "",
+      "updateAvailable": true,
+      "version": "0.8.1",
+      "title": "Crimson Weather 0.8.1",
+      "changelog": "Update 0.8.1\n- Updated for 2.03.00",
+      "downloadPageUrl": "https://www.nexusmods.com/crimsondesert/mods/632?tab=files",
+      "addonDownloadUrl": "https://cw.test/api/v1/update/artifact?version=0.8.1",
+      "addonSha256": "aa962c423e39366aaf0a9374ebad5a5994ddf0a1969b3f87963103bcadaf2acb",
+      "addonSizeBytes": 19,
+      "publishedAt": "",
+      "critical": false
+    }
+  },
+  {
+    "step": "download artifact",
+    "request": "GET /api/v1/update/artifact?version=0.8.1",
+    "status": 200,
+    "headers": {
+      "content-type": "application/octet-stream",
+      "cache-control": "no-store",
+      "content-disposition": "attachment; filename=\"CrimsonWeather-0.8.1.addon64\"",
+      "x-cw-addon-sha256": "aa962c423e39366aaf0a9374ebad5a5994ddf0a1969b3f87963103bcadaf2acb",
+      "x-cw-addon-size-bytes": "19"
+    },
+    "body": "MZ fake addon 0.8.1"
+  },
+  {
+    "step": "download without version",
+    "request": "GET /api/v1/update/artifact",
+    "status": 200,
+    "headers": {
+      "content-type": "application/octet-stream",
+      "cache-control": "no-store",
+      "content-disposition": "attachment; filename=\"CrimsonWeather-0.8.1.addon64\"",
+      "x-cw-addon-sha256": "aa962c423e39366aaf0a9374ebad5a5994ddf0a1969b3f87963103bcadaf2acb",
+      "x-cw-addon-size-bytes": "19"
+    },
+    "body": "MZ fake addon 0.8.1"
+  },
+  {
+    "step": "wrong version",
+    "request": "GET /api/v1/update/artifact?version=0.7.0",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Requested update artifact version is not available."
+    }
+  },
+  {
+    "step": "new version clears the artifact",
+    "request": "GET /api/v1/update?version=0.8.1",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "ok": true,
+      "channel": "stable",
+      "currentVersion": "0.8.1",
+      "updateAvailable": true,
+      "version": "0.8.2",
+      "title": "Crimson Weather 0.8.2",
+      "changelog": "Update 0.8.2",
+      "downloadPageUrl": "https://example.com/files",
+      "addonDownloadUrl": "",
+      "addonSha256": "",
+      "addonSizeBytes": 0,
+      "publishedAt": "<day>",
+      "critical": true
+    }
+  },
+  {
+    "step": "artifact gone after version change",
+    "request": "GET /api/v1/update/artifact?version=0.8.2",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Update artifact is not configured."
+    }
+  },
+  {
+    "step": "state",
+    "state": {
+      "presets": [],
+      "likes": [],
+      "downloads": [],
+      "whitelist": [],
+      "settings": [
+        {
+          "key": "update.addonR2Key",
+          "value": ""
+        },
+        {
+          "key": "update.addonSha256",
+          "value": ""
+        },
+        {
+          "key": "update.addonSizeBytes",
+          "value": "0"
+        },
+        {
+          "key": "update.changelog",
+          "value": "Update 0.8.2"
+        },
+        {
+          "key": "update.critical",
+          "value": "1"
+        },
+        {
+          "key": "update.downloadPageUrl",
+          "value": "https://example.com/files"
+        },
+        {
+          "key": "update.latestVersion",
+          "value": "0.8.2"
+        },
+        {
+          "key": "update.publishedAt",
+          "value": "<day>"
+        }
+      ],
+      "files": [],
+      "catalog": null
+    }
+  }
+]

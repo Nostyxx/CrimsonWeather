@@ -5,6 +5,9 @@
 #include "community_endpoint_config.h"
 #include "community_http.h"
 #include "runtime_shared.h"
+#include "../core/background_work.h"
+#include "update_install.h"
+#include "update_protocol.h"
 
 #include <bcrypt.h>
 #include <Shellapi.h>
@@ -13,7 +16,6 @@
 #include <cctype>
 #include <ctime>
 #include <mutex>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -27,12 +29,70 @@ constexpr const char* kFallbackDownloadPageUrl = "https://www.nexusmods.com/crim
 constexpr const char* kAddonFileName = "CrimsonWeather.addon64";
 
 std::mutex g_updateMutex;
+std::mutex g_updateLifecycleMutex;
 UpdateCheckInfo g_updateInfo;
 std::atomic<bool> g_updateChecking{ false };
 std::atomic<bool> g_updateDownloading{ false };
 std::atomic<bool> g_updateCleanupDone{ false };
+std::mutex g_updateRecoveryMutex;
+std::atomic<unsigned long long> g_updateLastRecoveryAttempt{ 0 };
+std::atomic<bool> g_updateDisabledStatusPublished{ false };
 std::atomic<unsigned long long> g_lastUpdateCheck{ 0 };
 std::atomic<bool> g_lastUpdateCheckSucceeded{ false };
+std::atomic<BackgroundWorkQueue*> g_updateQueuePointer{ nullptr };
+std::atomic<bool> g_updateStopping{ false };
+std::atomic<unsigned long long> g_updateGeneration{ 1 };
+OwnerCompletionQueue g_updateCompletions(16);
+thread_local bool g_updateWorkerContext = false;
+thread_local unsigned long long g_updateWorkerGeneration = 0;
+
+void SetStatus(UpdateCheckState state, const std::string& status);
+
+BackgroundWorkQueue& UpdateWorkQueue() {
+    static BackgroundWorkQueue queue(2);
+    g_updateQueuePointer.store(&queue);
+    return queue;
+}
+
+bool PostUpdateCompletion(unsigned long long generation, std::function<void()> completion) {
+    if (g_updateStopping.load()) return false;
+    std::function<void()> guarded = [generation, completion = std::move(completion)]() mutable {
+        if (g_updateStopping.load() || g_updateGeneration.load() != generation) return;
+        completion();
+    };
+    return g_updateCompletions.PostUntilAccepted(generation, std::move(guarded), g_updateStopping);
+}
+
+BackgroundSubmitResult QueueUpdateWork(
+    const char* key,
+    BackgroundWorkQueue::Work work) {
+    std::lock_guard<std::mutex> lifecycleLock(g_updateLifecycleMutex);
+    if (g_updateStopping.load()) return BackgroundSubmitResult::Stopping;
+    BackgroundWorkQueue& queue = UpdateWorkQueue();
+    if (g_updateStopping.load()) {
+        queue.SignalStopWithoutLock();
+        return BackgroundSubmitResult::Stopping;
+    }
+    const unsigned long long generation = g_updateGeneration.load();
+    return queue.Submit(key ? key : "", [work = std::move(work), generation](const std::atomic<bool>& stop) {
+        if (stop.load() || g_updateStopping.load()) return;
+        const bool previousContext = g_updateWorkerContext;
+        const unsigned long long previousGeneration = g_updateWorkerGeneration;
+        g_updateWorkerContext = true;
+        g_updateWorkerGeneration = generation;
+        try {
+            work(stop);
+        } catch (...) {
+            g_updateDownloading.store(false);
+            g_updateChecking.store(false);
+            PostUpdateCompletion(generation, [] {
+                SetStatus(UpdateCheckState::Error, "Update operation failed unexpectedly");
+            });
+        }
+        g_updateWorkerContext = previousContext;
+        g_updateWorkerGeneration = previousGeneration;
+    });
+}
 
 std::string TrimCopy(const std::string& value) {
     size_t start = 0;
@@ -54,67 +114,6 @@ std::string UrlForUpdate() {
         return {};
     }
     return endpoint + "/api/v1/update?version=" MOD_BASE_VERSION "&channel=" + kUpdateChannel;
-}
-
-std::string ExtractJsonString(const std::string& object, const char* key) {
-    const std::string marker = std::string("\"") + key + "\"";
-    size_t pos = object.find(marker);
-    if (pos == std::string::npos) return {};
-    pos = object.find(':', pos + marker.size());
-    if (pos == std::string::npos) return {};
-    pos = object.find('"', pos + 1);
-    if (pos == std::string::npos) return {};
-    std::string out;
-    bool escape = false;
-    for (++pos; pos < object.size(); ++pos) {
-        const char c = object[pos];
-        if (escape) {
-            switch (c) {
-            case 'n': out += '\n'; break;
-            case 'r': out += '\r'; break;
-            case 't': out += '\t'; break;
-            default: out += c; break;
-            }
-            escape = false;
-            continue;
-        }
-        if (c == '\\') {
-            escape = true;
-            continue;
-        }
-        if (c == '"') break;
-        out += c;
-    }
-    return out;
-}
-
-bool ExtractJsonBool(const std::string& object, const char* key) {
-    const std::string marker = std::string("\"") + key + "\"";
-    size_t pos = object.find(marker);
-    if (pos == std::string::npos) return false;
-    pos = object.find(':', pos + marker.size());
-    if (pos == std::string::npos) return false;
-    while (++pos < object.size() && std::isspace(static_cast<unsigned char>(object[pos]))) {}
-    return object.compare(pos, 4, "true") == 0;
-}
-
-long long ExtractJsonInt64(const std::string& object, const char* key) {
-    const std::string marker = std::string("\"") + key + "\"";
-    size_t pos = object.find(marker);
-    if (pos == std::string::npos) return 0;
-    pos = object.find(':', pos + marker.size());
-    if (pos == std::string::npos) return 0;
-    while (++pos < object.size() && std::isspace(static_cast<unsigned char>(object[pos]))) {}
-    bool negative = false;
-    if (pos < object.size() && object[pos] == '-') {
-        negative = true;
-        ++pos;
-    }
-    long long value = 0;
-    while (pos < object.size() && std::isdigit(static_cast<unsigned char>(object[pos]))) {
-        value = value * 10 + (object[pos++] - '0');
-    }
-    return negative ? -value : value;
 }
 
 bool IsSha256Hex(const std::string& value) {
@@ -170,7 +169,11 @@ void BuildAddonPath(char* outPath, size_t outSize, const char* suffix = "") {
     sprintf_s(outPath, outSize, "%s\\%s%s", dir, kAddonFileName, suffix ? suffix : "");
 }
 
-bool WriteBinaryFile(const char* path, const std::string& body, std::string& error) {
+bool WriteBinaryFile(
+    const char* path,
+    const std::string& body,
+    std::string& error,
+    const std::atomic<bool>* stopRequested = nullptr) {
     HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         error = "create file failed: " + std::to_string(GetLastError());
@@ -179,6 +182,12 @@ bool WriteBinaryFile(const char* path, const std::string& body, std::string& err
 
     size_t offset = 0;
     while (offset < body.size()) {
+        if (stopRequested && stopRequested->load()) {
+            error = "write cancelled";
+            CloseHandle(file);
+            DeleteFileA(path);
+            return false;
+        }
         const DWORD chunk = static_cast<DWORD>(min<size_t>(body.size() - offset, 1ull << 20));
         DWORD written = 0;
         if (!WriteFile(file, body.data() + offset, chunk, &written, nullptr) || written != chunk) {
@@ -192,14 +201,23 @@ bool WriteBinaryFile(const char* path, const std::string& body, std::string& err
     return true;
 }
 
-void SetUpdateInfo(const UpdateCheckInfo& info) {
+void SetUpdateInfoNow(const UpdateCheckInfo& info) {
     std::lock_guard<std::mutex> lock(g_updateMutex);
     g_updateInfo = info;
     g_updateInfo.checking = g_updateChecking.load();
     g_updateInfo.downloading = g_updateDownloading.load();
 }
 
-void SetStatus(UpdateCheckState state, const std::string& status) {
+void SetUpdateInfo(const UpdateCheckInfo& info) {
+    if (g_updateWorkerContext) {
+        const unsigned long long generation = g_updateWorkerGeneration;
+        PostUpdateCompletion(generation, [info] { SetUpdateInfoNow(info); });
+        return;
+    }
+    SetUpdateInfoNow(info);
+}
+
+void SetStatusNow(UpdateCheckState state, const std::string& status) {
     std::lock_guard<std::mutex> lock(g_updateMutex);
     g_updateInfo.state = state;
     g_updateInfo.status = status;
@@ -212,6 +230,15 @@ void SetStatus(UpdateCheckState state, const std::string& status) {
     }
 }
 
+void SetStatus(UpdateCheckState state, const std::string& status) {
+    if (g_updateWorkerContext) {
+        const unsigned long long generation = g_updateWorkerGeneration;
+        PostUpdateCompletion(generation, [state, status] { SetStatusNow(state, status); });
+        return;
+    }
+    SetStatusNow(state, status);
+}
+
 std::vector<CommunityHttpHeader> UpdateHeaders() {
     return {
         { "accept", "application/json" },
@@ -220,7 +247,11 @@ std::vector<CommunityHttpHeader> UpdateHeaders() {
     };
 }
 
-void CheckWorker() {
+void CheckWorker(const std::atomic<bool>& stopRequested) {
+    if (stopRequested.load() || g_updateStopping.load()) {
+        g_updateChecking.store(false);
+        return;
+    }
     UpdateCheckInfo info{};
     info.currentVersion = MOD_BASE_VERSION;
     info.downloadPageUrl = kFallbackDownloadPageUrl;
@@ -235,10 +266,18 @@ void CheckWorker() {
     }
 
     CommunityHttpResponse response;
-    if (!CommunityHttp_Request("GET", url, UpdateHeaders(), "", response)) {
+    if (!CommunityHttp_Request("GET", url, UpdateHeaders(), "", response, &stopRequested)) {
+        if (stopRequested.load() || g_updateStopping.load()) {
+            g_updateChecking.store(false);
+            return;
+        }
         info.state = UpdateCheckState::Error;
         info.status = "Update check failed: " + response.error;
         SetUpdateInfo(info);
+        g_updateChecking.store(false);
+        return;
+    }
+    if (stopRequested.load() || g_updateStopping.load()) {
         g_updateChecking.store(false);
         return;
     }
@@ -257,17 +296,13 @@ void CheckWorker() {
         return;
     }
 
-    info.updateAvailable = ExtractJsonBool(response.body, "updateAvailable");
-    info.latestVersion = ExtractJsonString(response.body, "version");
-    info.title = ExtractJsonString(response.body, "title");
-    info.changelog = ExtractJsonString(response.body, "changelog");
-    const std::string downloadPage = ExtractJsonString(response.body, "downloadPageUrl");
-    if (!downloadPage.empty()) {
-        info.downloadPageUrl = downloadPage;
+    if (!update_protocol::ParseUpdateMetadata(response.body, info)) {
+        info.state = UpdateCheckState::Error;
+        info.status = "Update check failed: invalid JSON";
+        SetUpdateInfo(info);
+        g_updateChecking.store(false);
+        return;
     }
-    info.addonDownloadUrl = ExtractJsonString(response.body, "addonDownloadUrl");
-    info.addonSha256 = ExtractJsonString(response.body, "addonSha256");
-    info.addonSizeBytes = ExtractJsonInt64(response.body, "addonSizeBytes");
     if (info.latestVersion.empty()) {
         info.latestVersion = MOD_BASE_VERSION;
     }
@@ -288,16 +323,27 @@ std::vector<CommunityHttpHeader> UpdateArtifactHeaders() {
     };
 }
 
-void InstallWorker(UpdateCheckInfo info) {
+void InstallWorker(UpdateCheckInfo info, bool autoDownload, const std::atomic<bool>& stopRequested) {
+    if (stopRequested.load() || g_updateStopping.load()) {
+        g_updateDownloading.store(false);
+        return;
+    }
     SetStatus(UpdateCheckState::Downloading, "Downloading update...");
-    GUI_SetStatus("Downloading Crimson Weather update...");
+    PostUpdateCompletion(g_updateWorkerGeneration, [] {
+        GUI_SetStatus("Downloading Crimson Weather update...");
+    });
 
     const auto finish = [](UpdateCheckState state, const std::string& status) {
         g_updateDownloading.store(false);
         SetStatus(state, status);
+        if (state == UpdateCheckState::Installed) {
+            PostUpdateCompletion(g_updateWorkerGeneration, [] {
+                GUI_SetStatus("Update success. Restart Crimson Desert to apply.");
+            });
+        }
     };
 
-    if (!g_cfg.updaterAutoDownload) {
+    if (!autoDownload) {
         finish(UpdateCheckState::Error, "Direct update download is disabled");
         return;
     }
@@ -307,8 +353,16 @@ void InstallWorker(UpdateCheckInfo info) {
     }
 
     CommunityHttpResponse response;
-    if (!CommunityHttp_Request("GET", info.addonDownloadUrl, UpdateArtifactHeaders(), "", response)) {
+    if (!CommunityHttp_Request("GET", info.addonDownloadUrl, UpdateArtifactHeaders(), "", response, &stopRequested)) {
+        if (stopRequested.load() || g_updateStopping.load()) {
+            g_updateDownloading.store(false);
+            return;
+        }
         finish(UpdateCheckState::Error, "Update download failed: " + response.error);
+        return;
+    }
+    if (stopRequested.load() || g_updateStopping.load()) {
+        g_updateDownloading.store(false);
         return;
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -337,26 +391,36 @@ void InstallWorker(UpdateCheckInfo info) {
     BuildAddonPath(tempPath, sizeof(tempPath), ".new");
     BuildAddonPath(oldPath, sizeof(oldPath), ".old");
 
-    DeleteFileA(tempPath);
-    DeleteFileA(oldPath);
+    std::string recoveryDetail;
+    bool recovered = false;
+    {
+        // Cleanup runs from the render tick. Keep only this short recovery step
+        // serialized with it; downloading the artifact and writing .new stay unlocked.
+        std::lock_guard<std::mutex> recoveryLock(g_updateRecoveryMutex);
+        recovered = update_install::RecoverInterruptedInstall(currentPath, tempPath, oldPath, recoveryDetail);
+    }
+    if (!recovered) {
+        finish(UpdateCheckState::Error, "Update recovery failed: " + recoveryDetail);
+        return;
+    }
+    Log("[update] recovery: %s\n", recoveryDetail.c_str());
 
     std::string error;
-    if (!WriteBinaryFile(tempPath, response.body, error)) {
+    if (!WriteBinaryFile(tempPath, response.body, error, &stopRequested)) {
+        if (stopRequested.load() || g_updateStopping.load()) {
+            g_updateDownloading.store(false);
+            return;
+        }
         finish(UpdateCheckState::Error, "Update write failed: " + error);
         return;
     }
-
-    if (!MoveFileExA(currentPath, oldPath, MOVEFILE_REPLACE_EXISTING)) {
-        const DWORD code = GetLastError();
+    if (stopRequested.load() || g_updateStopping.load()) {
         DeleteFileA(tempPath);
-        finish(UpdateCheckState::Error, "Update install failed: could not rename current add-on (" + std::to_string(code) + ")");
+        g_updateDownloading.store(false);
         return;
     }
-    if (!MoveFileExA(tempPath, currentPath, MOVEFILE_REPLACE_EXISTING)) {
-        const DWORD code = GetLastError();
-        MoveFileExA(oldPath, currentPath, MOVEFILE_REPLACE_EXISTING);
-        DeleteFileA(tempPath);
-        finish(UpdateCheckState::Error, "Update install failed: could not activate new add-on (" + std::to_string(code) + ")");
+    if (!update_install::ActivateStagedFile(currentPath, tempPath, oldPath, error)) {
+        finish(UpdateCheckState::Error, "Update install failed: " + error);
         return;
     }
 
@@ -365,7 +429,6 @@ void InstallWorker(UpdateCheckInfo info) {
         hash.c_str(),
         currentPath);
     finish(UpdateCheckState::Installed, "Update success. Restart to apply.");
-    GUI_SetStatus("Update success. Restart Crimson Desert to apply.");
 }
 
 } // namespace
@@ -374,27 +437,80 @@ void UpdateService_CleanupStaleFiles() {
 #if defined(CW_WIND_ONLY)
     return;
 #else
-    bool expected = false;
-    if (!g_updateCleanupDone.compare_exchange_strong(expected, true)) {
+    if (g_updateCleanupDone.load() || g_updateStopping.load()) {
         return;
     }
-    char oldPath[MAX_PATH] = {};
-    BuildAddonPath(oldPath, sizeof(oldPath), ".old");
-    if (DeleteFileA(oldPath)) {
-        Log("[update] removed stale backup %s\n", oldPath);
+    std::lock_guard<std::mutex> recoveryLock(g_updateRecoveryMutex);
+    // The install request sets this before queueing. The shared mutex closes
+    // the check/start race with an already-running recovery attempt.
+    if (g_updateCleanupDone.load() || g_updateStopping.load() || g_updateDownloading.load()) return;
+    const unsigned long long nowTick = GetTickCount64();
+    const unsigned long long lastAttempt = g_updateLastRecoveryAttempt.load();
+    if (lastAttempt != 0 && nowTick - lastAttempt < 5000) return;
+    g_updateLastRecoveryAttempt.store(nowTick);
+    char currentPath[MAX_PATH] = {};
+    char stagedPath[MAX_PATH] = {};
+    char backupPath[MAX_PATH] = {};
+    BuildAddonPath(currentPath, sizeof(currentPath));
+    BuildAddonPath(stagedPath, sizeof(stagedPath), ".new");
+    BuildAddonPath(backupPath, sizeof(backupPath), ".old");
+    std::string detail;
+    if (update_install::RecoverInterruptedInstall(currentPath, stagedPath, backupPath, detail)) {
+        Log("[update] recovery: %s\n", detail.c_str());
+        g_updateCleanupDone.store(true);
+    } else {
+        Log("[W] update recovery: %s\n", detail.c_str());
     }
 #endif
+}
+
+void UpdateService_BeginShutdown() {
+    std::lock_guard<std::mutex> lifecycleLock(g_updateLifecycleMutex);
+    if (g_updateStopping.exchange(true)) return;
+    g_updateGeneration.fetch_add(1);
+    BackgroundWorkQueue* queue = g_updateQueuePointer.load();
+    if (queue) queue->StopAcceptingWork();
+}
+
+bool UpdateService_WaitForShutdown(unsigned long waitMilliseconds) {
+    BackgroundWorkQueue* queue = nullptr;
+    {
+        std::lock_guard<std::mutex> lifecycleLock(g_updateLifecycleMutex);
+        queue = g_updateQueuePointer.load();
+    }
+    return !queue || queue->WaitForStop(waitMilliseconds);
+}
+
+void UpdateService_SignalStopWithoutWait() noexcept {
+    if (g_updateStopping.exchange(true)) return;
+    g_updateGeneration.fetch_add(1);
+    BackgroundWorkQueue* queue = g_updateQueuePointer.load();
+    if (queue) queue->SignalStopWithoutLock();
+}
+
+void UpdateService_CloseAfterShutdown() {
+    {
+        std::lock_guard<std::mutex> lifecycleLock(g_updateLifecycleMutex);
+        BackgroundWorkQueue* queue = g_updateQueuePointer.load();
+        if (queue) queue->CloseAfterStop();
+    }
+    g_updateCompletions.Clear();
 }
 
 void UpdateService_Tick() {
 #if defined(CW_WIND_ONLY)
     return;
 #else
+    if (g_updateStopping.load()) return;
+    g_updateCompletions.Drain(g_updateGeneration.load());
     UpdateService_CleanupStaleFiles();
     if (!g_cfg.updaterEnabled) {
-        SetStatus(UpdateCheckState::Disabled, "Update check disabled");
+        if (!g_updateDisabledStatusPublished.exchange(true)) {
+            SetStatus(UpdateCheckState::Disabled, "Update check disabled");
+        }
         return;
     }
+    g_updateDisabledStatusPublished.store(false);
     const unsigned long long now = static_cast<unsigned long long>(std::time(nullptr));
     const unsigned long long last = g_lastUpdateCheck.load();
     const unsigned long long interval = g_lastUpdateCheckSucceeded.load()
@@ -410,10 +526,14 @@ void UpdateService_RequestCheck(bool force) {
 #if defined(CW_WIND_ONLY)
     (void)force;
 #else
+    if (g_updateStopping.load()) return;
     if (!g_cfg.updaterEnabled) {
-        SetStatus(UpdateCheckState::Disabled, "Update check disabled");
+        if (!g_updateDisabledStatusPublished.exchange(true)) {
+            SetStatus(UpdateCheckState::Disabled, "Update check disabled");
+        }
         return;
     }
+    g_updateDisabledStatusPublished.store(false);
     const unsigned long long now = static_cast<unsigned long long>(std::time(nullptr));
     const unsigned long long last = g_lastUpdateCheck.load();
     const unsigned long long interval = g_lastUpdateCheckSucceeded.load()
@@ -429,9 +549,15 @@ void UpdateService_RequestCheck(bool force) {
     g_lastUpdateCheck.store(now);
     g_lastUpdateCheckSucceeded.store(false);
     SetStatus(UpdateCheckState::Checking, "Checking for updates...");
-    std::thread([]() {
-        CheckWorker();
-    }).detach();
+    const BackgroundSubmitResult result = QueueUpdateWork("update-check", [](const std::atomic<bool>& stop) {
+        CheckWorker(stop);
+    });
+    if (result != BackgroundSubmitResult::Accepted) {
+        g_updateChecking.store(false);
+        if (result != BackgroundSubmitResult::Stopping) {
+            SetStatus(UpdateCheckState::Error, "Could not queue update check");
+        }
+    }
 #endif
 }
 
@@ -462,7 +588,9 @@ void UpdateService_InstallUpdate() {
 #if defined(CW_WIND_ONLY)
     return;
 #else
-    if (!g_cfg.updaterAutoDownload) {
+    if (g_updateStopping.load()) return;
+    const bool autoDownload = g_cfg.updaterAutoDownload;
+    if (!autoDownload) {
         UpdateService_OpenDownloadPage();
         return;
     }
@@ -471,8 +599,14 @@ void UpdateService_InstallUpdate() {
         return;
     }
     UpdateCheckInfo info = UpdateService_GetInfo();
-    std::thread([info]() {
-        InstallWorker(info);
-    }).detach();
+    const BackgroundSubmitResult result = QueueUpdateWork("update-install", [info = std::move(info), autoDownload](const std::atomic<bool>& stop) mutable {
+        InstallWorker(std::move(info), autoDownload, stop);
+    });
+    if (result != BackgroundSubmitResult::Accepted) {
+        g_updateDownloading.store(false);
+        if (result != BackgroundSubmitResult::Stopping) {
+            SetStatus(UpdateCheckState::Error, "Could not queue update download");
+        }
+    }
 #endif
 }

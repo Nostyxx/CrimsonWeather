@@ -32,6 +32,10 @@ struct UpdateCheckInfo {
 
 void UpdateService_CleanupStaleFiles();
 void UpdateService_Tick();
+void UpdateService_BeginShutdown();
+bool UpdateService_WaitForShutdown(unsigned long waitMilliseconds);
+void UpdateService_SignalStopWithoutWait() noexcept;
+void UpdateService_CloseAfterShutdown();
 void UpdateService_RequestCheck(bool force);
 UpdateCheckInfo UpdateService_GetInfo();
 void UpdateService_OpenDownloadPage();

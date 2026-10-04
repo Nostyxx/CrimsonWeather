@@ -1,0 +1,46 @@
+[
+  {
+    "step": "first catalog read builds the catalog",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=60"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": []
+    }
+  },
+  {
+    "step": "second read is served from R2",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": []
+    }
+  },
+  {
+    "step": "state",
+    "state": {
+      "presets": [],
+      "likes": [],
+      "downloads": [],
+      "whitelist": [],
+      "settings": [],
+      "files": [],
+      "catalog": {
+        "schemaVersion": 1,
+        "generatedAt": "<ts>",
+        "presets": []
+      }
+    }
+  }
+]

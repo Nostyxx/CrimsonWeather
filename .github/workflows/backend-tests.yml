@@ -1,0 +1,40 @@
+name: Community backend tests
+
+on:
+  push:
+    paths:
+      - 'services/community/**'
+      - 'services/community-presets/**'
+      - '.github/workflows/backend-tests.yml'
+  pull_request:
+    paths:
+      - 'services/community/**'
+      - 'services/community-presets/**'
+      - '.github/workflows/backend-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # services/community is the backend that is deployed. community-presets
+        # is the earlier, undeployed refactor, tested while it is still in the repo.
+        package: [community, community-presets]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: services/${{ matrix.package }}/package-lock.json
+      - run: npm ci
+      - run: npm test

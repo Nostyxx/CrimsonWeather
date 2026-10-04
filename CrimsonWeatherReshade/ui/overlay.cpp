@@ -5,6 +5,7 @@
 
 #include "overlay_bridge.h"
 #include "community_ui.h"
+#include "community_service.h"
 #if defined(CW_DEV_BUILD)
 #include "performance_benchmark.h"
 #endif
@@ -17,6 +18,7 @@
 #include <d3d12.h>
 #include <cmath>
 #include <cstdio>
+#include <mutex>
 #include <string>
 
 using namespace overlay_internal;
@@ -24,7 +26,43 @@ using namespace overlay_internal;
 namespace {
 
 HMODULE g_overlayModule = nullptr;
+HMODULE g_overlayReshadeModule = nullptr;
 bool g_overlayRegistered = false;
+std::atomic<bool> g_overlayCallbacksClosing{ true };
+std::atomic<unsigned long> g_activeOverlayCallbacks{ 0 };
+std::recursive_mutex g_overlayCallbackMutex;
+
+class OverlayCallbackGuard {
+public:
+    OverlayCallbackGuard() {
+        if (g_overlayCallbacksClosing.load()) return;
+        g_activeOverlayCallbacks.fetch_add(1);
+        if (g_overlayCallbacksClosing.load()) {
+            g_activeOverlayCallbacks.fetch_sub(1);
+            return;
+        }
+        lock_ = std::unique_lock<std::recursive_mutex>(g_overlayCallbackMutex);
+        if (g_overlayCallbacksClosing.load()) {
+            lock_.unlock();
+            g_activeOverlayCallbacks.fetch_sub(1);
+            return;
+        }
+        entered_ = true;
+    }
+
+    ~OverlayCallbackGuard() {
+        if (entered_) {
+            lock_.unlock();
+            g_activeOverlayCallbacks.fetch_sub(1);
+        }
+    }
+
+    explicit operator bool() const { return entered_; }
+
+private:
+    std::unique_lock<std::recursive_mutex> lock_;
+    bool entered_ = false;
+};
 
 bool DrawStartupGate() {
     const AddonStartupState state = g_addonStartupState.load();
@@ -236,7 +274,6 @@ void DrawUpdateChangelogPopup(const UpdateCheckInfo& updateInfo) {
 }
 
 void DrawUpdateHeader() {
-    UpdateService_Tick();
     const UpdateCheckInfo updateInfo = UpdateService_GetInfo();
 
     ImGui::Text("%s %s", MOD_NAME, MOD_VERSION);
@@ -298,6 +335,8 @@ void DrawUpdateHeader() {
 }
 
 void DrawOverlay(reshade::api::effect_runtime*) {
+    OverlayCallbackGuard callbackGuard;
+    if (!callbackGuard) return;
 #if !defined(CW_WIND_ONLY)
     Preset_OnWorldTick(g_pEnvManager && *g_pEnvManager != 0, 0.016f);
 #endif
@@ -384,6 +423,8 @@ void DrawOverlay(reshade::api::effect_runtime*) {
 }
 
 static void OnReShadeInitDevice(reshade::api::device* device) {
+    OverlayCallbackGuard callbackGuard;
+    if (!callbackGuard) return;
     if (device->get_api() != reshade::api::device_api::d3d12)
         return;
     Log("[moon-main] init_device event device=%p\n", device->get_native());
@@ -397,6 +438,10 @@ static void OnReShadePresent(reshade::api::command_queue* queue,
                              const reshade::api::rect*,
                              uint32_t,
                              const reshade::api::rect*) {
+    OverlayCallbackGuard callbackGuard;
+    if (!callbackGuard) return;
+    Community_Tick();
+    UpdateService_Tick();
 #if defined(CW_DEV_BUILD)
     ID3D12Device* nativeDevice = nullptr;
     if (queue) {
@@ -412,12 +457,16 @@ static void OnReShadePresent(reshade::api::command_queue* queue,
 
 } // namespace
 
-bool InitializeOverlayBridge(HMODULE module) {
-    if (!reshade::register_addon(module)) {
+bool InitializeOverlayBridge(HMODULE module, HMODULE reshadeModule) {
+    g_overlayModule = module;
+    g_overlayReshadeModule = reshadeModule;
+    g_overlayCallbacksClosing.store(false);
+    if (!reshade::register_addon(module, reshadeModule)) {
+        g_overlayCallbacksClosing.store(true);
+        g_overlayModule = nullptr;
+        g_overlayReshadeModule = nullptr;
         return false;
     }
-
-    g_overlayModule = module;
 
     reshade::register_overlay(MOD_NAME, &DrawOverlay);
 
@@ -428,8 +477,10 @@ bool InitializeOverlayBridge(HMODULE module) {
     return true;
 }
 
-void ShutdownOverlayBridge() {
+void ShutdownOverlayBridge(HMODULE module, HMODULE reshadeModule) {
+    g_overlayCallbacksClosing.store(true);
     if (!g_overlayRegistered) {
+        while (g_activeOverlayCallbacks.load() != 0) Sleep(1);
         return;
     }
 
@@ -441,7 +492,10 @@ void ShutdownOverlayBridge() {
     reshade::unregister_event<reshade::addon_event::init_device>(&OnReShadeInitDevice);
 
     reshade::unregister_overlay(MOD_NAME, &DrawOverlay);
-    reshade::unregister_addon(g_overlayModule);
+    reshade::unregister_addon(module ? module : g_overlayModule,
+                              reshadeModule ? reshadeModule : g_overlayReshadeModule);
     g_overlayRegistered = false;
     g_overlayModule = nullptr;
+    g_overlayReshadeModule = nullptr;
+    while (g_activeOverlayCallbacks.load() != 0) Sleep(1);
 }

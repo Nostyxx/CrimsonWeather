@@ -1,0 +1,344 @@
+[
+  {
+    "step": "no client id",
+    "request": "POST /api/v1/presets",
+    "status": 400,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Missing anonymous client id."
+    }
+  },
+  {
+    "step": "client id too long",
+    "request": "POST /api/v1/presets",
+    "status": 400,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Missing anonymous client id."
+    }
+  },
+  {
+    "step": "invalid json",
+    "request": "POST /api/v1/presets",
+    "status": 400,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Invalid JSON."
+    }
+  },
+  {
+    "step": "missing title",
+    "request": "POST /api/v1/presets",
+    "status": 400,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Title is required."
+    }
+  },
+  {
+    "step": "empty preset",
+    "request": "POST /api/v1/presets",
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset validation failed.",
+      "details": {
+        "ok": false,
+        "errors": [
+          "Preset text is empty."
+        ],
+        "warnings": [],
+        "formatVersion": 0
+      }
+    }
+  },
+  {
+    "step": "missing header",
+    "request": "POST /api/v1/presets",
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset validation failed.",
+      "details": {
+        "ok": false,
+        "errors": [
+          "Missing [CrimsonWeatherPreset] header."
+        ],
+        "warnings": [],
+        "formatVersion": 0
+      }
+    }
+  },
+  {
+    "step": "unknown section and key",
+    "request": "POST /api/v1/presets",
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset validation failed.",
+      "details": {
+        "ok": false,
+        "errors": [
+          "Unknown section: Evil",
+          "Unknown key: Foo",
+          "Invalid line: bare line"
+        ],
+        "warnings": [],
+        "formatVersion": 0
+      }
+    }
+  },
+  {
+    "step": "unsafe values",
+    "request": "POST /api/v1/presets",
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset validation failed.",
+      "details": {
+        "ok": false,
+        "errors": [
+          "Unsafe value for MoonTexture.",
+          "Unsafe value for MilkywayTexture.",
+          "Unsafe value for Rain.",
+          "Non-finite numeric value for Rain."
+        ],
+        "warnings": [],
+        "formatVersion": 0
+      }
+    }
+  },
+  {
+    "step": "non-numeric value",
+    "request": "POST /api/v1/presets",
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset validation failed.",
+      "details": {
+        "ok": false,
+        "errors": [
+          "Non-finite numeric value for Rain.",
+          "Non-finite numeric value for Snow."
+        ],
+        "warnings": [],
+        "formatVersion": 0
+      }
+    }
+  },
+  {
+    "step": "future format version",
+    "request": "POST /api/v1/presets",
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset validation failed.",
+      "details": {
+        "ok": false,
+        "errors": [
+          "FormatVersion 99 is newer than supported 6."
+        ],
+        "warnings": [],
+        "formatVersion": 99
+      }
+    }
+  },
+  {
+    "step": "control characters",
+    "request": "POST /api/v1/presets",
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset validation failed.",
+      "details": {
+        "ok": false,
+        "errors": [
+          "Preset contains control characters.",
+          "Non-finite numeric value for Rain."
+        ],
+        "warnings": [],
+        "formatVersion": 0
+      }
+    }
+  },
+  {
+    "step": "too large",
+    "request": "POST /api/v1/presets",
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset validation failed.",
+      "details": {
+        "ok": false,
+        "errors": [
+          "Preset exceeds 65536 bytes."
+        ],
+        "warnings": [],
+        "formatVersion": 0
+      }
+    }
+  },
+  {
+    "step": "titles and text are sanitized",
+    "request": "POST /api/v1/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "storm-night-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-<h1>",
+      "status": "pending",
+      "autoApproved": false,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "my presets",
+    "request": "GET /api/v1/me/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "clientFingerprint": "61af39d23210...0c10b9",
+      "presets": [
+        {
+          "id": "storm-night-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-<h1>",
+          "title": "Storm Night xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "author_name": "Anonymous",
+          "description": "line1 line2",
+          "tags_json": "[]",
+          "status": "pending",
+          "update_of": "",
+          "downloads": 0,
+          "likes": 0,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": null,
+          "rejected_at": null,
+          "pending_update_id": null,
+          "pending_update_title": null,
+          "pending_update_at": null
+        }
+      ]
+    }
+  },
+  {
+    "step": "my presets without client id",
+    "request": "GET /api/v1/me/presets",
+    "status": 400,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Missing anonymous client id."
+    }
+  },
+  {
+    "step": "pending preset is not public",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=60"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": []
+    }
+  },
+  {
+    "step": "state",
+    "state": {
+      "presets": [
+        {
+          "id": "storm-night-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-<h1>",
+          "title": "Storm Night xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "author_name": "Anonymous",
+          "description": "line1 line2",
+          "tags_json": "[]",
+          "status": "pending",
+          "r2_key": "pending/storm-night-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-<h1>/<file>",
+          "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+          "size_bytes": 229,
+          "format_version": 6,
+          "min_addon_version": "0.6.3",
+          "submitter_hash": "61af39d23210c5aed61d204427ee9cdc60a54f06361a9f2e9bc765eb330c10b9",
+          "safety_status": "passed",
+          "safety_summary": "",
+          "downloads": 0,
+          "likes": 0,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": null,
+          "rejected_at": null,
+          "update_of": "",
+          "deleted_at": null,
+          "delete_after": null,
+          "deleted_by": "",
+          "delete_reason": ""
+        }
+      ],
+      "likes": [],
+      "downloads": [],
+      "whitelist": [],
+      "settings": [],
+      "files": [
+        {
+          "key": "pending/storm-night-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-<h1>/<file>",
+          "state": "ok"
+        }
+      ],
+      "catalog": {
+        "schemaVersion": 1,
+        "generatedAt": "<ts>",
+        "presets": []
+      }
+    }
+  }
+]

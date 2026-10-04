@@ -17,67 +17,15 @@
 using std::max;
 using std::min;
 
-struct Config {
-    bool logEnabled = true;
-    bool autoStart = true;
-    bool autoSaved = false;
-    bool toastNotification = true;
-    bool communityEnabled = true;
-    bool updaterEnabled = true;
-    bool updaterAutoDownload = false;
-    bool textureSwitcherEnabled = true;
-    int textureSwitcherAnimatedTextureGpuSlots = 12;
-    int textureSwitcherAnimatedMoonGpuSlots = 12;
-    bool realGameTimeEnabled = false;
-    float realGameTimeDayScale = 1.0f;
-    float realGameTimeNightScale = 1.0f;
-    int effectToggleVK = VK_F10;
-    WORD controllerEffectToggleMask = 0;
-    bool reshadeDiagnostics = false;
-};
+#include "../core/config.h"
+#include "../core/logging.h"
+#include "../core/runtime_health.h"
+#include "../game/time_control.h"
 
 #if defined(CW_DEV_BUILD)
-enum class DevLaunchOption : uint8_t {
-    Full = 0,
-    None,
-    TextureHook,
-    WeatherTickHook,
-    IntensityHooks,
-    WindHooks,
-    FrameHooks,
-    RegionHook,
-};
-
-const char* DevLaunchOptionName(DevLaunchOption option);
-const char* DevLaunchOptionDescription(DevLaunchOption option);
-DevLaunchOption ParseDevLaunchOption(const char* text);
-bool DevLaunchOptionUsesTextureHook(DevLaunchOption option);
-bool DevLaunchOptionUsesRuntimeStartup(DevLaunchOption option);
-bool DevLaunchOptionBypassesStartupHealth(DevLaunchOption option);
-#endif
-
-inline Config g_cfg{};
-#if defined(CW_DEV_BUILD)
-inline std::atomic<DevLaunchOption> g_devLaunchOption{ DevLaunchOption::Full };
 inline std::atomic<bool> g_devPerformanceBenchmarkActive{ false };
 #endif
-inline FILE* g_logFile = nullptr;
-#if defined(CW_DEV_BUILD)
-inline FILE* g_devLaunchLogFile = nullptr;
-#endif
-inline bool g_logEnabled = true;
-inline char g_pluginDir[MAX_PATH] = {};
 
-void Log(const char* fmt, ...);
-void BuildIniPath(char* outPath, size_t outSize);
-int KeyNameToVK(const char* name);
-WORD ControllerTokenToMask(const char* token);
-WORD ParseControllerCombo(const char* text, WORD fallback);
-bool IsControllerComboPressed(WORD buttons, WORD comboMask);
-void LoadConfig(const char* dir);
-void SaveGeneralConfig();
-void SaveWindOnlyConfig();
-void OpenLogFile(const char* dir);
 void GUI_SetStatus(const char* msg);
 void ResetAllSliders();
 bool AnyCustomWeatherSliderActive();
@@ -235,6 +183,8 @@ inline std::atomic<float> g_windMul{ 1.0f };
 inline ptrdiff_t g_envWeatherStateOffset = 0xEE0;
 inline ptrdiff_t g_weatherNodeContainerOffset = 0x60;
 inline std::atomic<bool> g_timeLayoutReady{ false };
+// Seasons of Pywel (Seasons.asi) is loaded; set by the AOB scan, shown on the Status tab.
+inline std::atomic<bool> g_seasonsOfPywelDetected{ false };
 inline ptrdiff_t g_tdLowerLimit = TD::LOWER_LIMIT_DEF;
 inline ptrdiff_t g_tdUpperLimit = TD::UPPER_LIMIT_DEF;
 inline ptrdiff_t g_tdCurrentA = TD::CURRENT_A_DEF;
@@ -252,12 +202,6 @@ inline NativeToastShowAlert_fn g_pNativeToastShowAlert = nullptr;
 inline void** g_pNativeToastRootGlobal = nullptr;
 inline uint32_t g_nativeToastOuterOffset = 0;
 inline ptrdiff_t g_nativeToastManagerOffset = 0;
-
-enum class RuntimeHealthState : uint8_t {
-    Disabled = 0,
-    Degraded = 1,
-    Ready = 2,
-};
 
 enum class AddonStartupState : uint8_t {
     NotStarted = 0,
@@ -281,55 +225,6 @@ enum class StartupStepId : uint8_t {
 inline constexpr int kStartupLogLineCount = 8;
 inline constexpr int kStartupLogLineLength = 96;
 
-enum class AobTargetId : uint8_t {
-    WeatherTick = 0,
-    WeatherCompose,
-    GetRainIntensity,
-    GetSnowIntensity,
-    GetDustIntensity,
-    ProcessWindState,
-    ActivateEffect,
-    SetIntensity,
-    WindPack,
-    SceneFrameUpdate,
-    EnvManagerPtr,
-    NullSentinel,
-    TimeStores,
-    TimeDebugHandler,
-    NativeToast,
-    MinimapRegionLabels,
-    MinimapGameTimeUpdate,
-    GameTimeGetter,
-    Count
-};
-
-enum class RuntimeHealthGroup : uint8_t {
-    CoreWeather = 0,
-    CloudExperiment,
-    Fog,
-    Time,
-    Infra,
-    Count
-};
-
-enum class RuntimeFeatureId : uint8_t {
-    ForceClear = 0,
-    Rain,
-    ThunderControls,
-    Dust,
-    Snow,
-    TimeControls,
-    CloudControls,
-    FogControls,
-    WindControls,
-    NoWindControls,
-    DetailControls,
-    ExperimentControls,
-    CelestialControls,
-    NativeToast,
-    Count
-};
-
 enum class RuntimeHookId : uint8_t {
     WeatherTick = 0,
     WeatherCompose,
@@ -342,12 +237,6 @@ enum class RuntimeHookId : uint8_t {
     MinimapGameTimeUpdate,
     GameTimeGetter,
     Count
-};
-
-struct RuntimeHealthEntry {
-    RuntimeHealthState state = RuntimeHealthState::Disabled;
-    uintptr_t addr = 0;
-    std::string note;
 };
 
 struct RuntimeHookControlEntry {
@@ -370,23 +259,8 @@ struct RuntimeHookStatusEntry {
     bool pointerPatch = false;
 };
 
-inline std::array<RuntimeHealthEntry, static_cast<size_t>(AobTargetId::Count)> g_aobTargetHealth{};
-inline std::array<RuntimeHealthEntry, static_cast<size_t>(RuntimeHealthGroup::Count)> g_runtimeGroupHealth{};
-inline std::array<RuntimeHealthEntry, static_cast<size_t>(RuntimeFeatureId::Count)> g_runtimeFeatureHealth{};
 inline std::array<RuntimeHookControlEntry, static_cast<size_t>(RuntimeHookId::Count)> g_runtimeHookControls{};
 
-const char* RuntimeHealthStateLabel(RuntimeHealthState state);
-const char* AobTargetLabel(AobTargetId id);
-const char* RuntimeHealthGroupLabel(RuntimeHealthGroup id);
-const char* RuntimeFeatureLabel(RuntimeFeatureId id);
-void ClearRuntimeHealthState();
-void SetAobTargetHealth(AobTargetId id, RuntimeHealthState state, uintptr_t addr, const std::string& note);
-void SetRuntimeGroupHealth(RuntimeHealthGroup id, RuntimeHealthState state, const std::string& note);
-void SetRuntimeFeatureHealth(RuntimeFeatureId id, RuntimeHealthState state, const std::string& note);
-RuntimeHealthState GetRuntimeFeatureState(RuntimeFeatureId id);
-bool RuntimeFeatureAvailable(RuntimeFeatureId id);
-const char* RuntimeFeatureNote(RuntimeFeatureId id);
-bool RuntimeStartupHealthy(char* outReason, size_t outReasonSize);
 const char* RuntimeHookLabel(RuntimeHookId id);
 RuntimeHookId RuntimeHookIdFromName(const char* name);
 void ResetRuntimeHookControls();
@@ -667,33 +541,11 @@ inline std::atomic<bool> g_resetStopRequested{ false };
 inline constexpr int kCustomWeather = 99;
 inline char g_statusText[128] = "Ready";
 
-struct ResolvedEnv {
-    long long entity = 0;
-    long long weatherState = 0;
-    long long cloudNode = 0;
-    long long windNode = 0;
-    long long particleMgr = 0;
-    bool valid = false;
-};
-
-ResolvedEnv ResolveEnv();
-
 template <typename T>
 static T& At(long long base, ptrdiff_t off) {
     return *reinterpret_cast<T*>(base + off);
 }
 
-float Clamp01(float v);
-float NormalizeHour24(float h);
-bool ResolveTimeContext(void*& outEnvMgr, long long& outEntity);
-bool TryReadCurrentTimeRaw(void* envMgr, float& outRaw);
-bool TrySetTimeRaw(long long entity, float raw);
-void CaptureTimeLimitBaseline(long long entity);
-void RestoreTimeLimitBaseline(long long entity);
-float UIHourToEngineRaw(float hour);
-bool TryReadCurrentHourFromEntity(long long entity, float& outHour);
-void TickTimeControl();
-void SuspendTimeControl();
 void SetModEnabled(bool enabled);
 void ToggleModEnabled();
 const char* AddonStartupStateLabel(AddonStartupState state);
@@ -710,6 +562,7 @@ bool StartHotkeyService();
 void StopHotkeyService();
 
 bool RunAOBScan();
+bool CrimsonWeatherShutdownRequested();
 void RestoreRuntimePatches();
 long long __fastcall Hooked_WeatherCompose(long long weatherState, float dt);
 __m128 __fastcall Hooked_GetDustIntensity(long long ws);

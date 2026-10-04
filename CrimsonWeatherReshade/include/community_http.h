@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include <atomic>
+
 struct CommunityHttpHeader {
     std::string name;
     std::string value;
@@ -21,5 +23,6 @@ bool CommunityHttp_Request(
     const std::string& url,
     const std::vector<CommunityHttpHeader>& headers,
     const std::string& body,
-    CommunityHttpResponse& outResponse);
+    CommunityHttpResponse& outResponse,
+    const std::atomic<bool>* stopRequested = nullptr);
 

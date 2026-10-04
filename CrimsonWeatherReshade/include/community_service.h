@@ -7,6 +7,10 @@
 
 void Community_EnsureInitialized();
 void Community_Tick();
+void Community_BeginShutdown();
+bool Community_WaitForShutdown(unsigned long waitMilliseconds);
+void Community_SignalStopWithoutWait() noexcept;
+void Community_CloseAfterShutdown();
 bool Community_IsEnabled();
 bool Community_IsBusy();
 const char* Community_GetStatusText();

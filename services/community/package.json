@@ -1,0 +1,14 @@
+{
+  "name": "crimson-weather-community",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "golden": "node test/record-golden.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.3",
+    "miniflare": "4.20260518.0",
+    "wrangler": "4.93.0"
+  }
+}

@@ -1,0 +1,306 @@
+[
+  {
+    "step": "first submission",
+    "request": "POST /api/v1/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "clean-morning-<h1>",
+      "status": "pending",
+      "autoApproved": false,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "trusted submission is auto-approved",
+    "request": "POST /api/v1/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "second-one-<h2>",
+      "status": "approved",
+      "autoApproved": true,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "catalog includes it immediately",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": [
+        {
+          "id": "second-one-<h2>",
+          "title": "Second One",
+          "author": "Alice",
+          "description": "Soft light",
+          "tags": [],
+          "formatVersion": 6,
+          "minAddonVersion": "0.8.1",
+          "publishedAt": "<ts>",
+          "updatedAt": "<ts>",
+          "downloads": 0,
+          "likes": 0,
+          "file": {
+            "url": "/api/v1/presets/second-one-<h2>/download",
+            "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+            "size": 229
+          },
+          "safety": {
+            "approved": true
+          }
+        },
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning",
+          "author": "Alice",
+          "description": "Soft light",
+          "tags": [],
+          "formatVersion": 6,
+          "minAddonVersion": "0.8.1",
+          "publishedAt": "<ts>",
+          "updatedAt": "<ts>",
+          "downloads": 0,
+          "likes": 0,
+          "file": {
+            "url": "/api/v1/presets/clean-morning-<h1>/download",
+            "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+            "size": 229
+          },
+          "safety": {
+            "approved": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "step": "trusted owner edit applies directly",
+    "request": "PUT /api/v1/me/presets/clean-morning-<h1>",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "clean-morning-<h1>",
+      "status": "approved",
+      "autoApproved": true,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "catalog shows the edit",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning v2",
+          "author": "Alice",
+          "description": "edited",
+          "tags": [],
+          "formatVersion": 6,
+          "minAddonVersion": "0.8.1",
+          "publishedAt": "<ts>",
+          "updatedAt": "<ts>",
+          "downloads": 0,
+          "likes": 0,
+          "file": {
+            "url": "/api/v1/presets/clean-morning-<h1>/download",
+            "sha256": "2b9e59167707433182aa3d961959d8b79b2518d7bc48f1242834dc131e6c819f",
+            "size": 230
+          },
+          "safety": {
+            "approved": true
+          }
+        },
+        {
+          "id": "second-one-<h2>",
+          "title": "Second One",
+          "author": "Alice",
+          "description": "Soft light",
+          "tags": [],
+          "formatVersion": 6,
+          "minAddonVersion": "0.8.1",
+          "publishedAt": "<ts>",
+          "updatedAt": "<ts>",
+          "downloads": 0,
+          "likes": 0,
+          "file": {
+            "url": "/api/v1/presets/second-one-<h2>/download",
+            "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+            "size": 229
+          },
+          "safety": {
+            "approved": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "step": "state",
+    "state": {
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning v2",
+          "author_name": "Alice",
+          "description": "edited",
+          "tags_json": "[]",
+          "status": "approved",
+          "r2_key": "approved/clean-morning-<h1>/<file>",
+          "sha256": "2b9e59167707433182aa3d961959d8b79b2518d7bc48f1242834dc131e6c819f",
+          "size_bytes": 230,
+          "format_version": 6,
+          "min_addon_version": "0.8.1",
+          "submitter_hash": "61af39d23210c5aed61d204427ee9cdc60a54f06361a9f2e9bc765eb330c10b9",
+          "safety_status": "passed",
+          "safety_summary": "Auto-approved whitelist 61af39d23210...0c10b9",
+          "downloads": 0,
+          "likes": 0,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": "<ts>",
+          "rejected_at": null,
+          "update_of": "",
+          "deleted_at": null,
+          "delete_after": null,
+          "deleted_by": "",
+          "delete_reason": ""
+        },
+        {
+          "id": "second-one-<h2>",
+          "title": "Second One",
+          "author_name": "Alice",
+          "description": "Soft light",
+          "tags_json": "[]",
+          "status": "approved",
+          "r2_key": "approved/second-one-<h2>/<file>",
+          "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+          "size_bytes": 229,
+          "format_version": 6,
+          "min_addon_version": "0.8.1",
+          "submitter_hash": "61af39d23210c5aed61d204427ee9cdc60a54f06361a9f2e9bc765eb330c10b9",
+          "safety_status": "passed",
+          "safety_summary": "Auto-approved whitelist 61af39d23210...0c10b9",
+          "downloads": 0,
+          "likes": 0,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": "<ts>",
+          "rejected_at": null,
+          "update_of": "",
+          "deleted_at": null,
+          "delete_after": null,
+          "deleted_by": "",
+          "delete_reason": ""
+        }
+      ],
+      "likes": [],
+      "downloads": [],
+      "whitelist": [
+        {
+          "submitter_hash": "61af39d23210c5aed61d204427ee9cdc60a54f06361a9f2e9bc765eb330c10b9",
+          "label": "Alice",
+          "auto_approve": 1,
+          "note": ""
+        }
+      ],
+      "settings": [],
+      "files": [
+        {
+          "key": "approved/clean-morning-<h1>/<file>",
+          "state": "ok"
+        },
+        {
+          "key": "approved/second-one-<h2>/<file>",
+          "state": "ok"
+        }
+      ],
+      "catalog": {
+        "schemaVersion": 1,
+        "generatedAt": "<ts>",
+        "presets": [
+          {
+            "id": "clean-morning-<h1>",
+            "title": "Clean Morning v2",
+            "author": "Alice",
+            "description": "edited",
+            "tags": [],
+            "formatVersion": 6,
+            "minAddonVersion": "0.8.1",
+            "publishedAt": "<ts>",
+            "updatedAt": "<ts>",
+            "downloads": 0,
+            "likes": 0,
+            "file": {
+              "url": "/api/v1/presets/clean-morning-<h1>/download",
+              "sha256": "2b9e59167707433182aa3d961959d8b79b2518d7bc48f1242834dc131e6c819f",
+              "size": 230
+            },
+            "safety": {
+              "approved": true
+            }
+          },
+          {
+            "id": "second-one-<h2>",
+            "title": "Second One",
+            "author": "Alice",
+            "description": "Soft light",
+            "tags": [],
+            "formatVersion": 6,
+            "minAddonVersion": "0.8.1",
+            "publishedAt": "<ts>",
+            "updatedAt": "<ts>",
+            "downloads": 0,
+            "likes": 0,
+            "file": {
+              "url": "/api/v1/presets/second-one-<h2>/download",
+              "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+              "size": 229
+            },
+            "safety": {
+              "approved": true
+            }
+          }
+        ]
+      }
+    }
+  }
+]

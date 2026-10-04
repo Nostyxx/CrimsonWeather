@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Crimson Weather &middot; Community admin</title>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <span>Crimson Weather</span>
+      <span class="muted">Community admin</span>
+      <span id="env-badge" class="badge warn" hidden>DEV</span>
+    </div>
+    <div class="who"><span class="muted">Signed in as</span> <span id="whoami">&hellip;</span></div>
+  </header>
+
+  <nav class="sidebar" aria-label="Sections">
+    <a href="#review" data-view="review">Review <span class="count" id="count-pending"></span></a>
+    <a href="#presets" data-view="presets">Presets <span class="count muted" id="count-approved"></span></a>
+    <a href="#trash" data-view="trash">Trash <span class="count muted" id="count-trash"></span></a>
+    <a href="#trusted" data-view="trusted">Trusted uploaders <span class="count muted" id="count-trusted"></span></a>
+    <a href="#release" data-view="release">Release</a>
+    <a href="#activity" data-view="activity">Activity</a>
+    <div class="sidebar-foot muted">
+      <div><span id="stat-downloads">0</span> downloads</div>
+      <div><span id="stat-likes">0</span> likes</div>
+    </div>
+  </nav>
+
+  <main id="main" tabindex="-1"></main>
+  <div id="toasts" aria-live="polite"></div>
+</body>
+</html>

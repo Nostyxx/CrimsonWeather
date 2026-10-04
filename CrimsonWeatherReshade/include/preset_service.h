@@ -239,6 +239,7 @@ struct CommunityPresetInstallInfo {
 void Preset_EnsureInitialized();
 void Preset_Refresh();
 int Preset_GetCount();
+bool Preset_GetFilePath(int index, std::string& outPath);
 const char* Preset_GetDisplayName(int index);
 const char* Preset_GetFileName(int index);
 bool Preset_IsCommunityPreset(int index);
@@ -281,6 +282,15 @@ bool Preset_ImportCommunityPresetText(
     std::string& outError);
 bool Preset_UpdateCommunityPresetText(
     int presetIndex,
+    const char* title,
+    const char* author,
+    const char* catalogId,
+    const char* sha256,
+    const char* updatedAt,
+    const char* iniText,
+    std::string& outError);
+bool Preset_UpdateCommunityPresetTextByPath(
+    const char* presetPath,
     const char* title,
     const char* author,
     const char* catalogId,

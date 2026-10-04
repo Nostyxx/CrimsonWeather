@@ -1,8 +1,13 @@
+param(
+    [string]$MSBuildPath = $env:CW_MSBUILD_PATH
+)
+
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $project = Join-Path $repoRoot 'CrimsonWeatherReshade\CrimsonWeatherReshade.vcxproj'
-$msbuild = 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe'
+. (Join-Path $repoRoot 'scripts\find-msbuild.ps1')
+$msbuild = Find-CrimsonWeatherMSBuild -PathOverride $MSBuildPath
 
 function Get-SanitizedEnvironmentMap {
     $envMap = @{}
@@ -77,9 +82,12 @@ function Invoke-SanitizedMSBuild {
     }
 
     $proc = [System.Diagnostics.Process]::Start($psi)
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
+    # Drain both pipes concurrently so a full stderr buffer cannot block stdout.
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
     $proc.WaitForExit()
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
 
     if ($stdout) {
         Write-Output $stdout

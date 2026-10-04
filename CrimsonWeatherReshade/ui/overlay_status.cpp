@@ -236,6 +236,14 @@ void DrawStatusTab() {
     ImGui::Text("Active Preset: %s", Preset_GetSelectedDisplayName());
     ImGui::Text("Player Region: %s", Preset_GetRegionDisplayName(snapshot.playerRegion));
     ImGui::Text("Editing: %s", Preset_GetRegionDisplayName(snapshot.editRegion));
+    if (g_seasonsOfPywelDetected.load()) {
+        ImGui::TextUnformatted("Seasons of Pywel: detected");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Both mods share the game's weather update. Weather you leave on native follows "
+                "Seasons of Pywel; anything you set in Crimson Weather overrides it.");
+        }
+    }
     bool extendedSliderRange = g_extendedSliderRange.load();
     if (ImGui::Checkbox("Extended Slider Range", &extendedSliderRange)) {
         g_extendedSliderRange.store(extendedSliderRange);

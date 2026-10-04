@@ -1,0 +1,128 @@
+[
+  {
+    "step": "submit a",
+    "request": "POST /api/v1/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "moderated-<h1>",
+      "status": "pending",
+      "autoApproved": false,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "catalog after admin delete",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": []
+    }
+  },
+  {
+    "step": "owner list after admin delete",
+    "request": "GET /api/v1/me/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "clientFingerprint": "61af39d23210...0c10b9",
+      "presets": []
+    }
+  },
+  {
+    "step": "catalog after restore",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": [
+        {
+          "id": "moderated-<h1>",
+          "title": "Moderated",
+          "author": "Alice",
+          "description": "Soft light",
+          "tags": [],
+          "formatVersion": 6,
+          "minAddonVersion": "0.8.1",
+          "publishedAt": "<ts>",
+          "updatedAt": "<ts>",
+          "downloads": 0,
+          "likes": 0,
+          "file": {
+            "url": "/api/v1/presets/moderated-<h1>/download",
+            "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+            "size": 229
+          },
+          "safety": {
+            "approved": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "step": "like after restore",
+    "request": "POST /api/v1/presets/moderated-<h1>/like",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "liked": true,
+      "likes": 1
+    }
+  },
+  {
+    "step": "catalog after purge",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": []
+    }
+  },
+  {
+    "step": "state",
+    "state": {
+      "presets": [],
+      "likes": [],
+      "downloads": [],
+      "whitelist": [],
+      "settings": [],
+      "files": [],
+      "catalog": {
+        "schemaVersion": 1,
+        "generatedAt": "<ts>",
+        "presets": []
+      }
+    }
+  }
+]

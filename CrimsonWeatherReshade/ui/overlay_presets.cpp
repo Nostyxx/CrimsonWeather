@@ -624,7 +624,6 @@ void DrawPresetTab() {
     ImGui::EndChild();
 
     ImGui::SeparatorText("Community Presets");
-    Community_Tick();
     const float communityListHeight = 180.0f;
     if (ImGui::BeginChild("CommunityPresetLibrary", ImVec2(0.0f, communityListHeight), true)) {
         const bool scheduleEnabled = PresetSchedule_IsEnabled();

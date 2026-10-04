@@ -1,0 +1,504 @@
+[
+  {
+    "step": "submit",
+    "request": "POST /api/v1/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "clean-morning-<h1>",
+      "status": "pending",
+      "autoApproved": false,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "edit while pending changes it in place",
+    "request": "PUT /api/v1/me/presets/clean-morning-<h1>",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "clean-morning-<h1>",
+      "status": "pending",
+      "autoApproved": false,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "update approved preset -> pending update",
+    "request": "PUT /api/v1/me/presets/clean-morning-<h1>",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "clean-morning-<h1>",
+      "updateId": "clean-morning-update-<h2>",
+      "status": "pending",
+      "autoApproved": false,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "second update supersedes the first",
+    "request": "PUT /api/v1/me/presets/clean-morning-<h1>",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "clean-morning-<h1>",
+      "updateId": "clean-morning-update-<h3>",
+      "status": "pending",
+      "autoApproved": false,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "owner sees pending update",
+    "request": "GET /api/v1/me/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "clientFingerprint": "61af39d23210...0c10b9",
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning",
+          "author_name": "Alice",
+          "description": "fixed typo",
+          "tags_json": "[]",
+          "status": "approved",
+          "update_of": "",
+          "downloads": 0,
+          "likes": 0,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": "<ts>",
+          "rejected_at": null,
+          "pending_update_id": "clean-morning-update-<h3>",
+          "pending_update_title": "Clean Morning",
+          "pending_update_at": "<ts>"
+        }
+      ]
+    }
+  },
+  {
+    "step": "catalog still shows approved version",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning",
+          "author": "Alice",
+          "description": "fixed typo",
+          "tags": [],
+          "formatVersion": 6,
+          "minAddonVersion": "0.8.1",
+          "publishedAt": "<ts>",
+          "updatedAt": "<ts>",
+          "downloads": 0,
+          "likes": 0,
+          "file": {
+            "url": "/api/v1/presets/clean-morning-<h1>/download",
+            "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+            "size": 229
+          },
+          "safety": {
+            "approved": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "step": "other client cannot update",
+    "request": "PUT /api/v1/me/presets/clean-morning-<h1>",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset not found for this client."
+    }
+  },
+  {
+    "step": "update without title",
+    "request": "PUT /api/v1/me/presets/clean-morning-<h1>",
+    "status": 400,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Title is required."
+    }
+  },
+  {
+    "step": "update with invalid preset",
+    "request": "PUT /api/v1/me/presets/clean-morning-<h1>",
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset validation failed.",
+      "details": {
+        "ok": false,
+        "errors": [
+          "Missing [CrimsonWeatherPreset] header."
+        ],
+        "warnings": [],
+        "formatVersion": 0
+      }
+    }
+  },
+  {
+    "step": "cancel pending update",
+    "request": "DELETE /api/v1/me/presets/clean-morning-<h1>/update",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "clean-morning-<h1>",
+      "updateId": "clean-morning-update-<h3>",
+      "cancelled": true,
+      "retainedUntil": "<ts>"
+    }
+  },
+  {
+    "step": "cancel again finds nothing",
+    "request": "DELETE /api/v1/me/presets/clean-morning-<h1>/update",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Pending update not found for this preset."
+    }
+  },
+  {
+    "step": "cancel on someone else's preset",
+    "request": "DELETE /api/v1/me/presets/clean-morning-<h1>/update",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset not found for this client."
+    }
+  },
+  {
+    "step": "new update after cancel",
+    "request": "PUT /api/v1/me/presets/clean-morning-<h1>",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "clean-morning-<h1>",
+      "updateId": "clean-morning-final-update-<h4>",
+      "status": "pending",
+      "autoApproved": false,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "catalog shows approved update",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning Final",
+          "author": "Alice",
+          "description": "v4",
+          "tags": [],
+          "formatVersion": 6,
+          "minAddonVersion": "0.8.1",
+          "publishedAt": "<ts>",
+          "updatedAt": "<ts>",
+          "downloads": 0,
+          "likes": 0,
+          "file": {
+            "url": "/api/v1/presets/clean-morning-<h1>/download",
+            "sha256": "519cabf51bf5d9bf266da83fecc73d47e6e09bcaf30d339337a3021d07d824a4",
+            "size": 229
+          },
+          "safety": {
+            "approved": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "step": "download serves new content",
+    "request": "GET /api/v1/presets/clean-morning-<h1>/download",
+    "status": 200,
+    "headers": {
+      "content-type": "text/plain; charset=utf-8",
+      "content-disposition": "attachment; filename=\"clean-morning-<h1>.ini\""
+    },
+    "body": "[CrimsonWeatherPreset]\r\nFormatVersion=6\r\n; comment lines are ignored\r\n[Weather]\r\nRain=0.9\r\nNoSnow=1\r\nThunder=\r\n[Celestial]\r\nMoonTextureEnabled=true\r\nMoonTexture=moon_red.dds\r\n[Region.Hernand]\r\nRain=1\r\n[RenoDX]\r\nAuroraRegionMask=7"
+  },
+  {
+    "step": "owner list after update",
+    "request": "GET /api/v1/me/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "clientFingerprint": "61af39d23210...0c10b9",
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning Final",
+          "author_name": "Alice",
+          "description": "v4",
+          "tags_json": "[]",
+          "status": "approved",
+          "update_of": "",
+          "downloads": 1,
+          "likes": 0,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": "<ts>",
+          "rejected_at": null,
+          "pending_update_id": null,
+          "pending_update_title": null,
+          "pending_update_at": null
+        }
+      ]
+    }
+  },
+  {
+    "step": "state",
+    "state": {
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning Final",
+          "author_name": "Alice",
+          "description": "v4",
+          "tags_json": "[]",
+          "status": "approved",
+          "r2_key": "approved/clean-morning-<h1>/<file>",
+          "sha256": "519cabf51bf5d9bf266da83fecc73d47e6e09bcaf30d339337a3021d07d824a4",
+          "size_bytes": 229,
+          "format_version": 6,
+          "min_addon_version": "0.8.1",
+          "submitter_hash": "61af39d23210c5aed61d204427ee9cdc60a54f06361a9f2e9bc765eb330c10b9",
+          "safety_status": "passed",
+          "safety_summary": "",
+          "downloads": 1,
+          "likes": 0,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": "<ts>",
+          "rejected_at": null,
+          "update_of": "",
+          "deleted_at": null,
+          "delete_after": null,
+          "deleted_by": "",
+          "delete_reason": ""
+        },
+        {
+          "id": "clean-morning-final-update-<h4>",
+          "title": "Clean Morning Final",
+          "author_name": "Alice",
+          "description": "v4",
+          "tags_json": "[]",
+          "status": "approved",
+          "r2_key": "history/clean-morning-<h1>/clean-morning-final-update-<h4>/preset.ini",
+          "sha256": "519cabf51bf5d9bf266da83fecc73d47e6e09bcaf30d339337a3021d07d824a4",
+          "size_bytes": 229,
+          "format_version": 6,
+          "min_addon_version": "0.8.1",
+          "submitter_hash": "61af39d23210c5aed61d204427ee9cdc60a54f06361a9f2e9bc765eb330c10b9",
+          "safety_status": "passed",
+          "safety_summary": "",
+          "downloads": 0,
+          "likes": 0,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": "<ts>",
+          "rejected_at": null,
+          "update_of": "clean-morning-<h1>",
+          "deleted_at": "<ts>",
+          "delete_after": "<ts>",
+          "deleted_by": "<admin>",
+          "delete_reason": "applied to clean-morning-<h1>"
+        },
+        {
+          "id": "clean-morning-update-<h2>",
+          "title": "Clean Morning",
+          "author_name": "Alice",
+          "description": "v2",
+          "tags_json": "[]",
+          "status": "rejected",
+          "r2_key": "pending/clean-morning-update-<h2>/<file>",
+          "sha256": "2b9e59167707433182aa3d961959d8b79b2518d7bc48f1242834dc131e6c819f",
+          "size_bytes": 230,
+          "format_version": 6,
+          "min_addon_version": "0.8.1",
+          "submitter_hash": "61af39d23210c5aed61d204427ee9cdc60a54f06361a9f2e9bc765eb330c10b9",
+          "safety_status": "passed",
+          "safety_summary": "",
+          "downloads": 0,
+          "likes": 0,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": null,
+          "rejected_at": "<ts>",
+          "update_of": "clean-morning-<h1>",
+          "deleted_at": "<ts>",
+          "delete_after": "<ts>",
+          "deleted_by": "system",
+          "delete_reason": "superseded by clean-morning-update-<h3>"
+        },
+        {
+          "id": "clean-morning-update-<h3>",
+          "title": "Clean Morning",
+          "author_name": "Alice",
+          "description": "v3",
+          "tags_json": "[]",
+          "status": "rejected",
+          "r2_key": "pending/clean-morning-update-<h3>/<file>",
+          "sha256": "519cabf51bf5d9bf266da83fecc73d47e6e09bcaf30d339337a3021d07d824a4",
+          "size_bytes": 229,
+          "format_version": 6,
+          "min_addon_version": "0.8.1",
+          "submitter_hash": "61af39d23210c5aed61d204427ee9cdc60a54f06361a9f2e9bc765eb330c10b9",
+          "safety_status": "passed",
+          "safety_summary": "",
+          "downloads": 0,
+          "likes": 0,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": null,
+          "rejected_at": "<ts>",
+          "update_of": "clean-morning-<h1>",
+          "deleted_at": "<ts>",
+          "delete_after": "<ts>",
+          "deleted_by": "client:61af39d23210...0c10b9",
+          "delete_reason": "client cancelled update"
+        }
+      ],
+      "likes": [],
+      "downloads": [
+        {
+          "preset_id": "clean-morning-<h1>",
+          "device_hash": "a926a36b0c6672fb804d5d6a284da4427aa694b4845eeef5e396c38087140e29",
+          "day": "<day>"
+        }
+      ],
+      "whitelist": [],
+      "settings": [],
+      "files": [
+        {
+          "key": "approved/clean-morning-<h1>/<file>",
+          "state": "ok"
+        },
+        {
+          "key": "history/clean-morning-<h1>/clean-morning-final-update-<h4>/preset.ini",
+          "state": "ok"
+        },
+        {
+          "key": "pending/clean-morning-update-<h2>/<file>",
+          "state": "ok"
+        },
+        {
+          "key": "pending/clean-morning-update-<h3>/<file>",
+          "state": "ok"
+        }
+      ],
+      "catalog": {
+        "schemaVersion": 1,
+        "generatedAt": "<ts>",
+        "presets": [
+          {
+            "id": "clean-morning-<h1>",
+            "title": "Clean Morning Final",
+            "author": "Alice",
+            "description": "v4",
+            "tags": [],
+            "formatVersion": 6,
+            "minAddonVersion": "0.8.1",
+            "publishedAt": "<ts>",
+            "updatedAt": "<ts>",
+            "downloads": 1,
+            "likes": 0,
+            "file": {
+              "url": "/api/v1/presets/clean-morning-<h1>/download",
+              "sha256": "519cabf51bf5d9bf266da83fecc73d47e6e09bcaf30d339337a3021d07d824a4",
+              "size": 229
+            },
+            "safety": {
+              "approved": true
+            }
+          }
+        ]
+      }
+    }
+  }
+]

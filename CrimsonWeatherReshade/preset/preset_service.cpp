@@ -857,6 +857,14 @@ int Preset_GetCount() {
     return static_cast<int>(g_presetItems.size());
 }
 
+bool Preset_GetFilePath(int index, std::string& outPath) {
+    outPath.clear();
+    Preset_EnsureInitialized();
+    if (index < 0 || index >= static_cast<int>(g_presetItems.size())) return false;
+    outPath = g_presetItems[index].fullPath;
+    return !outPath.empty();
+}
+
 const char* Preset_GetDisplayName(int index) {
     if (index < 0 || index >= static_cast<int>(g_presetItems.size())) return "";
     return g_presetItems[index].displayName.c_str();
@@ -1354,9 +1362,35 @@ bool Preset_UpdateCommunityPresetText(
     const char* updatedAt,
     const char* iniText,
     std::string& outError) {
+    Preset_EnsureInitialized();
+    if (presetIndex < 0 || presetIndex >= static_cast<int>(g_presetItems.size())) {
+        outError = "Selected preset is not available";
+        return false;
+    }
+    const std::string stablePath = g_presetItems[presetIndex].fullPath;
+    return Preset_UpdateCommunityPresetTextByPath(
+        stablePath.c_str(), title, author, catalogId, sha256, updatedAt, iniText, outError);
+}
+
+bool Preset_UpdateCommunityPresetTextByPath(
+    const char* presetPath,
+    const char* title,
+    const char* author,
+    const char* catalogId,
+    const char* sha256,
+    const char* updatedAt,
+    const char* iniText,
+    std::string& outError) {
     outError.clear();
     Preset_EnsureInitialized();
-    if (!Preset_IsCommunityPreset(presetIndex)) {
+    int presetIndex = -1;
+    for (int i = 0; i < static_cast<int>(g_presetItems.size()); ++i) {
+        if (_stricmp(g_presetItems[i].fullPath.c_str(), presetPath ? presetPath : "") == 0) {
+            presetIndex = i;
+            break;
+        }
+    }
+    if (presetIndex < 0 || !Preset_IsCommunityPreset(presetIndex)) {
         outError = "Selected preset is not a community preset";
         return false;
     }

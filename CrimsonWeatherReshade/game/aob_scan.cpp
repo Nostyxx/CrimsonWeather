@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "runtime_shared.h"
+#include "hook_chain.h"
 
 // AOB scan and hook installation
 #if defined(CW_VERBOSE_AOB) || defined(CW_DEV_BUILD)
@@ -315,10 +316,69 @@ static bool LooksLikeWeatherCompose(uintptr_t address) {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Seasons of Pywel compatibility
+//
+// Seasons.asi hooks the same weather update function as our WeatherCompose
+// hook (the function that calls the compositor), replacing its first
+// instruction with a jump. When Seasons is loaded, that jump is accepted if it
+// leads into Seasons.asi, and our hook is installed on top of it: the game's
+// weather, then Seasons' season weather, then our overrides. Seasons only
+// hooks the function if it still has the game's original bytes, so we wait
+// for its hook before installing ours. Without Seasons nothing here runs.
+// ---------------------------------------------------------------------------
+struct LoadedModuleRange {
+    uintptr_t base = 0;
+    size_t size = 0;
+};
+
+static LoadedModuleRange SeasonsOfPywelModule() {
+    const HMODULE module = GetModuleHandleW(L"Seasons.asi");
+    if (!module) return {};
+    const auto base = reinterpret_cast<uintptr_t>(module);
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    return { base, nt->OptionalHeader.SizeOfImage };
+}
+
+static bool IsSeasonsOfPywelHook(uintptr_t function) {
+    const LoadedModuleRange seasons = SeasonsOfPywelModule();
+    const auto read = [](uintptr_t address, void* out, size_t size) {
+        return ReadBytesSafe(address, static_cast<uint8_t*>(out), size);
+    };
+    return HookJumpLeadsInto(function, seasons.base, seasons.size, read);
+}
+
+static void DetectSeasonsOfPywel() {
+    const bool detected = SeasonsOfPywelModule().base != 0;
+    g_seasonsOfPywelDetected.store(detected);
+    if (detected) Log("[startup] compatibility: Seasons of Pywel detected; sharing the weather update hook\n");
+}
+
+// Waits (up to kSeasonsHookWaitMs) until Seasons of Pywel has hooked
+// `function`, so that our hook goes on top of its hook and not the other way round.
+static void WaitForSeasonsOfPywelHook(uintptr_t function) {
+    constexpr DWORD kSeasonsHookWaitMs = 15000;
+    constexpr DWORD kPollMs = 250;
+    for (DWORD waited = 0;; waited += kPollMs) {
+        if (IsSeasonsOfPywelHook(function)) {
+            Log("[startup] compatibility: Seasons of Pywel hook found after %lu ms; installing ours on top\n", waited);
+            return;
+        }
+        if (waited >= kSeasonsHookWaitMs || CrimsonWeatherShutdownRequested()) break;
+        Sleep(kPollMs);
+    }
+    Log("[W] compatibility: Seasons of Pywel did not hook the weather update within %lu ms; "
+        "hooking it normally (Seasons' season weather stays off)\n", kSeasonsHookWaitMs);
+}
+
 static bool LooksLikeWeatherComposeCaller(uintptr_t caller, uintptr_t compositor) {
     uint8_t code[0x80] = {};
     if (!ReadBytesSafe(caller, code, sizeof(code))) return false;
-    if (code[0] != 0x48 || code[1] != 0x89 || code[2] != 0x5C || code[3] != 0x24 ||
+    const bool originalStart = code[0] == 0x48 && code[1] == 0x89 && code[2] == 0x5C && code[3] == 0x24;
+    // Bytes 0-4 hold Seasons' jump when it hooked first; the rest is the game's.
+    const bool seasonsHookStart = !originalStart && g_seasonsOfPywelDetected.load() && IsSeasonsOfPywelHook(caller);
+    if ((!originalStart && !seasonsHookStart) ||
         code[5] != 0x55 || code[6] != 0x56 || code[7] != 0x57) {
         return false;
     }
@@ -360,6 +420,7 @@ static uintptr_t ResolveWeatherCompose() {
         return 0;
     }
     const uintptr_t caller = FindFunctionStartViaUnwind(callsites[0]);
+    if (caller && g_seasonsOfPywelDetected.load()) WaitForSeasonsOfPywelHook(caller);
     if (!caller || !LooksLikeWeatherComposeCaller(caller, address)) {
         Log("[W] WeatherCompose caller validation failed call=%p entry=%p\n",
             reinterpret_cast<void*>(callsites[0]), reinterpret_cast<void*>(caller));
@@ -1896,6 +1957,7 @@ static uintptr_t ResolveDustIntensityTarget(uintptr_t weatherTick) {
 bool RunAOBScan(){
     ClearRuntimeHealthState();
     ResetRuntimeHookControls();
+    DetectSeasonsOfPywel();
 
 #if defined(CW_WIND_ONLY)
     uintptr_t windOnlyWeatherTick = ScanModule(

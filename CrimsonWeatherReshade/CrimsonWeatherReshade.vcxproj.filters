@@ -18,6 +18,9 @@
     <ClInclude Include="framework.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="core\background_work.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -48,6 +51,15 @@
     <ClInclude Include="include\update_service.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="update\update_install.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="update\update_protocol.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="third_party\nlohmann\json.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="preset\preset_format.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -63,6 +75,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="core\background_work.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="diagnostics\performance_benchmark.cpp">
@@ -83,7 +98,13 @@
     <ClCompile Include="community\community_service.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="community\update_service.cpp">
+    <ClCompile Include="update\update_service.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="update\update_install.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="update\update_protocol.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ui\community_ui.cpp">
@@ -136,5 +157,57 @@
     <ResourceCompile Include="CrimsonWeatherReshade.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="community\community_protocol.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClInclude Include="community\community_protocol.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClCompile Include="core\runtime_health.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClInclude Include="core\runtime_health.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClCompile Include="core\config.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="core\logging.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClInclude Include="core\config.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="core\logging.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClCompile Include="game\time_control.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClInclude Include="game\time_control.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="game\hook_chain.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="app\bootstrap.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="core\hotkey_service.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="core\runtime_state.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="game\aob_scan.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="game\weather_hooks.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ui\overlay.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="third_party\minhook\src\buffer.c"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="third_party\minhook\src\hook.c"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="third_party\minhook\src\trampoline.c"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="third_party\minhook\src\hde\hde32.c"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="third_party\minhook\src\hde\hde64.c"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="include\overlay_bridge.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="include\preset_service.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="include\runtime_shared.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="third_party\minhook\include\MinHook.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
 </Project>

@@ -1,11 +1,13 @@
 #include "pch.h"
 
 #include "community_service.h"
+#include "community_protocol.h"
 
 #include "community_endpoint_config.h"
 #include "community_http.h"
 #include "preset_service.h"
 #include "runtime_shared.h"
+#include "../core/background_work.h"
 
 #include <bcrypt.h>
 
@@ -19,12 +21,25 @@
 
 namespace {
 
+using namespace community_protocol;
+
 constexpr unsigned long long kAutoRefreshSeconds = 24ull * 60ull * 60ull;
 constexpr unsigned long long kManualRefreshCooldownSeconds = 60ull;
 constexpr size_t kMaxDownloadBytes = 65536;
 constexpr size_t kMaxStatusBodyChars = 180;
 
 std::mutex g_communityMutex;
+std::mutex g_communityLifecycleMutex;
+constexpr size_t kCommunityQueueCapacity = 8;
+std::atomic<BackgroundWorkQueue*> g_detachWorkQueue{ nullptr };
+std::atomic<bool> g_communityStopping{ false };
+std::atomic<unsigned long long> g_communityGeneration{ 1 };
+OwnerCompletionQueue g_communityCompletions(64);
+thread_local bool g_communityWorkerContext = false;
+thread_local unsigned long long g_communityWorkerGeneration = 0;
+thread_local const std::atomic<bool>* g_communityWorkerStop = nullptr;
+thread_local std::string g_communityWorkerEndpoint;
+thread_local std::string g_communityWorkerClientId;
 std::vector<CommunityCatalogItem> g_catalog;
 std::vector<CommunityMyUpload> g_myUploads;
 std::vector<std::string> g_likedPresetIds;
@@ -32,10 +47,32 @@ std::string g_communityStatusText = "Community presets idle";
 std::string g_endpoint;
 std::string g_clientId;
 std::atomic<unsigned long long> g_lastCatalogRefresh{ 0 };
-bool g_initialized = false;
+std::atomic<bool> g_initialized{ false };
 std::once_flag g_stateLoadOnce;
-int g_busyCount = 0;
 std::atomic<unsigned long long> g_lastManualRefreshTick{ 0 };
+
+BackgroundWorkQueue& CommunityWorkQueue() {
+    static BackgroundWorkQueue queue(kCommunityQueueCapacity);
+    g_detachWorkQueue.store(&queue);
+    return queue;
+}
+
+void SetStatusNow(const std::string& status) {
+    std::lock_guard<std::mutex> lock(g_communityMutex);
+    g_communityStatusText = status;
+}
+
+bool PostCompletion(unsigned long long generation, std::function<void()> completion, bool critical = false) {
+    if (g_communityStopping.load()) return false;
+    std::function<void()> guarded = [generation, completion = std::move(completion)]() mutable {
+        if (g_communityStopping.load() || g_communityGeneration.load() != generation) return;
+        completion();
+    };
+    if (critical) {
+        return g_communityCompletions.PostUntilAccepted(generation, std::move(guarded), g_communityStopping);
+    }
+    return g_communityCompletions.Post(generation, std::move(guarded));
+}
 
 std::string TrimCopy(const std::string& value) {
     size_t start = 0;
@@ -77,8 +114,12 @@ std::string StatePath() {
 }
 
 void SetStatus(const std::string& status) {
-    std::lock_guard<std::mutex> lock(g_communityMutex);
-    g_communityStatusText = status;
+    if (g_communityWorkerContext) {
+        const unsigned long long generation = g_communityWorkerGeneration;
+        PostCompletion(generation, [status]() { SetStatusNow(status); });
+        return;
+    }
+    SetStatusNow(status);
 }
 
 std::string StatusHttpError(const char* prefix, const CommunityHttpResponse& response) {
@@ -92,25 +133,6 @@ std::string StatusHttpError(const char* prefix, const CommunityHttpResponse& res
         status += " - " + body;
     }
     return status;
-}
-
-std::string JsonEscape(const std::string& value) {
-    std::string out;
-    out.reserve(value.size() + 8);
-    for (char c : value) {
-        switch (c) {
-        case '\\': out += "\\\\"; break;
-        case '"': out += "\\\""; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default:
-            if (static_cast<unsigned char>(c) < 32) out += ' ';
-            else out += c;
-            break;
-        }
-    }
-    return out;
 }
 
 std::string ReadFileText(const std::string& path) {
@@ -163,13 +185,6 @@ std::string JoinCsv(const std::vector<std::string>& values) {
         out += value;
     }
     return out;
-}
-
-bool IsLikedPresetIdIn(const std::vector<std::string>& likedIds, const std::string& id) {
-    for (const std::string& liked : likedIds) {
-        if (_stricmp(liked.c_str(), id.c_str()) == 0) return true;
-    }
-    return false;
 }
 
 void SetLikedPresetId(const std::string& id, bool liked) {
@@ -255,224 +270,10 @@ void LoadCommunityState() {
     });
 }
 
-std::string ExtractJsonString(const std::string& object, const char* key) {
-    const std::string marker = std::string("\"") + key + "\"";
-    size_t pos = object.find(marker);
-    if (pos == std::string::npos) return {};
-    pos = object.find(':', pos + marker.size());
-    if (pos == std::string::npos) return {};
-    while (++pos < object.size() && std::isspace(static_cast<unsigned char>(object[pos]))) {}
-    if (pos >= object.size() || object[pos] != '"') return {};
-    std::string out;
-    bool escape = false;
-    for (++pos; pos < object.size(); ++pos) {
-        const char c = object[pos];
-        if (escape) {
-            switch (c) {
-            case 'n': out += '\n'; break;
-            case 'r': out += '\r'; break;
-            case 't': out += '\t'; break;
-            default: out += c; break;
-            }
-            escape = false;
-            continue;
-        }
-        if (c == '\\') {
-            escape = true;
-            continue;
-        }
-        if (c == '"') break;
-        out += c;
-    }
-    return out;
-}
-
-int ExtractJsonInt(const std::string& object, const char* key) {
-    const std::string marker = std::string("\"") + key + "\"";
-    size_t pos = object.find(marker);
-    if (pos == std::string::npos) return 0;
-    pos = object.find(':', pos + marker.size());
-    if (pos == std::string::npos) return 0;
-    return atoi(object.c_str() + pos + 1);
-}
-
-bool ExtractJsonBool(const std::string& object, const char* key) {
-    const std::string marker = std::string("\"") + key + "\"";
-    size_t pos = object.find(marker);
-    if (pos == std::string::npos) return false;
-    pos = object.find(':', pos + marker.size());
-    if (pos == std::string::npos) return false;
-    while (++pos < object.size() && std::isspace(static_cast<unsigned char>(object[pos]))) {}
-    return object.compare(pos, 4, "true") == 0;
-}
-
-std::vector<std::string> ExtractJsonStringArray(const std::string& object, const char* key) {
-    std::vector<std::string> out;
-    const std::string marker = std::string("\"") + key + "\"";
-    size_t pos = object.find(marker);
-    if (pos == std::string::npos) return out;
-    pos = object.find('[', pos + marker.size());
-    const size_t end = object.find(']', pos);
-    if (pos == std::string::npos || end == std::string::npos) return out;
-    std::string arr = object.substr(pos, end - pos + 1);
-    size_t cursor = 0;
-    while ((cursor = arr.find('"', cursor)) != std::string::npos) {
-        std::string value;
-        bool escape = false;
-        size_t i = cursor + 1;
-        for (; i < arr.size(); ++i) {
-            const char c = arr[i];
-            if (escape) {
-                switch (c) {
-                case 'n': value += '\n'; break;
-                case 'r': value += '\r'; break;
-                case 't': value += '\t'; break;
-                default: value += c; break;
-                }
-                escape = false;
-                continue;
-            }
-            if (c == '\\') {
-                escape = true;
-                continue;
-            }
-            if (c == '"') break;
-            value += c;
-        }
-        if (i >= arr.size()) break;
-        out.push_back(value);
-        cursor = i + 1;
-    }
-    return out;
-}
-
-std::string ExtractNestedObject(const std::string& object, const char* key) {
-    const std::string marker = std::string("\"") + key + "\"";
-    size_t pos = object.find(marker);
-    if (pos == std::string::npos) return {};
-    pos = object.find('{', pos + marker.size());
-    if (pos == std::string::npos) return {};
-    int depth = 0;
-    for (size_t i = pos; i < object.size(); ++i) {
-        if (object[i] == '{') ++depth;
-        else if (object[i] == '}') {
-            --depth;
-            if (depth == 0) return object.substr(pos, i - pos + 1);
-        }
-    }
-    return {};
-}
-
-std::vector<std::string> ExtractPresetObjects(const std::string& json) {
-    std::vector<std::string> objects;
-    const size_t marker = json.find("\"presets\"");
-    if (marker == std::string::npos) return objects;
-    size_t pos = json.find('[', marker);
-    if (pos == std::string::npos) return objects;
-    bool inString = false;
-    bool escape = false;
-    int depth = 0;
-    size_t objectStart = std::string::npos;
-    for (; pos < json.size(); ++pos) {
-        const char c = json[pos];
-        if (escape) {
-            escape = false;
-            continue;
-        }
-        if (c == '\\' && inString) {
-            escape = true;
-            continue;
-        }
-        if (c == '"') {
-            inString = !inString;
-            continue;
-        }
-        if (inString) continue;
-        if (c == '{') {
-            if (depth == 0) objectStart = pos;
-            ++depth;
-        } else if (c == '}') {
-            --depth;
-            if (depth == 0 && objectStart != std::string::npos) {
-                objects.push_back(json.substr(objectStart, pos - objectStart + 1));
-                objectStart = std::string::npos;
-            }
-        } else if (c == ']' && depth == 0) {
-            break;
-        }
-    }
-    return objects;
-}
-
-bool ParseCatalog(const std::string& json, const std::vector<std::string>& likedPresetIds, std::vector<CommunityCatalogItem>& out) {
-    std::vector<CommunityCatalogItem> parsed;
-    for (const std::string& object : ExtractPresetObjects(json)) {
-        CommunityCatalogItem item;
-        item.id = ExtractJsonString(object, "id");
-        item.title = ExtractJsonString(object, "title");
-        item.author = ExtractJsonString(object, "author");
-        item.description = ExtractJsonString(object, "description");
-        item.tags = ExtractJsonStringArray(object, "tags");
-        item.updatedAt = ExtractJsonString(object, "updatedAt");
-        item.downloads = ExtractJsonInt(object, "downloads");
-        item.likes = ExtractJsonInt(object, "likes");
-        item.liked = IsLikedPresetIdIn(likedPresetIds, item.id);
-        const std::string file = ExtractNestedObject(object, "file");
-        item.sha256 = ExtractJsonString(file, "sha256");
-        item.sizeBytes = ExtractJsonInt(file, "size");
-        if (!item.id.empty() && !item.title.empty()) {
-            parsed.push_back(item);
-        }
-    }
-    if (parsed.empty() && json.find("\"presets\"") != std::string::npos) {
-        out.clear();
-        return true;
-    }
-    if (parsed.empty()) return false;
-    out.swap(parsed);
-    return true;
-}
-
-bool ParseMyUploads(const std::string& json, std::vector<CommunityMyUpload>& out) {
-    std::vector<CommunityMyUpload> parsed;
-    for (const std::string& object : ExtractPresetObjects(json)) {
-        CommunityMyUpload item;
-        item.id = ExtractJsonString(object, "id");
-        item.title = ExtractJsonString(object, "title");
-        item.author = ExtractJsonString(object, "author_name");
-        item.description = ExtractJsonString(object, "description");
-        item.status = ExtractJsonString(object, "status");
-        item.updateOf = ExtractJsonString(object, "update_of");
-        item.pendingUpdateId = ExtractJsonString(object, "pending_update_id");
-        item.pendingUpdateTitle = ExtractJsonString(object, "pending_update_title");
-        item.pendingUpdateAt = ExtractJsonString(object, "pending_update_at");
-        item.updatedAt = ExtractJsonString(object, "updated_at");
-        item.downloads = ExtractJsonInt(object, "downloads");
-        item.likes = ExtractJsonInt(object, "likes");
-        if (!item.id.empty()) {
-            parsed.push_back(item);
-        }
-    }
-    if (parsed.empty() && json.find("\"presets\"") != std::string::npos) {
-        out.clear();
-        return true;
-    }
-    if (parsed.empty()) return false;
-    out.swap(parsed);
-    return true;
-}
-
-void StoreCatalog(const std::string& json, bool fromNetwork) {
-    std::vector<CommunityCatalogItem> parsed;
-    std::vector<std::string> likedPresetIds;
-    {
-        std::lock_guard<std::mutex> lock(g_communityMutex);
-        likedPresetIds = g_likedPresetIds;
-    }
-    if (!ParseCatalog(json, likedPresetIds, parsed)) {
-        SetStatus("Community catalog parse failed");
-        return;
-    }
+void ApplyCatalog(
+    std::vector<CommunityCatalogItem> parsed,
+    std::string json,
+    bool fromNetwork) {
     {
         std::lock_guard<std::mutex> lock(g_communityMutex);
         g_catalog.swap(parsed);
@@ -487,7 +288,31 @@ void StoreCatalog(const std::string& json, bool fromNetwork) {
     SetStatus(fromNetwork ? "Community catalog refreshed" : "Loaded cached community catalog");
 }
 
+void StoreCatalog(const std::string& json, bool fromNetwork) {
+    std::vector<CommunityCatalogItem> parsed;
+    std::vector<std::string> likedPresetIds;
+    {
+        std::lock_guard<std::mutex> lock(g_communityMutex);
+        likedPresetIds = g_likedPresetIds;
+    }
+    if (!ParseCatalog(json, likedPresetIds, parsed)) {
+        SetStatus("Community catalog parse failed");
+        return;
+    }
+    if (g_communityWorkerContext && fromNetwork) {
+        const unsigned long long generation = g_communityWorkerGeneration;
+        PostCompletion(generation, [parsed = std::move(parsed), json]() mutable {
+            ApplyCatalog(std::move(parsed), json, true);
+        }, true);
+        return;
+    }
+    ApplyCatalog(std::move(parsed), json, fromNetwork);
+}
+
 std::string Endpoint() {
+    if (g_communityWorkerContext) {
+        return g_communityWorkerEndpoint;
+    }
     LoadCommunityState();
     std::lock_guard<std::mutex> lock(g_communityMutex);
     return TrimCopy(g_endpoint);
@@ -500,6 +325,13 @@ std::string UrlFor(const std::string& path) {
 }
 
 std::vector<CommunityHttpHeader> JsonHeaders() {
+    if (g_communityWorkerContext) {
+        return {
+            { "content-type", "application/json; charset=utf-8" },
+            { "x-cw-client-id", g_communityWorkerClientId },
+            { "x-cw-client-version", MOD_VERSION },
+        };
+    }
     LoadCommunityState();
     std::string clientId;
     {
@@ -543,24 +375,58 @@ bool Sha256Hex(const std::string& body, std::string& outHex) {
     return true;
 }
 
-void FinishAsyncWork() {
-    std::lock_guard<std::mutex> lock(g_communityMutex);
-    if (g_busyCount > 0) {
-        --g_busyCount;
+bool RunAsync(const std::function<void()>& work, bool allowParallel = false, const char* coalesceKey = nullptr) {
+    std::lock_guard<std::mutex> lifecycleLock(g_communityLifecycleMutex);
+    if (g_communityStopping.load()) return false;
+    BackgroundWorkQueue& queue = CommunityWorkQueue();
+    if (g_communityStopping.load()) {
+        queue.SignalStopWithoutLock();
+        return false;
     }
-}
+    if (!allowParallel && queue.OutstandingCount() > 0) {
+        SetStatus("Another community request is still in progress");
+        return false;
+    }
 
-bool RunAsync(const std::function<void()>& work, bool allowParallel = false) {
+    LoadCommunityState();
+    std::string endpoint;
+    std::string clientId;
+    unsigned long long generation = 0;
     {
         std::lock_guard<std::mutex> lock(g_communityMutex);
-        if (!allowParallel && g_busyCount > 0) return false;
-        ++g_busyCount;
+        endpoint = g_endpoint;
+        clientId = g_clientId;
+        generation = g_communityGeneration.load();
     }
-    std::thread([work]() {
-        work();
-        FinishAsyncWork();
-    }).detach();
-    return true;
+    const BackgroundSubmitResult result = queue.Submit(coalesceKey ? coalesceKey : "", [work, endpoint = std::move(endpoint), clientId = std::move(clientId), generation](const std::atomic<bool>& stop) {
+        if (stop.load() || g_communityStopping.load()) return;
+        const bool previousWorkerContext = g_communityWorkerContext;
+        const unsigned long long previousGeneration = g_communityWorkerGeneration;
+        const std::atomic<bool>* previousStop = g_communityWorkerStop;
+        std::string previousEndpoint = std::move(g_communityWorkerEndpoint);
+        std::string previousClientId = std::move(g_communityWorkerClientId);
+        g_communityWorkerContext = true;
+        g_communityWorkerGeneration = generation;
+        g_communityWorkerStop = &stop;
+        g_communityWorkerEndpoint = endpoint;
+        g_communityWorkerClientId = clientId;
+        try {
+            work();
+        } catch (...) {
+            SetStatus("Community request failed unexpectedly");
+        }
+        g_communityWorkerContext = previousWorkerContext;
+        g_communityWorkerGeneration = previousGeneration;
+        g_communityWorkerStop = previousStop;
+        g_communityWorkerEndpoint = std::move(previousEndpoint);
+        g_communityWorkerClientId = std::move(previousClientId);
+    });
+    if (result == BackgroundSubmitResult::Accepted) return true;
+    if (result == BackgroundSubmitResult::Duplicate) SetStatus("That community request is already queued");
+    else if (result == BackgroundSubmitResult::Full) SetStatus("Community request queue is full");
+    else if (result == BackgroundSubmitResult::StartFailed) SetStatus("Could not start community request worker");
+    else if (result == BackgroundSubmitResult::Stopping) SetStatus("Community service is shutting down");
+    return false;
 }
 
 void RefreshWorker(bool manual) {
@@ -570,7 +436,7 @@ void RefreshWorker(bool manual) {
     }
     SetStatus("Refreshing community catalog...");
     CommunityHttpResponse response;
-    if (!CommunityHttp_Request("GET", UrlFor("/api/v1/catalog"), JsonHeaders(), "", response)) {
+    if (!CommunityHttp_Request("GET", UrlFor("/api/v1/catalog"), JsonHeaders(), "", response, g_communityWorkerStop)) {
         SetStatus("Community refresh failed: " + response.error);
         return;
     }
@@ -591,7 +457,7 @@ void MyUploadsWorker(bool announce) {
     }
     if (announce) SetStatus("Refreshing my uploads...");
     CommunityHttpResponse response;
-    if (!CommunityHttp_Request("GET", UrlFor("/api/v1/me/presets"), JsonHeaders(), "", response)) {
+    if (!CommunityHttp_Request("GET", UrlFor("/api/v1/me/presets"), JsonHeaders(), "", response, g_communityWorkerStop)) {
         SetStatus("My uploads refresh failed: " + response.error);
         return;
     }
@@ -604,26 +470,22 @@ void MyUploadsWorker(bool announce) {
         SetStatus("My uploads parse failed");
         return;
     }
+    if (g_communityWorkerContext) {
+        const unsigned long long generation = g_communityWorkerGeneration;
+        PostCompletion(generation, [parsed = std::move(parsed), announce]() mutable {
+            {
+                std::lock_guard<std::mutex> lock(g_communityMutex);
+                g_myUploads.swap(parsed);
+            }
+            if (announce) SetStatus("My uploads refreshed");
+        }, true);
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(g_communityMutex);
         g_myUploads.swap(parsed);
     }
     if (announce) SetStatus("My uploads refreshed");
-}
-
-std::string BuildPresetUploadBody(
-    const std::string& title,
-    const std::string& author,
-    const std::string& description,
-    const std::string& ini) {
-    std::string body = "{";
-    body += "\"title\":\"" + JsonEscape(title) + "\",";
-    body += "\"authorName\":\"" + JsonEscape(author.empty() ? "Anonymous" : author) + "\",";
-    body += "\"description\":\"" + JsonEscape(description) + "\",";
-    body += "\"tags\":[],";
-    body += "\"clientVersion\":\"" MOD_VERSION "\",";
-    body += "\"iniText\":\"" + JsonEscape(ini) + "\"}";
-    return body;
 }
 
 void LoadCachedCatalog() {
@@ -636,8 +498,9 @@ void LoadCachedCatalog() {
 } // namespace
 
 void Community_EnsureInitialized() {
-    if (g_initialized) return;
-    g_initialized = true;
+    if (g_communityStopping.load()) return;
+    bool expected = false;
+    if (!g_initialized.compare_exchange_strong(expected, true)) return;
     LoadCommunityState();
     EnsureDirectory(CommunityRoot());
     LoadCachedCatalog();
@@ -650,6 +513,40 @@ void Community_EnsureInitialized() {
 
 void Community_Tick() {
     Community_EnsureInitialized();
+    g_communityCompletions.Drain(g_communityGeneration.load());
+}
+
+void Community_BeginShutdown() {
+    std::lock_guard<std::mutex> lifecycleLock(g_communityLifecycleMutex);
+    if (g_communityStopping.exchange(true)) return;
+    g_communityGeneration.fetch_add(1);
+    BackgroundWorkQueue* queue = g_detachWorkQueue.load();
+    if (queue) queue->StopAcceptingWork();
+}
+
+bool Community_WaitForShutdown(unsigned long waitMilliseconds) {
+    BackgroundWorkQueue* queue = nullptr;
+    {
+        std::lock_guard<std::mutex> lifecycleLock(g_communityLifecycleMutex);
+        queue = g_detachWorkQueue.load();
+    }
+    return !queue || queue->WaitForStop(waitMilliseconds);
+}
+
+void Community_SignalStopWithoutWait() noexcept {
+    if (g_communityStopping.exchange(true)) return;
+    g_communityGeneration.fetch_add(1);
+    BackgroundWorkQueue* queue = g_detachWorkQueue.load();
+    if (queue) queue->SignalStopWithoutLock();
+}
+
+void Community_CloseAfterShutdown() {
+    {
+        std::lock_guard<std::mutex> lifecycleLock(g_communityLifecycleMutex);
+        BackgroundWorkQueue* queue = g_detachWorkQueue.load();
+        if (queue) queue->CloseAfterStop();
+    }
+    g_communityCompletions.Clear();
 }
 
 bool Community_IsEnabled() {
@@ -657,8 +554,14 @@ bool Community_IsEnabled() {
 }
 
 bool Community_IsBusy() {
-    std::lock_guard<std::mutex> lock(g_communityMutex);
-    return g_busyCount > 0;
+    std::lock_guard<std::mutex> lifecycleLock(g_communityLifecycleMutex);
+    if (g_communityStopping.load()) return false;
+    BackgroundWorkQueue& queue = CommunityWorkQueue();
+    if (g_communityStopping.load()) {
+        queue.SignalStopWithoutLock();
+        return false;
+    }
+    return queue.OutstandingCount() > 0;
 }
 
 const char* Community_GetStatusText() {
@@ -684,6 +587,7 @@ void Community_SetEndpoint(const char* endpoint) {
     {
         std::lock_guard<std::mutex> lock(g_communityMutex);
         g_endpoint = TrimCopy(endpoint ? endpoint : "");
+        g_communityGeneration.fetch_add(1);
     }
     SaveCommunityState();
 #else
@@ -763,17 +667,17 @@ void Community_RequestRefresh(bool manual) {
         SetStatus("Community refresh is cooling down");
         return;
     }
-    RunAsync([manual]() { RefreshWorker(manual); });
+    RunAsync([manual]() { RefreshWorker(manual); }, false, "catalog-refresh");
 }
 
 bool Community_RequestInitialViewRefresh() {
-    const bool refreshStarted = RunAsync([]() { RefreshWorker(false); }, true);
-    const bool uploadsStarted = RunAsync([]() { MyUploadsWorker(false); }, true);
+    const bool refreshStarted = RunAsync([]() { RefreshWorker(false); }, true, "catalog-refresh");
+    const bool uploadsStarted = RunAsync([]() { MyUploadsWorker(false); }, true, "my-uploads");
     return refreshStarted || uploadsStarted;
 }
 
 void Community_RequestMyUploads() {
-    RunAsync([]() { MyUploadsWorker(true); });
+    RunAsync([]() { MyUploadsWorker(true); }, false, "my-uploads");
 }
 
 void Community_RequestDownload(const char* presetId) {
@@ -800,7 +704,7 @@ void Community_RequestDownload(const char* presetId) {
         }
         SetStatus("Downloading community preset...");
         CommunityHttpResponse response;
-        if (!CommunityHttp_Request("GET", UrlFor("/api/v1/presets/" + item.id + "/download"), JsonHeaders(), "", response)) {
+        if (!CommunityHttp_Request("GET", UrlFor("/api/v1/presets/" + item.id + "/download"), JsonHeaders(), "", response, g_communityWorkerStop)) {
             SetStatus("Download failed: " + response.error);
             return;
         }
@@ -825,21 +729,24 @@ void Community_RequestDownload(const char* presetId) {
             SetStatus("Download rejected: SHA-256 mismatch");
             return;
         }
-        std::string fileName;
-        std::string error;
-        if (!Preset_ImportCommunityPresetText(
-                item.title.c_str(),
-                item.author.c_str(),
-                item.id.c_str(),
-                item.sha256.c_str(),
-                item.updatedAt.c_str(),
-                response.body.c_str(),
-                fileName,
-                error)) {
-            SetStatus("Import failed: " + error);
-            return;
-        }
-        SetStatus("Downloaded community preset: " + fileName);
+        const unsigned long long generation = g_communityWorkerGeneration;
+        PostCompletion(generation, [item, presetText = std::move(response.body)]() {
+            std::string fileName;
+            std::string error;
+            if (!Preset_ImportCommunityPresetText(
+                    item.title.c_str(),
+                    item.author.c_str(),
+                    item.id.c_str(),
+                    item.sha256.c_str(),
+                    item.updatedAt.c_str(),
+                    presetText.c_str(),
+                    fileName,
+                    error)) {
+                SetStatus("Import failed: " + error);
+                return;
+            }
+            SetStatus("Downloaded community preset: " + fileName);
+        }, true);
     });
 }
 
@@ -850,14 +757,20 @@ void Community_RequestUpdateDownloadedPreset(int presetIndex) {
         return;
     }
     const CommunityCatalogItem item = update.catalogItem;
-    RunAsync([presetIndex, item]() {
+    CommunityPresetInstallInfo installInfo{};
+    if (!Preset_GetCommunityInstallInfo(presetIndex, installInfo) || installInfo.fullPath.empty()) {
+        SetStatus("Community preset is no longer available");
+        return;
+    }
+    const std::string presetPath = installInfo.fullPath;
+    RunAsync([presetPath, item]() {
         if (Endpoint().empty()) {
             SetStatus("Community endpoint is not configured");
             return;
         }
         SetStatus("Updating community preset...");
         CommunityHttpResponse response;
-        if (!CommunityHttp_Request("GET", UrlFor("/api/v1/presets/" + item.id + "/download"), JsonHeaders(), "", response)) {
+        if (!CommunityHttp_Request("GET", UrlFor("/api/v1/presets/" + item.id + "/download"), JsonHeaders(), "", response, g_communityWorkerStop)) {
             SetStatus("Update failed: " + response.error);
             return;
         }
@@ -882,20 +795,23 @@ void Community_RequestUpdateDownloadedPreset(int presetIndex) {
             SetStatus("Update rejected: SHA-256 mismatch");
             return;
         }
-        std::string error;
-        if (!Preset_UpdateCommunityPresetText(
-                presetIndex,
-                item.title.c_str(),
-                item.author.c_str(),
-                item.id.c_str(),
-                item.sha256.c_str(),
-                item.updatedAt.c_str(),
-                response.body.c_str(),
-                error)) {
-            SetStatus("Update failed: " + error);
-            return;
-        }
-        SetStatus("Community preset updated: " + item.title);
+        const unsigned long long generation = g_communityWorkerGeneration;
+        PostCompletion(generation, [presetPath, item, presetText = std::move(response.body)]() {
+            std::string error;
+            if (!Preset_UpdateCommunityPresetTextByPath(
+                    presetPath.c_str(),
+                    item.title.c_str(),
+                    item.author.c_str(),
+                    item.id.c_str(),
+                    item.sha256.c_str(),
+                    item.updatedAt.c_str(),
+                    presetText.c_str(),
+                    error)) {
+                SetStatus("Update failed: " + error);
+                return;
+            }
+            SetStatus("Community preset updated: " + item.title);
+        }, true);
     });
 }
 
@@ -912,7 +828,7 @@ void Community_RequestLike(const char* presetId) {
             return;
         }
         CommunityHttpResponse response;
-        if (!CommunityHttp_Request("POST", UrlFor("/api/v1/presets/" + id + "/like"), JsonHeaders(), "", response)) {
+        if (!CommunityHttp_Request("POST", UrlFor("/api/v1/presets/" + id + "/like"), JsonHeaders(), "", response, g_communityWorkerStop)) {
             SetStatus("Like failed: " + response.error);
             return;
         }
@@ -920,21 +836,28 @@ void Community_RequestLike(const char* presetId) {
             SetStatus(StatusHttpError("Like failed", response));
             return;
         }
-        const bool liked = ExtractJsonBool(response.body, "liked");
-        const int likes = ExtractJsonInt(response.body, "likes");
-        {
-            std::lock_guard<std::mutex> lock(g_communityMutex);
-            SetLikedPresetId(id, liked);
-            for (CommunityCatalogItem& item : g_catalog) {
-                if (_stricmp(item.id.c_str(), id.c_str()) == 0) {
-                    item.liked = liked;
-                    item.likes = likes;
-                    break;
+        bool liked = false;
+        int likes = 0;
+        if (!community_protocol::ParseLikeResponse(response.body, liked, likes)) {
+            SetStatus("Like failed: invalid response");
+            return;
+        }
+        const unsigned long long generation = g_communityWorkerGeneration;
+        PostCompletion(generation, [id, liked, likes]() {
+            {
+                std::lock_guard<std::mutex> lock(g_communityMutex);
+                SetLikedPresetId(id, liked);
+                for (CommunityCatalogItem& item : g_catalog) {
+                    if (_stricmp(item.id.c_str(), id.c_str()) == 0) {
+                        item.liked = liked;
+                        item.likes = likes;
+                        break;
+                    }
                 }
             }
-        }
-        SaveCommunityState();
-        Log("[community] like toggled for %s\n", id.c_str());
+            SaveCommunityState();
+            Log("[community] like toggled for %s\n", id.c_str());
+        }, true);
     });
 }
 
@@ -948,7 +871,7 @@ void Community_RequestDeleteMyUpload(const char* presetId) {
     RunAsync([id]() {
         SetStatus("Deleting community upload...");
         CommunityHttpResponse response;
-        if (!CommunityHttp_Request("DELETE", UrlFor("/api/v1/me/presets/" + id), JsonHeaders(), "", response)) {
+        if (!CommunityHttp_Request("DELETE", UrlFor("/api/v1/me/presets/" + id), JsonHeaders(), "", response, g_communityWorkerStop)) {
             SetStatus("Delete failed: " + response.error);
             return;
         }
@@ -972,7 +895,7 @@ void Community_RequestCancelMyUploadUpdate(const char* presetId) {
     RunAsync([id]() {
         SetStatus("Cancelling community update...");
         CommunityHttpResponse response;
-        if (!CommunityHttp_Request("DELETE", UrlFor("/api/v1/me/presets/" + id + "/update"), JsonHeaders(), "", response)) {
+        if (!CommunityHttp_Request("DELETE", UrlFor("/api/v1/me/presets/" + id + "/update"), JsonHeaders(), "", response, g_communityWorkerStop)) {
             SetStatus("Cancel update failed: " + response.error);
             return;
         }
@@ -1005,22 +928,24 @@ void Community_RequestUpdateMyUpload(
         SetStatus("Community update needs a preset");
         return;
     }
+    std::string presetPath;
+    std::string ini;
+    std::string exportError;
+    if (!Preset_GetFilePath(presetIndex, presetPath) ||
+        !Preset_ExportPresetCanonicalByIndex(presetIndex, ini, exportError)) {
+        SetStatus("Update failed: " + (exportError.empty() ? std::string("Selected preset is not available") : exportError));
+        return;
+    }
     if (Endpoint().empty()) {
         SetStatus("Community endpoint is not configured");
         return;
     }
     SetStatus("Preparing community update...");
-    RunAsync([id, submitTitle, submitAuthor, submitDescription, presetIndex]() {
-        std::string ini;
-        std::string error;
-        if (!Preset_ExportPresetCanonicalByIndex(presetIndex, ini, error)) {
-            SetStatus("Update failed: " + error);
-            return;
-        }
+    RunAsync([id, submitTitle, submitAuthor, submitDescription, presetPath, ini = std::move(ini)]() {
         SetStatus("Uploading community update...");
         CommunityHttpResponse response;
         const std::string body = BuildPresetUploadBody(submitTitle, submitAuthor, submitDescription, ini);
-        if (!CommunityHttp_Request("PUT", UrlFor("/api/v1/me/presets/" + id), JsonHeaders(), body, response)) {
+        if (!CommunityHttp_Request("PUT", UrlFor("/api/v1/me/presets/" + id), JsonHeaders(), body, response, g_communityWorkerStop)) {
             SetStatus("Update failed: " + response.error);
             return;
         }
@@ -1029,6 +954,7 @@ void Community_RequestUpdateMyUpload(
             return;
         }
         SetStatus("Community update submitted");
+        Log("[community] update uploaded from %s to id=%s\n", presetPath.c_str(), id.c_str());
         MyUploadsWorker(false);
         RefreshWorker(false);
     });
@@ -1049,25 +975,27 @@ void Community_RequestSubmit(
         SetStatus("Community endpoint is not configured");
         return;
     }
+    std::string ini;
+    std::string exportError;
+    if (!Preset_ExportCurrentCanonical(ini, exportError)) {
+        SetStatus("Submit failed: " + exportError);
+        Log("[community] submit export failed: %s\n", exportError.c_str());
+        return;
+    }
+    std::string sourcePath;
+    (void)Preset_GetFilePath(Preset_GetSelectedIndex(), sourcePath);
     SetStatus("Preparing community submission...");
     Log("[community] submit requested title=\"%s\"\n", submitTitle.c_str());
-    RunAsync([submitTitle, submitAuthor, submitDescription]() {
+    RunAsync([submitTitle, submitAuthor, submitDescription, sourcePath, ini = std::move(ini)]() {
         if (Endpoint().empty()) {
             SetStatus("Community endpoint is not configured");
-            return;
-        }
-        std::string ini;
-        std::string error;
-        if (!Preset_ExportCurrentCanonical(ini, error)) {
-            SetStatus("Submit failed: " + error);
-            Log("[community] submit export failed: %s\n", error.c_str());
             return;
         }
         SetStatus("Uploading community preset...");
         const std::string body = BuildPresetUploadBody(submitTitle, submitAuthor, submitDescription, ini);
 
         CommunityHttpResponse response;
-        if (!CommunityHttp_Request("POST", UrlFor("/api/v1/presets"), JsonHeaders(), body, response)) {
+        if (!CommunityHttp_Request("POST", UrlFor("/api/v1/presets"), JsonHeaders(), body, response, g_communityWorkerStop)) {
             SetStatus("Submit failed: " + response.error);
             Log("[community] submit request failed: %s\n", response.error.c_str());
             return;
@@ -1078,6 +1006,7 @@ void Community_RequestSubmit(
             return;
         }
         SetStatus("Community preset submitted for approval");
+        if (!sourcePath.empty()) Log("[community] submitted preset snapshot from %s\n", sourcePath.c_str());
         MyUploadsWorker(false);
         Log("[community] submit accepted: %s\n", response.body.c_str());
     });

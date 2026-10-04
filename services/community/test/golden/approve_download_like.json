@@ -1,0 +1,352 @@
+[
+  {
+    "step": "submit",
+    "request": "POST /api/v1/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "id": "clean-morning-<h1>",
+      "status": "pending",
+      "autoApproved": false,
+      "scan": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "formatVersion": 6
+      }
+    }
+  },
+  {
+    "step": "download while pending",
+    "request": "GET /api/v1/presets/clean-morning-<h1>/download",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset not found."
+    }
+  },
+  {
+    "step": "like while pending",
+    "request": "POST /api/v1/presets/clean-morning-<h1>/like",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset not found."
+    }
+  },
+  {
+    "step": "catalog after approval",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning",
+          "author": "Alice",
+          "description": "Soft light",
+          "tags": [],
+          "formatVersion": 6,
+          "minAddonVersion": "0.8.1",
+          "publishedAt": "<ts>",
+          "updatedAt": "<ts>",
+          "downloads": 0,
+          "likes": 0,
+          "file": {
+            "url": "/api/v1/presets/clean-morning-<h1>/download",
+            "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+            "size": 229
+          },
+          "safety": {
+            "approved": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "step": "download by bob",
+    "request": "GET /api/v1/presets/clean-morning-<h1>/download",
+    "status": 200,
+    "headers": {
+      "content-type": "text/plain; charset=utf-8",
+      "content-disposition": "attachment; filename=\"clean-morning-<h1>.ini\""
+    },
+    "body": "[CrimsonWeatherPreset]\r\nFormatVersion=6\r\n; comment lines are ignored\r\n[Weather]\r\nRain=0.5\r\nNoSnow=1\r\nThunder=\r\n[Celestial]\r\nMoonTextureEnabled=true\r\nMoonTexture=moon_red.dds\r\n[Region.Hernand]\r\nRain=1\r\n[RenoDX]\r\nAuroraRegionMask=7"
+  },
+  {
+    "step": "download by bob again same day",
+    "request": "GET /api/v1/presets/clean-morning-<h1>/download",
+    "status": 200,
+    "headers": {
+      "content-type": "text/plain; charset=utf-8",
+      "content-disposition": "attachment; filename=\"clean-morning-<h1>.ini\""
+    },
+    "body": "[CrimsonWeatherPreset]\r\nFormatVersion=6\r\n; comment lines are ignored\r\n[Weather]\r\nRain=0.5\r\nNoSnow=1\r\nThunder=\r\n[Celestial]\r\nMoonTextureEnabled=true\r\nMoonTexture=moon_red.dds\r\n[Region.Hernand]\r\nRain=1\r\n[RenoDX]\r\nAuroraRegionMask=7"
+  },
+  {
+    "step": "anonymous download",
+    "request": "GET /api/v1/presets/clean-morning-<h1>/download",
+    "status": 200,
+    "headers": {
+      "content-type": "text/plain; charset=utf-8",
+      "content-disposition": "attachment; filename=\"clean-morning-<h1>.ini\""
+    },
+    "body": "[CrimsonWeatherPreset]\r\nFormatVersion=6\r\n; comment lines are ignored\r\n[Weather]\r\nRain=0.5\r\nNoSnow=1\r\nThunder=\r\n[Celestial]\r\nMoonTextureEnabled=true\r\nMoonTexture=moon_red.dds\r\n[Region.Hernand]\r\nRain=1\r\n[RenoDX]\r\nAuroraRegionMask=7"
+  },
+  {
+    "step": "download by carol",
+    "request": "GET /api/v1/presets/clean-morning-<h1>/download",
+    "status": 200,
+    "headers": {
+      "content-type": "text/plain; charset=utf-8",
+      "content-disposition": "attachment; filename=\"clean-morning-<h1>.ini\""
+    },
+    "body": "[CrimsonWeatherPreset]\r\nFormatVersion=6\r\n; comment lines are ignored\r\n[Weather]\r\nRain=0.5\r\nNoSnow=1\r\nThunder=\r\n[Celestial]\r\nMoonTextureEnabled=true\r\nMoonTexture=moon_red.dds\r\n[Region.Hernand]\r\nRain=1\r\n[RenoDX]\r\nAuroraRegionMask=7"
+  },
+  {
+    "step": "like without client id",
+    "request": "POST /api/v1/presets/clean-morning-<h1>/like",
+    "status": 400,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Missing anonymous client id."
+    }
+  },
+  {
+    "step": "bob likes",
+    "request": "POST /api/v1/presets/clean-morning-<h1>/like",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "liked": true,
+      "likes": 1
+    }
+  },
+  {
+    "step": "carol likes",
+    "request": "POST /api/v1/presets/clean-morning-<h1>/like",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "liked": true,
+      "likes": 2
+    }
+  },
+  {
+    "step": "bob unlikes",
+    "request": "POST /api/v1/presets/clean-morning-<h1>/like",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "liked": false,
+      "likes": 1
+    }
+  },
+  {
+    "step": "catalog counts",
+    "request": "GET /api/v1/catalog",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    },
+    "body": {
+      "schemaVersion": 1,
+      "generatedAt": "<ts>",
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning",
+          "author": "Alice",
+          "description": "Soft light",
+          "tags": [],
+          "formatVersion": 6,
+          "minAddonVersion": "0.8.1",
+          "publishedAt": "<ts>",
+          "updatedAt": "<ts>",
+          "downloads": 2,
+          "likes": 1,
+          "file": {
+            "url": "/api/v1/presets/clean-morning-<h1>/download",
+            "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+            "size": 229
+          },
+          "safety": {
+            "approved": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "step": "unknown preset download",
+    "request": "GET /api/v1/presets/nope-<h2>/download",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset not found."
+    }
+  },
+  {
+    "step": "unknown preset like",
+    "request": "POST /api/v1/presets/nope-<h2>/like",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Preset not found."
+    }
+  },
+  {
+    "step": "owner list",
+    "request": "GET /api/v1/me/presets",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": true,
+      "clientFingerprint": "61af39d23210...0c10b9",
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning",
+          "author_name": "Alice",
+          "description": "Soft light",
+          "tags_json": "[]",
+          "status": "approved",
+          "update_of": "",
+          "downloads": 2,
+          "likes": 1,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": "<ts>",
+          "rejected_at": null,
+          "pending_update_id": null,
+          "pending_update_title": null,
+          "pending_update_at": null
+        }
+      ]
+    }
+  },
+  {
+    "step": "state",
+    "state": {
+      "presets": [
+        {
+          "id": "clean-morning-<h1>",
+          "title": "Clean Morning",
+          "author_name": "Alice",
+          "description": "Soft light",
+          "tags_json": "[]",
+          "status": "approved",
+          "r2_key": "approved/clean-morning-<h1>/<file>",
+          "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+          "size_bytes": 229,
+          "format_version": 6,
+          "min_addon_version": "0.8.1",
+          "submitter_hash": "61af39d23210c5aed61d204427ee9cdc60a54f06361a9f2e9bc765eb330c10b9",
+          "safety_status": "passed",
+          "safety_summary": "",
+          "downloads": 2,
+          "likes": 1,
+          "created_at": "<ts>",
+          "updated_at": "<ts>",
+          "approved_at": "<ts>",
+          "rejected_at": null,
+          "update_of": "",
+          "deleted_at": null,
+          "delete_after": null,
+          "deleted_by": "",
+          "delete_reason": ""
+        }
+      ],
+      "likes": [
+        {
+          "preset_id": "clean-morning-<h1>",
+          "device_hash": "843539f394760aca7ecf403467e0d3b1b0ca0cfa8a764a28b33032f5f9a11545"
+        }
+      ],
+      "downloads": [
+        {
+          "preset_id": "clean-morning-<h1>",
+          "device_hash": "843539f394760aca7ecf403467e0d3b1b0ca0cfa8a764a28b33032f5f9a11545",
+          "day": "<day>"
+        },
+        {
+          "preset_id": "clean-morning-<h1>",
+          "device_hash": "a926a36b0c6672fb804d5d6a284da4427aa694b4845eeef5e396c38087140e29",
+          "day": "<day>"
+        }
+      ],
+      "whitelist": [],
+      "settings": [],
+      "files": [
+        {
+          "key": "approved/clean-morning-<h1>/<file>",
+          "state": "ok"
+        }
+      ],
+      "catalog": {
+        "schemaVersion": 1,
+        "generatedAt": "<ts>",
+        "presets": [
+          {
+            "id": "clean-morning-<h1>",
+            "title": "Clean Morning",
+            "author": "Alice",
+            "description": "Soft light",
+            "tags": [],
+            "formatVersion": 6,
+            "minAddonVersion": "0.8.1",
+            "publishedAt": "<ts>",
+            "updatedAt": "<ts>",
+            "downloads": 2,
+            "likes": 1,
+            "file": {
+              "url": "/api/v1/presets/clean-morning-<h1>/download",
+              "sha256": "7bb9e96ba2b2496fdc37a8fafd568230103594b289c22fb3e19aca4034f6d0e3",
+              "size": 229
+            },
+            "safety": {
+              "approved": true
+            }
+          }
+        ]
+      }
+    }
+  }
+]

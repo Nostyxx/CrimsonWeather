@@ -2,9 +2,14 @@
 
 #include "sky_texture_override.h"
 #include "overlay_bridge.h"
+#include "community_service.h"
 #include "preset_service.h"
 #include "runtime_shared.h"
 #include "update_service.h"
+
+#include <memory>
+#include <mutex>
+#include <new>
 
 extern "C" BOOL ReserveBufferBlock(LPVOID pOrigin);
 
@@ -13,6 +18,95 @@ namespace {
 std::atomic<bool> g_initialized{ false };
 std::atomic<bool> g_minHookInitialized{ false };
 std::atomic<bool> g_nextStartIsAuto{ false };
+std::atomic<bool> g_shutdownRequested{ false };
+std::mutex g_trackedThreadMutex;
+HANDLE g_bootstrapThread = nullptr;
+HANDLE g_startThread = nullptr;
+HMODULE g_addonLifetimePin = nullptr;
+HMODULE g_reshadeModule = nullptr;
+constexpr DWORD kStartupThreadWaitMs = 300000;
+
+enum class TrackedThreadStartResult {
+    Started,
+    AlreadyRunning,
+    ShuttingDown,
+    Failed,
+};
+
+struct TrackedThreadContext {
+    LPTHREAD_START_ROUTINE procedure = nullptr;
+    void* parameter = nullptr;
+    HMODULE moduleReference = nullptr;
+};
+
+DWORD WINAPI TrackedThreadEntry(void* rawContext) {
+    std::unique_ptr<TrackedThreadContext> context(static_cast<TrackedThreadContext*>(rawContext));
+    DWORD result = 1;
+    try {
+        result = context->procedure(context->parameter);
+    } catch (...) {
+        Log("[E] startup worker failed unexpectedly\n");
+    }
+    HMODULE moduleReference = context->moduleReference;
+    context.reset();
+    if (moduleReference) {
+        FreeLibraryAndExitThread(moduleReference, result);
+    }
+    return result;
+}
+
+TrackedThreadStartResult StartTrackedThread(
+    HANDLE& threadSlot,
+    LPTHREAD_START_ROUTINE procedure,
+    void* parameter) {
+    std::lock_guard<std::mutex> lock(g_trackedThreadMutex);
+    if (g_shutdownRequested.load()) return TrackedThreadStartResult::ShuttingDown;
+    if (threadSlot) {
+        if (WaitForSingleObject(threadSlot, 0) != WAIT_OBJECT_0) {
+            return TrackedThreadStartResult::AlreadyRunning;
+        }
+        CloseHandle(threadSlot);
+        threadSlot = nullptr;
+    }
+
+    HMODULE moduleReference = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<LPCWSTR>(procedure),
+            &moduleReference)) {
+        return TrackedThreadStartResult::Failed;
+    }
+    auto* context = new (std::nothrow) TrackedThreadContext{ procedure, parameter, moduleReference };
+    if (!context) {
+        FreeLibrary(moduleReference);
+        return TrackedThreadStartResult::Failed;
+    }
+    HANDLE thread = CreateThread(nullptr, 0, &TrackedThreadEntry, context, 0, nullptr);
+    if (!thread) {
+        delete context;
+        FreeLibrary(moduleReference);
+        return TrackedThreadStartResult::Failed;
+    }
+    threadSlot = thread;
+    return TrackedThreadStartResult::Started;
+}
+
+bool WaitForTrackedThread(HANDLE& threadSlot, DWORD waitMilliseconds) {
+    HANDLE thread = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_trackedThreadMutex);
+        thread = threadSlot;
+    }
+    if (!thread) return true;
+    const DWORD result = WaitForSingleObject(thread, waitMilliseconds);
+    if (result != WAIT_OBJECT_0) return false;
+    std::lock_guard<std::mutex> lock(g_trackedThreadMutex);
+    if (threadSlot == thread) {
+        CloseHandle(threadSlot);
+        threadSlot = nullptr;
+    }
+    return true;
+}
 
 bool IsTargetProcess() {
     wchar_t path[MAX_PATH] = {};
@@ -34,6 +128,7 @@ void ResolveModuleDirectory(HMODULE module, char* outDir, size_t outDirSize) {
 }
 
 void MarkStartupFailed(const char* status) {
+    if (g_shutdownRequested.load()) return;
     if (status && status[0]) {
         GUI_SetStatus(status);
     }
@@ -77,6 +172,7 @@ bool TryInitializeSkyTextureOverride(HMODULE module) {
 }
 
 DWORD WINAPI StartThread(void*) {
+    if (g_shutdownRequested.load()) return 0;
     AddonStartupState expected = AddonStartupState::NotStarted;
     if (!g_addonStartupState.compare_exchange_strong(expected, AddonStartupState::Starting)) {
         expected = AddonStartupState::Failed;
@@ -118,9 +214,17 @@ DWORD WINAPI StartThread(void*) {
     StartupSetStep(StartupStepId::AobScan, 3, "Scanning game code");
     Log("[startup] runtime: scanning game code\n");
     if (!RunAOBScan()) {
+        if (g_shutdownRequested.load()) {
+            CleanupFailedStart();
+            return 0;
+        }
         Log("[E] AOB scan failed\n");
         CleanupFailedStart();
         MarkStartupFailed("AOB scan failed");
+        return 0;
+    }
+    if (g_shutdownRequested.load()) {
+        CleanupFailedStart();
         return 0;
     }
     char startupIssue[192] = {};
@@ -162,6 +266,11 @@ DWORD WINAPI StartThread(void*) {
         return 0;
     }
 
+    if (g_shutdownRequested.load()) {
+        CleanupFailedStart();
+        return 0;
+    }
+
     g_initialized.store(true);
     g_addonStartupState.store(AddonStartupState::Ready);
     StartupSetStep(StartupStepId::Ready, 6, "Crimson Weather ready");
@@ -184,7 +293,7 @@ void OpenStartupLog(HMODULE module) {
 
 DWORD WINAPI BootstrapThread(void* param) {
     HMODULE module = static_cast<HMODULE>(param);
-    if (!IsTargetProcess()) {
+    if (!IsTargetProcess() || g_shutdownRequested.load()) {
         return 0;
     }
 
@@ -221,6 +330,7 @@ DWORD WINAPI BootstrapThread(void* param) {
         Log("[i] Sky texture override skipped: TextureSwitcher.Enabled=0\n");
     }
 #endif
+    if (g_shutdownRequested.load()) return 0;
     if (g_cfg.autoStart) {
         Log("[startup] addon: loaded autoStart=1\n");
         StartupSetStep(StartupStepId::Idle, 0, "Auto Start enabled");
@@ -235,65 +345,87 @@ DWORD WINAPI BootstrapThread(void* param) {
 
 } // namespace
 
-void RequestCrimsonWeatherStart() {
-    HANDLE thread = CreateThread(nullptr, 0, &StartThread, nullptr, 0, nullptr);
-    if (!thread) {
-        MarkStartupFailed("Failed to create startup thread");
-        return;
-    }
-    CloseHandle(thread);
+bool CrimsonWeatherShutdownRequested() {
+    return g_shutdownRequested.load();
 }
 
-bool InitializeCrimsonWeather(HMODULE module) {
+void RequestCrimsonWeatherStart() {
+    if (g_shutdownRequested.load()) return;
+    const TrackedThreadStartResult result = StartTrackedThread(g_startThread, &StartThread, nullptr);
+    if (result == TrackedThreadStartResult::Failed) {
+        MarkStartupFailed("Failed to create startup thread");
+    }
+}
+
+bool InitializeCrimsonWeather(HMODULE module, HMODULE reshadeModule) {
     if (!IsTargetProcess()) {
         return true;
     }
+    if (g_shutdownRequested.load()) return false;
+
+    HMODULE lifetimePin = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<LPCWSTR>(&InitializeCrimsonWeather),
+            &lifetimePin)) {
+        return false;
+    }
+    g_addonLifetimePin = lifetimePin;
+    g_reshadeModule = reshadeModule;
 
     StartupResetProgress();
-    if (!InitializeOverlayBridge(module)) {
+    if (!InitializeOverlayBridge(module, reshadeModule)) {
         MarkStartupFailed("ReShade addon registration failed");
+        g_addonLifetimePin = nullptr;
+        FreeLibrary(lifetimePin);
         return false;
     }
     g_addonStartupState.store(AddonStartupState::NotStarted);
     StartupSetStep(StartupStepId::Idle, 0, "Click Start to initialize");
     GUI_SetStatus("Click Start to initialize");
 
-    HANDLE thread = CreateThread(nullptr, 0, &BootstrapThread, module, 0, nullptr);
-    if (!thread) {
+    const TrackedThreadStartResult result = StartTrackedThread(g_bootstrapThread, &BootstrapThread, module);
+    if (result == TrackedThreadStartResult::Failed) {
         MarkStartupFailed("Failed to create bootstrap thread");
-        return true;
     }
-    CloseHandle(thread);
     return true;
 }
 
-void ShutdownCrimsonWeather() {
-    if (!g_initialized.exchange(false)) {
-        RestoreRuntimePatches();
-        StopHotkeyService();
-        ShutdownSkyTextureOverride();
-        ShutdownOverlayBridge();
-        if (g_minHookInitialized.exchange(false)) {
-            MH_Uninitialize();
-        }
-        if (g_logFile) {
-            fclose(g_logFile);
-            g_logFile = nullptr;
-        }
-#if defined(CW_DEV_BUILD)
-        if (g_devLaunchLogFile) {
-            fclose(g_devLaunchLogFile);
-            g_devLaunchLogFile = nullptr;
-        }
-#endif
+void ShutdownCrimsonWeather(HMODULE module, HMODULE reshadeModule) {
+    {
+        std::lock_guard<std::mutex> lock(g_trackedThreadMutex);
+        if (g_shutdownRequested.exchange(true)) return;
+    }
+
+    Community_BeginShutdown();
+    UpdateService_BeginShutdown();
+    ShutdownOverlayBridge(module, reshadeModule ? reshadeModule : g_reshadeModule);
+
+    const ULONGLONG deadline = GetTickCount64() + kStartupThreadWaitMs;
+    const auto remainingWait = [&]() -> DWORD {
+        const ULONGLONG now = GetTickCount64();
+        return now >= deadline ? 0 : static_cast<DWORD>(deadline - now);
+    };
+    const bool startupStopped =
+        WaitForTrackedThread(g_startThread, remainingWait()) &&
+        WaitForTrackedThread(g_bootstrapThread, remainingWait());
+    const bool communityStopped = Community_WaitForShutdown(remainingWait());
+    const bool updaterStopped = UpdateService_WaitForShutdown(remainingWait());
+    if (!startupStopped || !communityStopped || !updaterStopped) {
+        Log("[W] unload stop exceeded %lu ms; retaining the add-on module reference to keep active code mapped\n",
+            kStartupThreadWaitMs);
         return;
     }
 
-    SuspendTimeControl();
+    Community_CloseAfterShutdown();
+    UpdateService_CloseAfterShutdown();
+
+    if (g_initialized.exchange(false)) {
+        SuspendTimeControl();
+    }
     RestoreRuntimePatches();
     StopHotkeyService();
     ShutdownSkyTextureOverride();
-    ShutdownOverlayBridge();
     if (g_minHookInitialized.exchange(false)) {
         MH_Uninitialize();
     }
@@ -307,4 +439,15 @@ void ShutdownCrimsonWeather() {
         g_devLaunchLogFile = nullptr;
     }
 #endif
+
+    HMODULE lifetimePin = g_addonLifetimePin;
+    g_addonLifetimePin = nullptr;
+    g_reshadeModule = nullptr;
+    if (lifetimePin) FreeLibrary(lifetimePin);
+}
+
+void CrimsonWeather_DllDetachSignal() noexcept {
+    if (g_shutdownRequested.exchange(true)) return;
+    Community_SignalStopWithoutWait();
+    UpdateService_SignalStopWithoutWait();
 }

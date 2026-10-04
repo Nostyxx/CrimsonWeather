@@ -1,0 +1,38 @@
+[
+  {
+    "step": "unknown route",
+    "request": "GET /api/v1/nope",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Not found."
+    }
+  },
+  {
+    "step": "wrong method on catalog",
+    "request": "POST /api/v1/catalog",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Not found."
+    }
+  },
+  {
+    "step": "root",
+    "request": "GET /",
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "ok": false,
+      "error": "Not found."
+    }
+  }
+]

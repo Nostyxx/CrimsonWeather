@@ -1,0 +1,36 @@
+# Admin Worker (moderation + releases). Its whole hostname must be protected by
+# a Cloudflare Access application; the Worker verifies the Access token itself
+# and refuses everything while ACCESS_* / ADMIN_EMAILS are unset.
+# Template: real IDs and Access values live in wrangler.admin.local.toml (git-ignored).
+name = "crimson-weather-community-admin"
+main = "dist/admin/index.js"
+no_bundle = true            # built by build.mjs
+compatibility_date = "2026-05-20"
+workers_dev = true
+
+[observability]
+enabled = true             # keep Worker logs (errors are logged as JSON)
+
+# Secret (wrangler secret put): DEVICE_HASH_SECRET, the same value as the public
+# Worker, for trusting an uploader by client id. Never change it.
+[vars]
+ACCESS_TEAM_DOMAIN = ""     # e.g. "<team>.cloudflareaccess.com"
+ACCESS_AUD = ""             # the Access application's AUD tag
+ADMIN_EMAILS = ""           # comma-separated
+ADMIN_SERVICE_TOKENS = ""   # comma-separated Access service-token client IDs (scripts)
+
+[[d1_databases]]
+binding = "DB"
+database_name = "crimson-weather-community-presets"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[r2_buckets]]
+binding = "PRESETS"
+bucket_name = "crimson-weather-community-presets"
+
+[env.dev]
+observability = { enabled = true }
+name = "crimson-weather-community-admin-dev"
+vars = { ACCESS_TEAM_DOMAIN = "", ACCESS_AUD = "", ADMIN_EMAILS = "", ADMIN_SERVICE_TOKENS = "" }
+d1_databases = [{ binding = "DB", database_name = "crimson-weather-community-presets-dev", database_id = "00000000-0000-0000-0000-000000000000" }]
+r2_buckets = [{ binding = "PRESETS", bucket_name = "crimson-weather-community-presets-dev" }]

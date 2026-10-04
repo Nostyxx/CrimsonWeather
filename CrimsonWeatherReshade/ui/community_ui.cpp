@@ -329,7 +329,6 @@ void DrawCatalogItem(const CommunityCatalogItem& item) {
 
 void DrawCommunityTab() {
     ImGui::PushID("CrimsonWeatherCommunityTab");
-    Community_Tick();
     if (!g_initialViewRefreshStarted && Community_IsEnabled() && Community_GetEndpoint()[0] != '\0') {
         g_initialViewRefreshStarted = Community_RequestInitialViewRefresh();
     }

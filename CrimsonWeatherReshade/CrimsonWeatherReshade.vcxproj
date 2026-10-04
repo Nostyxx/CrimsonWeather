@@ -128,6 +128,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
+    <ClInclude Include="core\background_work.h" />
     <ClInclude Include="include\community_http.h" />
     <ClInclude Include="include\community_models.h" />
     <ClInclude Include="include\community_service.h" />
@@ -135,11 +136,14 @@
     <ClInclude Include="include\community_ui.h" />
     <ClInclude Include="include\performance_benchmark.h" />
     <ClInclude Include="include\update_service.h" />
+    <ClInclude Include="update\update_install.h" />
+    <ClInclude Include="update\update_protocol.h" />
     <ClInclude Include="include\sky_image_loader.h" />
     <ClInclude Include="include\sky_texture_override.h" />
     <ClInclude Include="include\overlay_bridge.h" />
     <ClInclude Include="include\preset_service.h" />
     <ClInclude Include="include\runtime_shared.h" />
+    <ClInclude Include="third_party\nlohmann\json.hpp" />
     <ClInclude Include="preset\preset_format.h" />
     <ClInclude Include="preset\preset_model.h" />
     <ClInclude Include="preset\preset_schedule.h" />
@@ -149,9 +153,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="app\bootstrap.cpp" />
+    <ClCompile Include="core\background_work.cpp" />
     <ClCompile Include="community\community_http.cpp" />
     <ClCompile Include="community\community_service.cpp" />
-    <ClCompile Include="community\update_service.cpp" />
+    <ClCompile Include="update\update_service.cpp" />
+    <ClCompile Include="update\update_install.cpp" />
+    <ClCompile Include="update\update_protocol.cpp" />
     <ClCompile Include="core\hotkey_service.cpp" />
     <ClCompile Include="core\runtime_state.cpp" />
     <ClCompile Include="diagnostics\performance_benchmark.cpp" Condition="'$(CWBuildFlavor)'=='Dev'" />
@@ -203,4 +210,17 @@
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
+  <ItemGroup>
+    <ClCompile Include="community\community_protocol.cpp" />
+    <ClInclude Include="community\community_protocol.h" />
+    <ClCompile Include="core\runtime_health.cpp" />
+    <ClInclude Include="core\runtime_health.h" />
+    <ClCompile Include="core\config.cpp" />
+    <ClCompile Include="core\logging.cpp" />
+    <ClInclude Include="core\config.h" />
+    <ClInclude Include="core\logging.h" />
+    <ClCompile Include="game\time_control.cpp" />
+    <ClInclude Include="game\time_control.h" />
+    <ClInclude Include="game\hook_chain.h" />
+  </ItemGroup>
 </Project>

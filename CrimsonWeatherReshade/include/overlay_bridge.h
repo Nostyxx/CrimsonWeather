@@ -2,5 +2,5 @@
 
 #include <Windows.h>
 
-bool InitializeOverlayBridge(HMODULE module);
-void ShutdownOverlayBridge();
+bool InitializeOverlayBridge(HMODULE module, HMODULE reshadeModule = nullptr);
+void ShutdownOverlayBridge(HMODULE module = nullptr, HMODULE reshadeModule = nullptr);

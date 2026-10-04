@@ -3,13 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test",
+    "test": "node --test test/*.test.mjs",
     "deploy": "npx wrangler deploy --config wrangler.local.toml",
     "deploy:dev": "npx wrangler deploy --config wrangler.local.toml --env dev",
     "migrate": "npx wrangler d1 migrations apply crimson-weather-community-presets --config wrangler.local.toml --remote",
     "migrate:dev": "npx wrangler d1 migrations apply crimson-weather-community-presets-dev --config wrangler.local.toml --env dev --remote"
   },
   "devDependencies": {
+    "esbuild": "0.27.3",
+    "miniflare": "4.20260518.0",
     "wrangler": "^4.93.0"
   }
 }

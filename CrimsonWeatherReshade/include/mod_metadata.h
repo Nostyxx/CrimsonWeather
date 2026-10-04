@@ -3,9 +3,9 @@
 #define MOD_NAME "Crimson Weather"
 #define MOD_BASE_VERSION_MAJOR 0
 #define MOD_BASE_VERSION_MINOR 8
-#define MOD_BASE_VERSION_PATCH 1
+#define MOD_BASE_VERSION_PATCH 2
 #define MOD_BASE_VERSION_BUILD 0
-#define MOD_BASE_VERSION "0.8.1"
+#define MOD_BASE_VERSION "0.8.2"
 #define MOD_ADDON_DESCRIPTION "Crimson Weather Addon"
 #define MOD_COMPANY_NAME "Nosty"
 #define MOD_INTERNAL_NAME "Crimson Weather"
