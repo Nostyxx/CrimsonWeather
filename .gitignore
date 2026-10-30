@@ -38,3 +38,8 @@ services/community/node_modules/
 services/community/.wrangler/
 services/community/dist/
 services/community/*.local.toml
+
+# Only README.md files are tracked; other docs and notes stay local
+*.md
+!README.md
+docs/

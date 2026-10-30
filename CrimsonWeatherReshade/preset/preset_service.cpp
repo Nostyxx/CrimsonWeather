@@ -49,7 +49,7 @@ constexpr const char* kNewPresetDisplayName = "[New Preset]";
 constexpr const char* kPresetConfigSection = "Preset";
 constexpr const char* kPresetConfigKeyLastPreset = "LastPreset";
 WeatherPresetData CaptureCurrentPresetData();
-void ApplyPresetData(const WeatherPresetData& data);
+void ApplyPresetData(const WeatherPresetData& data, const char* source = "runtime");
 bool SaveSelectedDraftInternal(const char* statusPrefix, const char* logVerb, bool applyAfterSave);
 
 PresetFormatOptions CurrentPresetFormatOptions() {
@@ -246,7 +246,7 @@ WeatherPresetPackage BuildEditDraftPreview() {
 void ApplyDetectedRegionFromPackage(const WeatherPresetPackage& package) {
     const int regionId = CurrentMajorRegionForPreset();
     const WeatherPresetData data = EffectivePresetDataForRegion(package, regionId);
-    ApplyPresetData(data);
+    ApplyPresetData(data, "region-detect");
     g_lastRuntimeAppliedData = data;
     g_lastRuntimeAppliedDataValid = true;
     g_lastAppliedRegion = regionId;
@@ -480,7 +480,7 @@ WeatherPresetData CaptureCurrentPresetData() {
     return data;
 }
 
-void ApplyPresetData(const WeatherPresetData& data) {
+void ApplyPresetData(const WeatherPresetData& data, const char* source) {
     const bool extendedSliderRange = g_extendedSliderRange.load();
     g_forceClear.store(data.forceClearSky);
     g_noRain.store(data.noRain);
@@ -523,6 +523,23 @@ void ApplyPresetData(const WeatherPresetData& data) {
         !FloatNearlyEqual(g_timeProgressCadenceMs.load(), nextTimeCadence);
 
     if (timeStateChanged) {
+        // Diagnostic: skip the small re-syncs to the HUD minute so blends do not flood the log.
+        if (g_timeCtrlActive.load() != nextTimeCtrlActive ||
+            prevProgressVisualTime != nextProgressVisualTime ||
+            prevProgressMatchGameTime != nextProgressMatchGameTime ||
+            fabsf(g_timeTargetHour.load() - nextTimeHour) > 0.05f) {
+            Log("[visual-time] preset apply (%s, edit region %d): override=%d progress=%d match=%d presetHour=%.4f hudMinute=%d target %.4f -> %.4f current=%.4f\n",
+                source ? source : "?",
+                g_presetEditRegion,
+                nextTimeCtrlActive ? 1 : 0,
+                nextProgressVisualTime ? 1 : 0,
+                nextProgressMatchGameTime ? 1 : 0,
+                NormalizeHour24(data.timeHour),
+                nextMatchedHudMinute,
+                g_timeTargetHour.load(),
+                nextTimeHour,
+                g_timeCurrentHour.load());
+        }
         g_timeProgressCadenceMs.store(nextTimeCadence);
         g_timeTargetHour.store(nextTimeHour);
         g_timeProgressVisualTime.store(nextProgressVisualTime);
@@ -768,7 +785,7 @@ void ScheduleEnsureInitialized() {
 }
 
 void ScheduleApplyData(const WeatherPresetData& data, int regionId) {
-    ApplyPresetData(data);
+    ApplyPresetData(data, "schedule");
     g_lastRuntimeAppliedData = data;
     g_lastRuntimeAppliedDataValid = true;
     g_lastAppliedRegion = regionId;
@@ -1601,7 +1618,7 @@ void Preset_OnWorldTick(bool worldReady, float dt) {
                 LogPresetDataSummary("transition-to-effective", regionId, EffectivePresetDataForRegion(runtimePackage, regionId));
             } else {
                 const WeatherPresetData data = EffectivePresetDataForRegion(runtimePackage, regionId);
-                ApplyPresetData(data);
+                ApplyPresetData(data, "region");
                 g_lastRuntimeAppliedData = data;
                 g_lastRuntimeAppliedDataValid = true;
                 g_lastAppliedRegion = regionId;
@@ -1620,7 +1637,7 @@ void Preset_OnWorldTick(bool worldReady, float dt) {
             const WeatherPresetData toData = EffectivePresetDataForRegion(runtimePackage, regionId);
             const float progress = 1.0f - ClampPresetFloat(remaining / kRegionTransitionDurationSeconds, 0.0f, 1.0f);
             const WeatherPresetData blended = BlendPresetData(fromData, toData, progress);
-            ApplyPresetData(blended);
+            ApplyPresetData(blended, "region-blend");
             g_lastRuntimeAppliedData = blended;
             g_lastRuntimeAppliedDataValid = true;
             const int progressBucket = min(4, max(0, static_cast<int>(progress * 4.0f)));
@@ -1634,7 +1651,7 @@ void Preset_OnWorldTick(bool worldReady, float dt) {
                 LogPresetDataSummary("transition-blended", regionId, blended);
             }
             if (remaining <= 0.01f || progress >= 0.999f) {
-                ApplyPresetData(toData);
+                ApplyPresetData(toData, "region-blend-end");
                 g_lastRuntimeAppliedData = toData;
                 g_lastAppliedRegion = regionId;
                 g_regionBlendFrom = -1;

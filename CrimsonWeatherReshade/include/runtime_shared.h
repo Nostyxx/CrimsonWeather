@@ -41,10 +41,12 @@ namespace WCO {
     constexpr ptrdiff_t SOUND_SKYWIND = 0xE0;
 }
 
+// Weather table (container slot g_weatherTableSlotOffset). Pre-DLC values;
+// SelectWeatherTableLayout() switches the ones the DLC moved.
 namespace CN {
     constexpr ptrdiff_t DUST_BASE = 0x138;
-    constexpr ptrdiff_t DUST_ADD = 0x1A4;
-    constexpr ptrdiff_t DUST_WIND_SCALE = 0x158;
+    inline ptrdiff_t DUST_ADD = 0x1A4;
+    inline ptrdiff_t DUST_WIND_SCALE = 0x158;
     constexpr ptrdiff_t FOG_A = 0x134;
     constexpr ptrdiff_t CLOUD_TOP = 0x13C;
     constexpr ptrdiff_t CLOUD_THICK = 0x140;
@@ -52,9 +54,9 @@ namespace CN {
     constexpr ptrdiff_t CLOUD_SHAPE_A = 0x148;
     constexpr ptrdiff_t CLOUD_SHAPE_B = 0x14C;
     constexpr ptrdiff_t CLOUD_SHAPE_C = 0x150;
-    constexpr ptrdiff_t DUST_THRESH = 0x198;
-    constexpr ptrdiff_t STORM_THRESH = 0x19C;
-    constexpr ptrdiff_t FOG_B = 0x1A0;
+    inline ptrdiff_t DUST_THRESH = 0x198;
+    inline ptrdiff_t STORM_THRESH = 0x19C;
+    inline ptrdiff_t FOG_B = 0x1A0;
 }
 
 namespace AC0 {
@@ -74,6 +76,16 @@ namespace AC0 {
     constexpr ptrdiff_t CHECK_MOON_DIR_Y = 0x122;
 }
 
+// The same weather table, as read by the WeatherCompose hook.
+namespace WeatherTableField {
+    constexpr ptrdiff_t WindSpeed = 0x138;
+    inline ptrdiff_t AltitudeWindRatio = 0x158;
+    inline ptrdiff_t Snow = 0x168;
+    inline ptrdiff_t Rain = 0x16C;
+    inline ptrdiff_t WindBlendContribution = 0x1A4;
+}
+
+// Atmosphere table (container slot g_atmosphereTableSlotOffset).
 namespace WN {
     constexpr ptrdiff_t DIR_X = 0x18;
     constexpr ptrdiff_t DIR_Z = 0x1C;
@@ -86,7 +98,7 @@ namespace WN {
     constexpr ptrdiff_t CLOTH_WIND_X = 0xB8;
     constexpr ptrdiff_t CLOTH_WIND_Z = 0xBC;
     constexpr ptrdiff_t CLOUD_SCROLL_X = 0xD0;
-    constexpr ptrdiff_t CLOUD_SCROLL_Z = 0xD4;
+    inline ptrdiff_t CLOUD_SCROLL_Z = 0xD4;
 }
 
 namespace TD {
@@ -125,6 +137,8 @@ typedef long long(__fastcall* GameTimeSetter_fn)(long long manager, long long ti
                                                  unsigned char silent, unsigned char context,
                                                  unsigned char notify, int stageKey);
 typedef long long(__fastcall* GameFieldInfoResolver_fn)(unsigned short* areaId);
+// DLC 1.0.0.3392: the resolver takes the area id by value in the second argument.
+typedef long long(__fastcall* GameFieldInfoResolverById_fn)(void* unused, unsigned int areaId);
 typedef void(__fastcall* NativeLightningScheduler_fn)(long long self);
 typedef uint32_t(__fastcall* PlayWeatherSoundEvent_fn)(uint32_t eventId);
 typedef int(__fastcall* AkLoadBankById_fn)(uint32_t bankId, uint32_t memoryPoolId);
@@ -159,6 +173,7 @@ inline ptrdiff_t g_sceneFrameOwnerOffset = 0;
 inline GameTimeGetter_fn g_pOrigGameTimeGetter = nullptr;
 inline GameTimeSetter_fn g_pGameTimeSetter = nullptr;
 inline GameFieldInfoResolver_fn g_pGameFieldInfoResolver = nullptr;
+inline bool g_gameFieldInfoResolverById = false;
 inline uintptr_t* g_pGameTimeManagerRootGlobal = nullptr;
 inline ptrdiff_t g_gameTimeManagerOffset = 0;
 inline uintptr_t g_addrGameClockSnapshotPrimary = 0;
@@ -182,7 +197,17 @@ inline void** g_pWeatherTickVtableSlot = nullptr;
 inline std::atomic<float> g_windMul{ 1.0f };
 inline ptrdiff_t g_envWeatherStateOffset = 0xEE0;
 inline ptrdiff_t g_weatherNodeContainerOffset = 0x60;
+// Slots in the weather node container (weatherState + g_weatherNodeContainerOffset).
+// The DLC update (1.0.0.3392) added a slot in front, moving both by 8.
+inline ptrdiff_t g_weatherTableSlotOffset = 0x18;
+inline ptrdiff_t g_atmosphereTableSlotOffset = 0x20;
+// Picks the weather/atmosphere table field offsets: false = pre-DLC, true = DLC (1.0.0.3392).
+void SelectWeatherTableLayout(bool dlcLayout);
 inline std::atomic<bool> g_timeLayoutReady{ false };
+// The env get-time (g_tdEnvGetTime) and entity set-time (g_tdEntSetTime) vtable slots are
+// unverified on the DLC build (1.0.0.3392); calling a wrong slot could crash, so the
+// time override skips them there and works through the lower/upper limit fields only.
+inline bool g_timeNativeVtableCallsEnabled = true;
 // Seasons of Pywel (Seasons.asi) is loaded; set by the AOB scan, shown on the Status tab.
 inline std::atomic<bool> g_seasonsOfPywelDetected{ false };
 inline ptrdiff_t g_tdLowerLimit = TD::LOWER_LIMIT_DEF;
@@ -199,6 +224,9 @@ inline NativeToastCreateString_fn g_pNativeToastCreateString = nullptr;
 inline NativeToastPush_fn g_pNativeToastPush = nullptr;
 inline NativeToastReleaseString_fn g_pNativeToastReleaseString = nullptr;
 inline NativeToastShowAlert_fn g_pNativeToastShowAlert = nullptr;
+// Vtable slot of the minimap UI's get-UI-root virtual, read from the game's own
+// showAlert call sites (34 pre-DLC, 35 in 1.0.0.3392).
+inline int g_nativeToastUiRootSlot = 34;
 inline void** g_pNativeToastRootGlobal = nullptr;
 inline uint32_t g_nativeToastOuterOffset = 0;
 inline ptrdiff_t g_nativeToastManagerOffset = 0;

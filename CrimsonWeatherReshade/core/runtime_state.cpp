@@ -316,11 +316,11 @@ bool NativeToastReady() {
 static void* ResolveToastUiRootNoThrow(void* minimapUi) {
     __try {
         void** vtable = *reinterpret_cast<void***>(minimapUi);
-        if (!vtable || !vtable[34]) {
+        if (!vtable || !vtable[g_nativeToastUiRootSlot]) {
             return nullptr;
         }
         using GetUiRoot_fn = void*(__fastcall*)(void*);
-        return reinterpret_cast<GetUiRoot_fn>(vtable[34])(minimapUi);
+        return reinterpret_cast<GetUiRoot_fn>(vtable[g_nativeToastUiRootSlot])(minimapUi);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return nullptr;
     }

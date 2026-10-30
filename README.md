@@ -189,6 +189,8 @@ Compiler output:
 - `CrimsonWeatherReshade/x64/Release/CrimsonWeather.WindOnly.addon64`
 - `CrimsonWeatherReshade/x64/Release/CrimsonWeather.DEV.addon64`
 
+Community backend: see the [community backend README](services/community-presets/README.md).
+
 ## Download
 
 - Nexus Mods: https://www.nexusmods.com/crimsondesert/mods/632

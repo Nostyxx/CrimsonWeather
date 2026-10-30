@@ -65,12 +65,12 @@ ResolvedEnv ResolveEnv() {
         }
 
         long long cont = *reinterpret_cast<long long*>(r.weatherState + g_weatherNodeContainerOffset);
-        if (!cont || !IsReadablePointer(static_cast<uintptr_t>(cont), 0x28)) {
+        if (!cont || !IsReadablePointer(static_cast<uintptr_t>(cont), g_atmosphereTableSlotOffset + sizeof(long long))) {
             return r;
         }
 
-        r.cloudNode = *reinterpret_cast<long long*>(cont + 0x18);
-        r.windNode = *reinterpret_cast<long long*>(cont + 0x20);
+        r.cloudNode = *reinterpret_cast<long long*>(cont + g_weatherTableSlotOffset);
+        r.windNode = *reinterpret_cast<long long*>(cont + g_atmosphereTableSlotOffset);
         if (r.cloudNode && !IsReadablePointer(static_cast<uintptr_t>(r.cloudNode), 0x100)) {
             r.cloudNode = 0;
         }
@@ -142,7 +142,7 @@ bool ResolveTimeContext(void*& outEnvMgr, long long& outEntity) {
 }
 
 bool TryReadCurrentTimeRaw(void* envMgr, float& outRaw) {
-    if (!envMgr) {
+    if (!envMgr || !g_timeNativeVtableCallsEnabled) {
         return false;
     }
 
@@ -161,7 +161,7 @@ bool TryReadCurrentTimeRaw(void* envMgr, float& outRaw) {
 }
 
 bool TrySetTimeRaw(long long entity, float raw) {
-    if (!entity || !std::isfinite(raw)) {
+    if (!entity || !std::isfinite(raw) || !g_timeNativeVtableCallsEnabled) {
         return false;
     }
 
@@ -282,6 +282,22 @@ void TickTimeControl() {
 
     CaptureTimeLimitBaseline(entity);
 
+    // Diagnostic: the game replaces this entity when a world is loaded.
+    static long long s_lastTimeEntity = 0;
+    if (entity != s_lastTimeEntity) {
+        Log("[visual-time] time entity %p -> %p active=%d freeze=%d freezeApplied=%d progress=%d match=%d target=%.4f lastHudMinute=%d\n",
+            reinterpret_cast<void*>(s_lastTimeEntity),
+            reinterpret_cast<void*>(entity),
+            g_timeCtrlActive.load() ? 1 : 0,
+            g_timeFreeze.load() ? 1 : 0,
+            g_timeFreezeApplied.load() ? 1 : 0,
+            g_timeProgressVisualTime.load() ? 1 : 0,
+            g_timeProgressMatchGameTime.load() ? 1 : 0,
+            g_timeTargetHour.load(),
+            g_timeProgressMatchLastMinute.load());
+        s_lastTimeEntity = entity;
+    }
+
     float currentHour = NAN;
     if (TryReadCurrentHourFromEntity(entity, currentHour)) {
         g_timeCurrentHour.store(currentHour);
@@ -336,6 +352,8 @@ void TickTimeControl() {
             } else {
                 const int lastHudMinute = g_timeProgressMatchLastMinute.load();
                 if (lastHudMinute < 0 || lastHudMinute >= kDayMinutes) {
+                    Log("[visual-time] match clock: first sync, target %.4f -> hud %02d:%02d\n",
+                        targetHour, hudMinute / 60, hudMinute % 60);
                     targetHour = NormalizeHour24(static_cast<float>(hudMinute) / 60.0f);
                     g_timeTargetHour.store(targetHour);
                     g_timeProgressMatchLastMinute.store(hudMinute);
@@ -359,15 +377,20 @@ void TickTimeControl() {
                         } else if (totalPendingMs > maxPendingMs) {
                             g_timeProgressMatchPendingMs.store(maxPendingMs);
                         }
-                    } else if (deltaMinutes > 1 && deltaMinutes <= kMaxMatchedForwardMinutes) {
-                        const int pendingMs = g_timeProgressMatchPendingMs.exchange(0);
-                        const float pendingMinutes = max(0, pendingMs) / static_cast<float>(kProgressMinuteMs);
-                        targetHour = NormalizeHour24(targetHour + (static_cast<float>(deltaMinutes) + pendingMinutes) / 60.0f);
+                    } else {
+                        // Any jump (sleep, wait, a loaded save, or a placeholder reading
+                        // during loading that is followed by the real clock) snaps the
+                        // visual time to the HUD clock. Ignoring jumps or adding the
+                        // delta to the old target left the sky at the wrong time
+                        // (often midnight) after a load.
+                        Log("[visual-time] match clock: hud %02d:%02d -> %02d:%02d (forward delta %d min), target %.4f -> hud\n",
+                            lastHudMinute / 60, lastHudMinute % 60, hudMinute / 60, hudMinute % 60,
+                            deltaMinutes, targetHour);
+                        targetHour = NormalizeHour24(static_cast<float>(hudMinute) / 60.0f);
                         g_timeTargetHour.store(targetHour);
+                        g_timeProgressMatchPendingMs.store(0);
                         g_timeProgressLastTick.store(now);
                         g_timeApplyRequest.store(true);
-                    } else {
-                        g_timeProgressMatchPendingMs.store(0);
                     }
                 }
             }

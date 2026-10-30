@@ -292,13 +292,14 @@ static bool LooksLikeWeatherCompose(uintptr_t address) {
     for (size_t i = 0; i + 4 < sizeof(code); ++i) {
         bool parentLoad = false;
         size_t loadLength = 0;
+        // The weather state is in rdi (pre-DLC) or rsi (DLC 1.0.0.3392).
         if (g_weatherNodeContainerOffset >= INT8_MIN && g_weatherNodeContainerOffset <= INT8_MAX &&
-            code[i] == 0x48 && code[i + 1] == 0x8B && code[i + 2] == 0x47 &&
+            code[i] == 0x48 && code[i + 1] == 0x8B && (code[i + 2] == 0x47 || code[i + 2] == 0x46) &&
             static_cast<int8_t>(code[i + 3]) == g_weatherNodeContainerOffset) {
             parentLoad = true;
             loadLength = 4;
         } else if (i + 7 <= sizeof(code) &&
-                   code[i] == 0x48 && code[i + 1] == 0x8B && code[i + 2] == 0x87 &&
+                   code[i] == 0x48 && code[i + 1] == 0x8B && (code[i + 2] == 0x87 || code[i + 2] == 0x86) &&
                    *reinterpret_cast<const int32_t*>(code + i + 3) == g_weatherNodeContainerOffset) {
             parentLoad = true;
             loadLength = 7;
@@ -375,11 +376,18 @@ static void WaitForSeasonsOfPywelHook(uintptr_t function) {
 static bool LooksLikeWeatherComposeCaller(uintptr_t caller, uintptr_t compositor) {
     uint8_t code[0x80] = {};
     if (!ReadBytesSafe(caller, code, sizeof(code))) return false;
-    const bool originalStart = code[0] == 0x48 && code[1] == 0x89 && code[2] == 0x5C && code[3] == 0x24;
+    // Pre-DLC: mov [rsp+10h],rbx; push rbp; push rsi; push rdi
+    // DLC 1.0.0.3392: mov rax,rsp; push rbx; push rbp; push rsi; push rdi
+    const bool oldTail = code[5] == 0x55 && code[6] == 0x56 && code[7] == 0x57;
+    const bool dlcTail = code[5] == 0x56 && code[6] == 0x57;
+    const bool oldStart = code[0] == 0x48 && code[1] == 0x89 && code[2] == 0x5C && code[3] == 0x24 && oldTail;
+    const bool dlcStart = code[0] == 0x48 && code[1] == 0x8B && code[2] == 0xC4 && code[3] == 0x53 &&
+        code[4] == 0x55 && dlcTail;
+    const bool originalStart = oldStart || dlcStart;
     // Bytes 0-4 hold Seasons' jump when it hooked first; the rest is the game's.
-    const bool seasonsHookStart = !originalStart && g_seasonsOfPywelDetected.load() && IsSeasonsOfPywelHook(caller);
-    if ((!originalStart && !seasonsHookStart) ||
-        code[5] != 0x55 || code[6] != 0x56 || code[7] != 0x57) {
+    const bool seasonsHookStart = !originalStart && (oldTail || dlcTail) &&
+        g_seasonsOfPywelDetected.load() && IsSeasonsOfPywelHook(caller);
+    if (!originalStart && !seasonsHookStart) {
         return false;
     }
 
@@ -390,7 +398,7 @@ static bool LooksLikeWeatherComposeCaller(uintptr_t caller, uintptr_t compositor
             if (code[j] == 0x48 && code[j + 1] == 0x8B && code[j + 2] == 0x46 &&
                 static_cast<int8_t>(code[j + 3]) == g_weatherNodeContainerOffset &&
                 code[j + 4] == 0x48 && code[j + 5] == 0x8D &&
-                code[j + 6] == 0x48 && code[j + 7] == 0x18) {
+                code[j + 6] == 0x48 && code[j + 7] == g_weatherTableSlotOffset) {
                 return true;
             }
         }
@@ -400,10 +408,17 @@ static bool LooksLikeWeatherComposeCaller(uintptr_t caller, uintptr_t compositor
 
 static uintptr_t ResolveWeatherCompose() {
     size_t matches = 0;
-    const uintptr_t address = ScanModuleUnique(
+    uintptr_t address = ScanModuleUnique(
         "48 8B C4 C5 FA 11 48 10 48 89 48 08 55 53 56 57 "
         "41 54 41 55 41 56 41 57 48 8D 6C 24 88 48 81 EC",
         matches);
+    if (!address) {
+        // DLC 1.0.0.3392: larger frame, lea rbp,[rax-disp32].
+        address = ScanModuleUnique(
+            "48 8B C4 C5 FA 11 48 10 48 89 48 08 55 53 56 57 "
+            "41 54 41 55 41 56 41 57 48 8D A8 ?? FF FF FF 48 81 EC",
+            matches);
+    }
     if (!address) {
         Log("[W] WeatherCompose signature expected one match, found %zu\n", matches);
         return 0;
@@ -618,14 +633,33 @@ static uintptr_t ResolveNativeLightningScheduler(uintptr_t tick, uintptr_t rain,
 }
 
 static void ResolveWeatherStateLayout(uintptr_t tick, uintptr_t rain) {
-    uint8_t getter[8] = {};
+    uint8_t getter[0x30] = {};
+    bool dlcLayout = false;
     if (ReadBytesSafe(rain, getter, sizeof(getter))) {
         if (getter[0] == 0x48 && getter[1] == 0x8B && getter[2] == 0x51) {
             g_weatherNodeContainerOffset = getter[3];
         } else if (getter[0] == 0x48 && getter[1] == 0x8B && getter[2] == 0x91) {
             g_weatherNodeContainerOffset = *reinterpret_cast<int32_t*>(getter + 3);
         }
+        // The getter loads the weather table from its container slot:
+        // mov rdx,[rcx+cont]; mov r10,rcx; test rdx,rdx; mov ecx,imm; lea rax,[rdx+slot]
+        if (getter[2] == 0x51 && getter[15] == 0x48 && getter[16] == 0x8D && getter[17] == 0x42) {
+            dlcLayout = getter[18] == 0x20;
+        }
     }
+    SelectWeatherTableLayout(dlcLayout);
+    for (size_t i = 0; i + 7 <= sizeof(getter); ++i) {
+        if (getter[i] != 0x4D || getter[i + 1] != 0x8D || getter[i + 2] != 0x81) continue;
+        const int32_t rainField = *reinterpret_cast<const int32_t*>(getter + i + 3);
+        if (rainField != WeatherTableField::Rain) {
+            Log("[W] weather table layout: rain getter reads +0x%X, expected +0x%X\n",
+                (unsigned)rainField, (unsigned)WeatherTableField::Rain);
+        }
+        break;
+    }
+    Log("[AOB] weather table layout: %s (table slot 0x%X, atmosphere slot 0x%X)\n",
+        dlcLayout ? "DLC 1.0.0.3392" : "pre-DLC",
+        (unsigned)g_weatherTableSlotOffset, (unsigned)g_atmosphereTableSlotOffset);
 
     for (uintptr_t a = tick; a + 5 < tick + 0x800; ++a) {
         if (*reinterpret_cast<uint8_t*>(a) != 0xE8 || ReadCall(a) != rain) continue;
@@ -1431,8 +1465,27 @@ static bool ResolveNativeToastBridgeAOB() {
         "0F 84 ?? ?? ?? ?? 4C 8B 80 A0 00 00 00"
     );
     if (showAlert) {
+        // Callers get the UI root with `call [rax+slot*8]; mov r8d,ebx; mov rdx,rdi;
+        // mov rcx,rax; call showAlert`. The slot moved from 34 to 35 in the DLC
+        // update (1.0.0.3392), so read it from those call sites.
+        uintptr_t callsites[64] = {};
+        const size_t callsiteCount = FindCallsitesTo(showAlert, callsites, std::size(callsites));
+        int slot = 0;
+        for (size_t i = 0; i < callsiteCount && !slot; ++i) {
+            uint8_t code[15] = {};
+            if (callsites[i] < sizeof(code) || !ReadBytesSafe(callsites[i] - sizeof(code), code, sizeof(code))) continue;
+            static constexpr uint8_t kTail[] = { 0x44, 0x8B, 0xC3, 0x48, 0x8B, 0xD7, 0x48, 0x8B, 0xC8 };
+            if (code[0] != 0xFF || code[1] != 0x90 || memcmp(code + 6, kTail, sizeof(kTail)) != 0) continue;
+            const int32_t disp = *reinterpret_cast<const int32_t*>(code + 2);
+            if (disp > 0 && disp < 0x400 && (disp % 8) == 0) slot = disp / 8;
+        }
+        if (!slot) {
+            Log("[W] NativeToast UI root slot not found (%zu call sites); toast disabled\n", callsiteCount);
+            return false;
+        }
+        g_nativeToastUiRootSlot = slot;
         g_pNativeToastShowAlert = reinterpret_cast<NativeToastShowAlert_fn>(showAlert);
-        CW_AOB_VERBOSE_LOG("[AOB] NativeToast AlertSystem entry=%p\n", (void*)showAlert);
+        CW_AOB_VERBOSE_LOG("[AOB] NativeToast AlertSystem entry=%p uiRootSlot=%d\n", (void*)showAlert, slot);
         return true;
     }
 
@@ -1632,6 +1685,23 @@ static bool DiscoverTimeLayoutAOB() {
             "C5 FB 5A C8 C5 FA 11 8B B8 03 00 00"
         );
     }
+    // DLC 1.0.0.3392: same handlers, the visual-time floats moved up by 8.
+    if (!lowSite) {
+        lowSite = ScanModule(
+            "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? "
+            "48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 60 "
+            "48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? "
+            "C5 FB 5A C8 C5 FA 11 8B BC 03 00 00"
+        );
+    }
+    if (!uppSite) {
+        uppSite = ScanModule(
+            "40 57 48 83 EC 20 83 7A 08 02 48 8B FA 72 ?? "
+            "48 8B 09 48 89 5C 24 30 48 8B 01 FF 50 60 "
+            "48 8B 0F 48 8B D8 48 8B 49 08 FF 15 ?? ?? ?? ?? "
+            "C5 FB 5A C8 C5 FA 11 8B C0 03 00 00"
+        );
+    }
     if (!lowSite || !uppSite) {
         Log("[W] TimeAOB: lower/upper limit stores not found\n");
         ok = false;
@@ -1644,6 +1714,10 @@ static bool DiscoverTimeLayoutAOB() {
         }
         g_tdLowerLimit = static_cast<ptrdiff_t>(lowOff);
         g_tdUpperLimit = static_cast<ptrdiff_t>(uppOff);
+        g_timeNativeVtableCallsEnabled = lowOff != 0x3BC;
+        if (!g_timeNativeVtableCallsEnabled) {
+            Log("[AOB] TimeAOB: DLC layout; native time get/set vtable calls disabled (unverified slots)\n");
+        }
         // Current fields are adjacent in current family.
         g_tdCurrentA = g_tdLowerLimit - 0x4;
         g_tdCurrentB = g_tdLowerLimit - 0x8;
@@ -1863,13 +1937,20 @@ static bool LooksLikeEffectiveWindTarget(uintptr_t address) {
         }
         return false;
     };
-    static constexpr uint8_t kWindSpeed[] = { 0x49, 0x8D, 0x80, 0x38, 0x01, 0x00, 0x00 };
-    static constexpr uint8_t kAltitudeWindRatio[] = { 0x49, 0x8D, 0x80, 0x58, 0x01, 0x00, 0x00 };
-    static constexpr uint8_t kWindBlendContribution[] = { 0x49, 0x8D, 0x90, 0xA4, 0x01, 0x00, 0x00 };
+    // lea rax/rdx,[r8+field] for the fields of the running build's weather table layout.
+    const auto lea = [](uint8_t reg, ptrdiff_t field) {
+        std::array<uint8_t, 7> b = { 0x49, 0x8D, reg, 0, 0, 0, 0 };
+        const int32_t disp = static_cast<int32_t>(field);
+        memcpy(b.data() + 3, &disp, sizeof(disp));
+        return b;
+    };
+    const auto kWindSpeed = lea(0x80, WeatherTableField::WindSpeed);
+    const auto kAltitudeWindRatio = lea(0x80, WeatherTableField::AltitudeWindRatio);
+    const auto kWindBlendContribution = lea(0x90, WeatherTableField::WindBlendContribution);
     static constexpr uint8_t kWeatherMode[] = { 0x80, 0x79, 0x31, 0x00 };
-    return contains(kWindSpeed, sizeof(kWindSpeed)) &&
-        contains(kAltitudeWindRatio, sizeof(kAltitudeWindRatio)) &&
-        contains(kWindBlendContribution, sizeof(kWindBlendContribution)) &&
+    return contains(kWindSpeed.data(), kWindSpeed.size()) &&
+        contains(kAltitudeWindRatio.data(), kAltitudeWindRatio.size()) &&
+        contains(kWindBlendContribution.data(), kWindBlendContribution.size()) &&
         contains(kWeatherMode, sizeof(kWeatherMode));
 }
 
@@ -1878,6 +1959,13 @@ static uintptr_t ResolveEffectiveWindTarget(uintptr_t weatherTick) {
     uintptr_t target = ScanModuleUnique(
         "48 8B 41 60 41 B8 40 00 00 00 48 85 C0 41 B9 60 01 00 00 "
         "48 8D 50 18 B8 CC 01 00 00 49 0F 44 D0",
+        matches);
+    if (target && LooksLikeEffectiveWindTarget(target)) return target;
+
+    // DLC 1.0.0.3392: weather table slot +0x20, wind blend contribution at +0x1AC.
+    target = ScanModuleUnique(
+        "48 8B 41 60 41 B8 48 00 00 00 48 85 C0 41 B9 60 01 00 00 "
+        "48 8D 50 20 B8 D4 01 00 00 49 0F 44 D0",
         matches);
     if (target && LooksLikeEffectiveWindTarget(target)) return target;
 
@@ -1915,13 +2003,21 @@ static bool LooksLikeDustIntensityTarget(uintptr_t address) {
         }
         return false;
     };
+    // lea rax/rcx,[rdx+field] for the running build's weather table layout
+    // (the two tail fields moved by 8 in the DLC update).
+    const auto lea = [](uint8_t reg, ptrdiff_t field) {
+        std::array<uint8_t, 7> b = { 0x48, 0x8D, reg, 0, 0, 0, 0 };
+        const int32_t disp = static_cast<int32_t>(field);
+        memcpy(b.data() + 3, &disp, sizeof(disp));
+        return b;
+    };
     static constexpr uint8_t kWeatherState[] = { 0x4C, 0x8B, 0x43, 0x60 };
-    static constexpr uint8_t kCascadeAmplitude1[] = { 0x48, 0x8D, 0x82, 0xA0, 0x01, 0x00, 0x00 };
-    static constexpr uint8_t kCascadeSize4[] = { 0x48, 0x8D, 0x8A, 0x9C, 0x01, 0x00, 0x00 };
+    const auto kCascadeAmplitude1 = lea(0x82, CN::FOG_B);
+    const auto kCascadeSize4 = lea(0x8A, CN::STORM_THRESH);
     static constexpr uint8_t kPuddleRate[] = { 0x48, 0x8D, 0x82, 0x3C, 0x01, 0x00, 0x00 };
     return contains(kWeatherState, sizeof(kWeatherState)) &&
-        contains(kCascadeAmplitude1, sizeof(kCascadeAmplitude1)) &&
-        contains(kCascadeSize4, sizeof(kCascadeSize4)) &&
+        contains(kCascadeAmplitude1.data(), kCascadeAmplitude1.size()) &&
+        contains(kCascadeSize4.data(), kCascadeSize4.size()) &&
         contains(kPuddleRate, sizeof(kPuddleRate));
 }
 
@@ -1931,6 +2027,13 @@ static uintptr_t ResolveDustIntensityTarget(uintptr_t weatherTick) {
         "53 48 83 EC 30 48 8B D9 48 8B 89 E8 00 00 00 "
         "C5 F8 29 74 24 20 48 8B 01 FF 90 00 01 00 00 4C 8B 43 60",
         matches);
+    if (!target) {
+        // DLC 1.0.0.3392: the environment pointer moved from +0xE8 to +0x100.
+        target = ScanModuleUnique(
+            "53 48 83 EC 30 48 8B D9 48 8B 89 00 01 00 00 "
+            "C5 F8 29 74 24 20 48 8B 01 FF 90 00 01 00 00 4C 8B 43 60",
+            matches);
+    }
     if (target && !LooksLikeDustIntensityTarget(target)) {
         target = 0;
     }
@@ -1972,7 +2075,15 @@ bool RunAOBScan(){
     if (!windOnlyWeatherTick) {
         windOnlyWeatherTick = ScanModule("48 8B C4 53 48 81 EC B0 00 00 00 80 3D");
     }
-    const uintptr_t windOnlyAddrGetDust = ResolveEffectiveWindTarget(windOnlyWeatherTick);
+    // Wind Only never scans the rain getter, so pick the table layout here:
+    // pre-DLC first, then the DLC (1.0.0.3392) layout.
+    SelectWeatherTableLayout(false);
+    uintptr_t windOnlyAddrGetDust = ResolveEffectiveWindTarget(windOnlyWeatherTick);
+    if (!windOnlyAddrGetDust) {
+        SelectWeatherTableLayout(true);
+        windOnlyAddrGetDust = ResolveEffectiveWindTarget(windOnlyWeatherTick);
+        if (windOnlyAddrGetDust) Log("[AOB] weather table layout: DLC 1.0.0.3392\n");
+    }
     if (!windOnlyAddrGetDust) {
         Log("[E] AOB: GetDustIntensity not found\n");
         return false;
@@ -2020,6 +2131,16 @@ bool RunAOBScan(){
     }
     if(!rain){
         rain=ScanModule("48 8B 51 50 4C 8B D1");
+    }
+    if(!rain){
+        // DLC 1.0.0.3392: the weather table sits one container slot later (+0x20)
+        // and rain moved to +0x170. The snow getter next to it has the same shape
+        // with +0x16C, so the field offset stays in the signature.
+        rain=ScanModule(
+            "48 8B 51 60 4C 8B D1 48 85 D2 B9 48 00 00 00 "
+            "48 8D 42 20 48 0F 44 C1 41 80 7A 31 00 4C 8B 08 "
+            "4D 8D 81 70 01 00 00"
+        );
     }
     if(!rain){Log("[E] AOB: GetRainIntensity not found\n");return false;}
     CW_AOB_VERBOSE_LOG("[AOB] GetRainIntensity = %p\n",(void*)rain);
@@ -2379,6 +2500,14 @@ bool RunAOBScan(){
             "41 0F B7 F8 0F B7 DA 4C 8B F9 41 BE FF FF 00 00"
         );
     }
+    if (!addrMinimapRegionLabels) {
+        // DLC 1.0.0.3392: the ids are no longer spilled to the home area.
+        addrMinimapRegionLabels = ScanModule(
+            "48 89 5C 24 08 48 89 74 24 18 55 57 41 54 41 56 41 57 "
+            "48 8D AC 24 80 FD FF FF 48 81 EC 80 03 00 00 "
+            "41 0F B7 F8 0F B7 DA 4C 8B F9 44 8B E3 41 BE FF FF 00 00"
+        );
+    }
     uintptr_t addrMinimapGameTimeUpdate = ScanModule(
         "48 89 5C 24 ?? 48 89 4C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 "
         "48 8D AC 24 ?? ?? FF FF 48 81 EC ?? 03 00 00 4C 8B F9 "
@@ -2392,6 +2521,15 @@ bool RunAOBScan(){
             "48 8D AC 24 ?? ?? FF FF 48 81 EC ?? 03 00 00 "
             "48 83 B9 C0 03 00 00 00 0F 84 ?? ?? 00 00 "
             "C5 FA 10 99 ?? 05 00 00 48 8B 42 18 44 8B 40 04"
+        );
+    }
+    if (!addrMinimapGameTimeUpdate) {
+        // DLC 1.0.0.3392: the UI fields moved by 0x20 and the hour lands in ecx.
+        addrMinimapGameTimeUpdate = ScanModule(
+            "48 89 5C 24 ?? 48 89 4C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 "
+            "48 8D AC 24 ?? ?? FF FF 48 81 EC ?? 03 00 00 "
+            "48 83 B9 E0 03 00 00 00 0F 84 ?? ?? 00 00 "
+            "4C 8D 81 ?? 05 00 00 C4 C1 7A 10 18 48 8B 42 18 8B 48 04"
         );
     }
     uintptr_t addrGameTimeGetter = 0;
@@ -2412,6 +2550,14 @@ bool RunAOBScan(){
             "48 89 5C 24 10 57 48 83 EC 60 48 8B 01 48 8B FA "
             "48 8D 54 24 70 48 8B D9 FF 50 58 B8 FF FF 00 00"
         );
+    }
+    if (!addrGameTimeGetter) {
+        // DLC 1.0.0.3392: the area id goes to the field-info resolver by value (edx).
+        addrGameTimeGetter = ScanModule(
+            "48 89 5C 24 10 57 48 83 EC 60 48 8B 01 48 8B FA "
+            "48 8D 54 24 70 48 8B D9 FF 50 60 0F B7 54 24 70 81 FA FF FF 00 00"
+        );
+        g_gameFieldInfoResolverById = addrGameTimeGetter != 0;
     }
     if (addrGameTimeGetter) {
         addrGameFieldInfoResolver = ReadFirstDirectCallInRange(addrGameTimeGetter, 0x20, 0x50);

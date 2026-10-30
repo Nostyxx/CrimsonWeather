@@ -41,6 +41,17 @@ static bool CaptureMinimapGameTime(long long eventContext) {
     }
 
     const int hour24 = hour % 24;
+    // Diagnostic: the first reading, and every reading that is not the same or the next minute.
+    const int previousClockMinute = g_timeUiClockValid.load()
+        ? g_timeUiClockHour24.load() * 60 + g_timeUiClockMinute.load()
+        : -1;
+    const int clockMinute = hour24 * 60 + minute;
+    if (previousClockMinute < 0) {
+        Log("[visual-time] hud clock first reading %02d:%02d (raw hour=%d)\n", hour24, minute, hour);
+    } else if (clockMinute != previousClockMinute && clockMinute != (previousClockMinute + 1) % (24 * 60)) {
+        Log("[visual-time] hud clock jump %02d:%02d -> %02d:%02d (raw hour=%d)\n",
+            previousClockMinute / 60, previousClockMinute % 60, hour24, minute, hour);
+    }
     const float gameHour = static_cast<float>(hour24) + static_cast<float>(minute) / 60.0f;
     g_timeUiClockHour24.store(hour24);
     g_timeUiClockMinute.store(minute);
@@ -120,12 +131,12 @@ static ResolvedEnv ResolveTickEnvCurrentBuild() {
         }
 
         long long result = *reinterpret_cast<long long*>(r.weatherState + g_weatherNodeContainerOffset);
-        if (!result || !IsReadableTickPtr(static_cast<uintptr_t>(result), 0x28)) {
+        if (!result || !IsReadableTickPtr(static_cast<uintptr_t>(result), g_atmosphereTableSlotOffset + sizeof(long long))) {
             return r;
         }
 
-        r.cloudNode = *reinterpret_cast<long long*>(result + 0x18);
-        r.windNode = *reinterpret_cast<long long*>(result + 0x20);
+        r.cloudNode = *reinterpret_cast<long long*>(result + g_weatherTableSlotOffset);
+        r.windNode = *reinterpret_cast<long long*>(result + g_atmosphereTableSlotOffset);
         if (r.cloudNode && !IsReadableTickPtr(static_cast<uintptr_t>(r.cloudNode), CN::DUST_ADD + sizeof(float))) {
             r.cloudNode = 0;
         }
@@ -365,14 +376,8 @@ static void UpdateRegionState(const ResolvedEnv& env, float dt) {
     g_regionStateValid.store(true);
 }
 
-namespace WeatherTableField {
-    constexpr ptrdiff_t WindSpeed = 0x138;
-    constexpr ptrdiff_t AltitudeWindRatio = 0x158;
-    constexpr ptrdiff_t Snow = 0x168;
-    constexpr ptrdiff_t Rain = 0x16C;
-    constexpr ptrdiff_t WindBlendContribution = 0x1A4;
-}
-
+// Pre-DLC offsets. Fields marked `inline` moved in the DLC update (1.0.0.3392);
+// SelectWeatherTableLayout() sets them for the running build.
 namespace AtmosphereTableField {
     constexpr ptrdiff_t SunLightIntensity = 0x18;
     constexpr ptrdiff_t MoonLightIntensity = 0x20;
@@ -391,21 +396,61 @@ namespace AtmosphereTableField {
     constexpr ptrdiff_t NativeFogSecondary = 0x9C;
     constexpr ptrdiff_t HeightFogBaseline = 0xA0;
     constexpr ptrdiff_t HeightFogFalloff = 0xA4;
-    constexpr ptrdiff_t CloudAmount = 0xA8;
-    constexpr ptrdiff_t CloudAlpha = 0xB0;
-    constexpr ptrdiff_t CloudFlow = 0xB4;
-    constexpr ptrdiff_t CloudHeight = 0xB8;
-    constexpr ptrdiff_t CloudShape = 0xBC;
-    constexpr ptrdiff_t CloudVisibleRange = 0xC0;
-    constexpr ptrdiff_t CloudFadeRange = 0xC4;
-    constexpr ptrdiff_t CloudDetailRatio = 0xC8;
-    constexpr ptrdiff_t CloudBaseDensity = 0xD0;
-    constexpr ptrdiff_t CloudBaseContrast = 0xD4;
-    constexpr ptrdiff_t HighCloudAmount = 0xD8;
-    constexpr ptrdiff_t MidCloudAmount = 0xDC;
-    constexpr ptrdiff_t CloudVariation = 0xE4;
-    constexpr ptrdiff_t VolumeFogScatterColor = 0xEC;
-    constexpr ptrdiff_t MieScatterColor = 0xF0;
+    // The DLC inserted _heightFogNoiseRange at 0xA8; everything from here on moved by 4.
+    inline ptrdiff_t CloudAmount = 0xA8;
+    inline ptrdiff_t CloudAlpha = 0xB0;
+    inline ptrdiff_t CloudFlow = 0xB4;
+    inline ptrdiff_t CloudHeight = 0xB8;
+    inline ptrdiff_t CloudShape = 0xBC;
+    inline ptrdiff_t CloudVisibleRange = 0xC0;
+    inline ptrdiff_t CloudFadeRange = 0xC4;
+    inline ptrdiff_t CloudDetailRatio = 0xC8;
+    inline ptrdiff_t CloudBaseDensity = 0xD0;
+    inline ptrdiff_t CloudBaseContrast = 0xD4;
+    inline ptrdiff_t HighCloudAmount = 0xD8;
+    inline ptrdiff_t MidCloudAmount = 0xDC;
+    inline ptrdiff_t CloudVariation = 0xE4;
+    inline ptrdiff_t VolumeFogScatterColor = 0xEC;
+    inline ptrdiff_t MieScatterColor = 0xF0;
+}
+
+// Offsets mapped from the game's reflected field setters (names like _altitudeWindRatio)
+// in 1.0.0.2976 and 1.0.0.3392. The weather table gained _oceanWindDegree, the
+// atmosphere table _heightFogNoiseRange, and the container a slot in front of both.
+void SelectWeatherTableLayout(bool dlcLayout) {
+    const ptrdiff_t weatherShift = dlcLayout ? 4 : 0;
+    const ptrdiff_t weatherTailShift = dlcLayout ? 8 : 0;
+    const ptrdiff_t cloudShift = dlcLayout ? 4 : 0;
+
+    g_weatherTableSlotOffset = dlcLayout ? 0x20 : 0x18;
+    g_atmosphereTableSlotOffset = dlcLayout ? 0x28 : 0x20;
+
+    WeatherTableField::AltitudeWindRatio = 0x158 + weatherShift;
+    WeatherTableField::Snow = 0x168 + weatherShift;
+    WeatherTableField::Rain = 0x16C + weatherShift;
+    WeatherTableField::WindBlendContribution = 0x1A4 + weatherTailShift;
+    CN::DUST_WIND_SCALE = 0x158 + weatherShift;
+    CN::DUST_THRESH = 0x198 + weatherTailShift;
+    CN::STORM_THRESH = 0x19C + weatherTailShift;
+    CN::FOG_B = 0x1A0 + weatherTailShift;
+    CN::DUST_ADD = 0x1A4 + weatherTailShift;
+
+    AtmosphereTableField::CloudAmount = 0xA8 + cloudShift;
+    AtmosphereTableField::CloudAlpha = 0xB0 + cloudShift;
+    AtmosphereTableField::CloudFlow = 0xB4 + cloudShift;
+    AtmosphereTableField::CloudHeight = 0xB8 + cloudShift;
+    AtmosphereTableField::CloudShape = 0xBC + cloudShift;
+    AtmosphereTableField::CloudVisibleRange = 0xC0 + cloudShift;
+    AtmosphereTableField::CloudFadeRange = 0xC4 + cloudShift;
+    AtmosphereTableField::CloudDetailRatio = 0xC8 + cloudShift;
+    AtmosphereTableField::CloudBaseDensity = 0xD0 + cloudShift;
+    AtmosphereTableField::CloudBaseContrast = 0xD4 + cloudShift;
+    AtmosphereTableField::HighCloudAmount = 0xD8 + cloudShift;
+    AtmosphereTableField::MidCloudAmount = 0xDC + cloudShift;
+    AtmosphereTableField::CloudVariation = 0xE4 + cloudShift;
+    AtmosphereTableField::VolumeFogScatterColor = 0xEC + cloudShift;
+    AtmosphereTableField::MieScatterColor = 0xF0 + cloudShift;
+    WN::CLOUD_SCROLL_Z = 0xD4 + cloudShift;
 }
 
 enum class RainTableMode : int {
@@ -529,9 +574,9 @@ static bool ResolveComposedWeatherFields(long long weatherState, ComposedWeather
     __try {
         out.parent = *reinterpret_cast<uintptr_t*>(weatherState + g_weatherNodeContainerOffset);
         if (!out.parent) return false;
-        out.child1 = *reinterpret_cast<uintptr_t*>(out.parent + 0x18);
+        out.child1 = *reinterpret_cast<uintptr_t*>(out.parent + g_weatherTableSlotOffset);
         if (!out.child1) return false;
-        out.atmosphereSlot = out.parent + 0x20;
+        out.atmosphereSlot = out.parent + g_atmosphereTableSlotOffset;
         out.atmosphereNode = *reinterpret_cast<uintptr_t*>(out.atmosphereSlot);
         out.windSpeed = reinterpret_cast<float*>(out.child1 + WeatherTableField::WindSpeed);
         out.altitudeWindRatio = reinterpret_cast<float*>(out.child1 + WeatherTableField::AltitudeWindRatio);
@@ -747,6 +792,27 @@ static float AtmosphereColorChannel(unsigned int color, unsigned int shift) {
     return static_cast<float>((color >> shift) & 0xFFu) / 255.0f;
 }
 
+// Diagnostic for the DLC port: one line per distinct written value (rounded), so a
+// slider drag shows which table field it writes without flooding the log.
+static void LogAtmosphereWriteOnChange(const char* name, ptrdiff_t offset, float native, float written) {
+    struct Last { const char* name; int value; };
+    static Last last[8] = {};
+    const int rounded = static_cast<int>(lroundf(written * 100.0f));
+    for (Last& entry : last) {
+        if (entry.name == name) {
+            if (entry.value == rounded) return;
+            entry.value = rounded;
+            Log("[atmosphere-write] %s +0x%X native=%.3f written=%.3f\n", name, (unsigned)offset, native, written);
+            return;
+        }
+        if (!entry.name) {
+            entry = { name, rounded };
+            Log("[atmosphere-write] %s +0x%X native=%.3f written=%.3f\n", name, (unsigned)offset, native, written);
+            return;
+        }
+    }
+}
+
 static void ApplyAtmosphereTableOverrides(uintptr_t atmosphereNode) {
     if (!atmosphereNode || !g_modEnabled.load()) return;
 
@@ -846,6 +912,8 @@ static void ApplyAtmosphereTableOverrides(uintptr_t atmosphereNode) {
             const float pitch = min(89.0f, max(-89.0f, g_oExpNightSkyRot.value.load()));
             write(AtmosphereTableField::EarthAxisTilt,
                   pitch - 90.0f + g_windPackBase0B.load());
+            LogAtmosphereWriteOnChange("night sky tilt (earth axis tilt)", AtmosphereTableField::EarthAxisTilt,
+                g_windPackBase0A.load(), pitch - 90.0f + g_windPackBase0B.load());
         }
 
         const float mieScaleHeight = read(AtmosphereTableField::MieScaleHeight);
@@ -1001,10 +1069,14 @@ static void ApplyAtmosphereTableOverrides(uintptr_t atmosphereNode) {
         if (g_oHighClouds.active.load() && g_windPackBaseValid.load()) {
             const float mul = min(15.0f, max(0.0f, g_oHighClouds.get(1.0f)));
             write(AtmosphereTableField::MidCloudAmount, g_windPackBase30.load() * mul);
+            LogAtmosphereWriteOnChange("mid cloud", AtmosphereTableField::MidCloudAmount,
+                g_windPackBase30.load(), g_windPackBase30.load() * mul);
         }
         if (g_oAtmoAlpha.active.load() && g_windPackBaseValid.load()) {
             const float mul = min(15.0f, max(0.0f, g_oAtmoAlpha.get(1.0f)));
             write(AtmosphereTableField::HighCloudAmount, g_windPackBase2F.load() * mul);
+            LogAtmosphereWriteOnChange("high cloud", AtmosphereTableField::HighCloudAmount,
+                g_windPackBase2F.load(), g_windPackBase2F.load() * mul);
         }
         if (g_oExpCloud2C.active.load() && g_windPackBase2CValid.load()) {
             const float mul = min(15.0f, max(0.0f, g_oExpCloud2C.get(1.0f)));
@@ -1760,7 +1832,9 @@ bool ResolveCurrentGameClockSnapshot(unsigned char* source,
                 using GetAreaIdFn = void(__fastcall*)(unsigned char*, unsigned short*);
                 reinterpret_cast<GetAreaIdFn>(vtable[11])(source, &outAreaId);
                 if (outAreaId != 0xFFFF) {
-                    const auto fieldInfo = static_cast<uintptr_t>(g_pGameFieldInfoResolver(&outAreaId));
+                    const auto fieldInfo = static_cast<uintptr_t>(g_gameFieldInfoResolverById
+                        ? reinterpret_cast<GameFieldInfoResolverById_fn>(g_pGameFieldInfoResolver)(nullptr, outAreaId)
+                        : g_pGameFieldInfoResolver(&outAreaId));
                     if (fieldInfo && *reinterpret_cast<unsigned char*>(fieldInfo + g_gameClockFieldEnabledOffset)) {
                         outStorage = fieldInfo + g_gameClockFieldStorageOffset;
                         outField = true;
