@@ -19,7 +19,7 @@ test("scanner byte limit uses UTF-8 byte count and accepts the exact limit", () 
 });
 
 test("scanner rejects a format newer than the current addon", () => {
-  const scan = scanPresetIni(validPreset.replace("FormatVersion=6", "FormatVersion=7"));
+  const scan = scanPresetIni(validPreset.replace("FormatVersion=6", "FormatVersion=8"));
   assert.equal(scan.ok, false);
   assert.match(scan.errors.join("\n"), /newer than supported/);
 });

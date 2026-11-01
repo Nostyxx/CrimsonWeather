@@ -368,12 +368,6 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.dust = ActiveOverrideValue(g_oDust, 0.0f);
     data.noSnow = g_noSnow.load();
     data.snow = ActiveOverrideValue(g_oSnow, 0.0f);
-    data.snowAccumBoundaryAEnabled = g_oSnowAccumBoundaryA.active.load();
-    data.snowAccumBoundaryA = OverrideValueIf(data.snowAccumBoundaryAEnabled, g_oSnowAccumBoundaryA, -5.0f);
-    data.snowAccumBoundaryBEnabled = g_oSnowAccumBoundaryB.active.load();
-    data.snowAccumBoundaryB = OverrideValueIf(data.snowAccumBoundaryBEnabled, g_oSnowAccumBoundaryB, -20.0f);
-    data.snowCoverageThresholdEnabled = g_oSnowCoverageThreshold.active.load();
-    data.snowCoverageThreshold = OverrideValueIf(data.snowCoverageThresholdEnabled, g_oSnowCoverageThreshold, -20.0f);
     data.visualTimeOverride = g_timeCtrlActive.load() && g_timeFreeze.load();
     data.progressVisualTime = data.visualTimeOverride && g_timeProgressVisualTime.load();
     data.progressVisualTimeMatchGameTime = data.progressVisualTime && g_timeProgressMatchGameTime.load();
@@ -468,6 +462,34 @@ WeatherPresetData CaptureCurrentPresetData() {
     data.mieAerosolDensity = OverrideValueIf(data.mieAerosolDensityEnabled, g_oMieAerosolDensity, g_windPackBase11.load());
     data.mieAerosolAbsorptionEnabled = g_oMieAerosolAbsorption.active.load();
     data.mieAerosolAbsorption = OverrideValueIf(data.mieAerosolAbsorptionEnabled, g_oMieAerosolAbsorption, g_windPackBase12.load());
+    data.waterMurkinessEnabled = g_oWaterMurkiness.active.load();
+    data.waterMurkiness = OverrideValueIf(data.waterMurkinessEnabled, g_oWaterMurkiness, g_waterNativeMurkiness.load());
+    data.waterRipplesEnabled = g_oWaterRipples.active.load();
+    data.waterRipples = OverrideValueIf(data.waterRipplesEnabled, g_oWaterRipples, g_waterNativeRipples.load());
+    data.waterChopEnabled = g_oWaterChop.active.load();
+    data.waterChop = OverrideValueIf(data.waterChopEnabled, g_oWaterChop, g_waterNativeChop.load());
+    data.waterWavesEnabled = g_oWaterWaves.active.load();
+    data.waterWaves = OverrideValueIf(data.waterWavesEnabled, g_oWaterWaves, g_waterNativeWaves.load());
+    data.waterSwellEnabled = g_oWaterSwell.active.load();
+    data.waterSwell = OverrideValueIf(data.waterSwellEnabled, g_oWaterSwell, g_waterNativeSwell.load());
+    data.underwaterTintStrengthEnabled = g_oUnderwaterTintStrength.active.load();
+    data.underwaterTintStrength = OverrideValueIf(data.underwaterTintStrengthEnabled, g_oUnderwaterTintStrength, g_waterNativeTintStrength.load());
+    data.underwaterFogEnabled = g_oUnderwaterFog.active.load();
+    data.underwaterFog = OverrideValueIf(data.underwaterFogEnabled, g_oUnderwaterFog, 1.0f);
+    data.murkColorEnabled = g_oMurkColor.active.load();
+    data.murkColor = ActiveColorOverrideValue(g_oMurkColor, {
+        g_waterNativeMurkColorR.load(),
+        g_waterNativeMurkColorG.load(),
+        g_waterNativeMurkColorB.load(),
+        1.0f,
+    });
+    data.underwaterTintColorEnabled = g_oUnderwaterTintColor.active.load();
+    data.underwaterTintColor = ActiveColorOverrideValue(g_oUnderwaterTintColor, {
+        g_waterNativeTintR.load(),
+        g_waterNativeTintG.load(),
+        g_waterNativeTintB.load(),
+        1.0f,
+    });
     data.heightFogBaselineEnabled = g_oHeightFogBaseline.active.load();
     data.heightFogBaseline = OverrideValueIf(data.heightFogBaselineEnabled, g_oHeightFogBaseline, g_windPackBase18.load());
     data.heightFogFalloffEnabled = g_oHeightFogFalloff.active.load();
@@ -491,10 +513,6 @@ void ApplyPresetData(const WeatherPresetData& data, const char* source) {
     ApplyPositiveOverride(g_oThunder, ClampPresetThunder(extendedSliderRange, data.thunder), 0.0f, 5.0f);
     ApplyPositiveOverride(g_oDust, ClampPresetDust(extendedSliderRange, data.dust), 0.0f, 10.0f);
     ApplyPositiveOverride(g_oSnow, ClampPresetSnow(extendedSliderRange, data.snow), 0.0f, 5.0f);
-    ApplyEnabledOverride(g_oSnowAccumBoundaryA, data.snowAccumBoundaryAEnabled, ClampPresetSnowBoundary(data.snowAccumBoundaryA), -1000.0f, 1500.0f);
-    ApplyEnabledOverride(g_oSnowAccumBoundaryB, data.snowAccumBoundaryBEnabled, ClampPresetSnowBoundary(data.snowAccumBoundaryB), -1000.0f, 1500.0f);
-    ApplyEnabledOverride(g_oSnowCoverageThreshold, data.snowCoverageThresholdEnabled, ClampPresetSnowBoundary(data.snowCoverageThreshold), -1000.0f, 1500.0f);
-    g_snowCoverageGlobalsDirty.store(true);
 
     const float nextTimeCadence = ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f);
     float nextTimeHour = NormalizeHour24(data.timeHour);
@@ -606,6 +624,15 @@ void ApplyPresetData(const WeatherPresetData& data, const char* source) {
     ApplyEnabledOverride(g_oMieScaleHeight, data.mieScaleHeightEnabled, ClampPresetMieScaleHeight(extendedSliderRange, data.mieScaleHeight), 1.0f, 200000.0f);
     ApplyEnabledOverride(g_oMieAerosolDensity, data.mieAerosolDensityEnabled, ClampPresetMieDensity(extendedSliderRange, data.mieAerosolDensity), 0.0f, 100.0f);
     ApplyEnabledOverride(g_oMieAerosolAbsorption, data.mieAerosolAbsorptionEnabled, ClampPresetMieAbsorption(extendedSliderRange, data.mieAerosolAbsorption), 0.0f, 100.0f);
+    ApplyEnabledOverride(g_oWaterMurkiness, data.waterMurkinessEnabled, ClampPresetWaterMurkiness(extendedSliderRange, data.waterMurkiness), 0.0f, 5.0f);
+    ApplyEnabledOverride(g_oWaterRipples, data.waterRipplesEnabled, ClampPresetWaterWaveHeight(extendedSliderRange, data.waterRipples), 0.0f, 30.0f);
+    ApplyEnabledOverride(g_oWaterChop, data.waterChopEnabled, ClampPresetWaterWaveHeight(extendedSliderRange, data.waterChop), 0.0f, 30.0f);
+    ApplyEnabledOverride(g_oWaterWaves, data.waterWavesEnabled, ClampPresetWaterWaveHeight(extendedSliderRange, data.waterWaves), 0.0f, 30.0f);
+    ApplyEnabledOverride(g_oWaterSwell, data.waterSwellEnabled, ClampPresetWaterWaveHeight(extendedSliderRange, data.waterSwell), 0.0f, 30.0f);
+    ApplyEnabledOverride(g_oUnderwaterTintStrength, data.underwaterTintStrengthEnabled, ClampPresetUnderwaterTintStrength(extendedSliderRange, data.underwaterTintStrength), 0.0f, 5.0f);
+    ApplyEnabledOverride(g_oUnderwaterFog, data.underwaterFogEnabled, ClampPresetUnderwaterFog(extendedSliderRange, data.underwaterFog), 0.0f, 20.0f);
+    ApplyEnabledColorOverride(g_oMurkColor, data.murkColorEnabled, data.murkColor, false);
+    ApplyEnabledColorOverride(g_oUnderwaterTintColor, data.underwaterTintColorEnabled, data.underwaterTintColor, false);
     ApplyEnabledOverride(g_oHeightFogBaseline, data.heightFogBaselineEnabled, ClampPresetHeightFogBaseline(extendedSliderRange, data.heightFogBaseline), -50000.0f, 50000.0f);
     ApplyEnabledOverride(g_oHeightFogFalloff, data.heightFogFalloffEnabled, ClampPresetHeightFogFalloff(extendedSliderRange, data.heightFogFalloff), 0.0f, 100.0f);
 

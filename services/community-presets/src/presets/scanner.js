@@ -1,9 +1,15 @@
 const PRESET_HEADER = "[CrimsonWeatherPreset]";
-const CURRENT_FORMAT_VERSION = 6;
+const CURRENT_FORMAT_VERSION = 7;
 const ALLOWED_SECTIONS = new Set([
-  "Meta", "Weather", "Time", "Cloud", "Experiment", "Celestial", "Atmosphere"
+  "Meta", "Weather", "Time", "Cloud", "Experiment", "Celestial", "Atmosphere", "Water"
 ]);
 const ALLOWED_KEYS = new Set([
+  "WaterMurkinessEnabled", "WaterMurkiness", "WaterRipplesEnabled", "WaterRipples",
+  "WaterChopEnabled", "WaterChop", "WaterWavesEnabled", "WaterWaves",
+  "WaterSwellEnabled", "WaterSwell", "UnderwaterTintStrengthEnabled", "UnderwaterTintStrength",
+  "UnderwaterFogEnabled", "UnderwaterFog", "MurkColorEnabled", "MurkColorR",
+  "MurkColorG", "MurkColorB", "UnderwaterTintColorEnabled", "UnderwaterTintColorR",
+  "UnderwaterTintColorG", "UnderwaterTintColorB",
   "FormatVersion", "Enabled",
   "ForceClearSky", "NoRain", "Rain", "Thunder", "NoDust", "Dust", "NoSnow", "Snow",
   "SnowAccumBoundaryAEnabled", "SnowAccumBoundaryA", "SnowAccumBoundaryBEnabled", "SnowAccumBoundaryB",

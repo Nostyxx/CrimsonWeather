@@ -344,10 +344,6 @@ inline SliderOverride g_oRain;
 inline SliderOverride g_oThunder;
 inline SliderOverride g_oSnow;
 inline SliderOverride g_oDust;
-inline SliderOverride g_oSnowAccumBoundaryA;
-inline SliderOverride g_oSnowAccumBoundaryB;
-inline SliderOverride g_oSnowCoverageThreshold;
-inline std::atomic<bool> g_snowCoverageGlobalsDirty{ true };
 inline SliderOverride g_oCloudAmount;
 inline SliderOverride g_oCloudSpdX;
 inline SliderOverride g_oCloudSpdY;
@@ -374,6 +370,13 @@ inline SliderOverride g_oMoonLightIntensity;
 inline SliderOverride g_oMieScaleHeight;
 inline SliderOverride g_oMieAerosolDensity;
 inline SliderOverride g_oMieAerosolAbsorption;
+inline SliderOverride g_oWaterMurkiness;
+inline SliderOverride g_oWaterRipples;
+inline SliderOverride g_oWaterChop;
+inline SliderOverride g_oWaterWaves;
+inline SliderOverride g_oWaterSwell;
+inline SliderOverride g_oUnderwaterTintStrength;
+inline SliderOverride g_oUnderwaterFog;
 inline SliderOverride g_oHeightFogBaseline;
 inline SliderOverride g_oHeightFogFalloff;
 inline SliderOverride g_oCloudAlpha;
@@ -388,6 +391,23 @@ inline SliderOverride g_oOzoneRatio;
 inline ColorOverride g_oRayleighScatteringColor;
 inline ColorOverride g_oVolumeFogScatterColor;
 inline ColorOverride g_oMieScatterColor;
+inline ColorOverride g_oMurkColor;
+inline ColorOverride g_oUnderwaterTintColor;
+// The water table (container slot after the atmosphere table) is only touched when the
+// startup scan confirmed its layout. Natives are what the game had before our writes.
+inline std::atomic<bool> g_waterTableReady{ false };
+inline std::atomic<float> g_waterNativeMurkiness{ 0.02f };
+inline std::atomic<float> g_waterNativeRipples{ 1.0f };
+inline std::atomic<float> g_waterNativeChop{ 1.0f };
+inline std::atomic<float> g_waterNativeWaves{ 1.0f };
+inline std::atomic<float> g_waterNativeSwell{ 1.0f };
+inline std::atomic<float> g_waterNativeTintStrength{ 0.2f };
+inline std::atomic<float> g_waterNativeMurkColorR{ 1.0f };
+inline std::atomic<float> g_waterNativeMurkColorG{ 1.0f };
+inline std::atomic<float> g_waterNativeMurkColorB{ 1.0f };
+inline std::atomic<float> g_waterNativeTintR{ 1.0f };
+inline std::atomic<float> g_waterNativeTintG{ 1.0f };
+inline std::atomic<float> g_waterNativeTintB{ 1.0f };
 inline std::atomic<bool> g_forceClear{ false };
 inline std::atomic<bool> g_noRain{ false };
 inline std::atomic<bool> g_noDust{ false };
@@ -600,3 +620,34 @@ void __fastcall Hooked_MinimapGameTimeUpdate(long long self, long long eventCont
 long long __fastcall Hooked_GameTimeGetter(unsigned char* source, long long outTime);
 void __fastcall Hooked_WeatherTick(long long self, float dt);
 void ResetGameTimeProbeStats();
+
+#if defined(CW_DEV_BUILD)
+// Test controls for table fields the mod does not expose yet (DLC layout only).
+enum class DevFieldTable { Weather, Atmosphere };
+enum class DevFieldKind { Float, Color };
+
+struct DevFieldSpec {
+    const char* group;
+    const char* label;
+    DevFieldTable table;
+    ptrdiff_t offset;
+    DevFieldKind kind;
+    float lo;
+    float hi;
+};
+
+// Values are the raw 32 bits of the field: a float, or a packed ARGB colour.
+struct DevFieldState {
+    std::atomic<bool> active{ false };
+    std::atomic<uint32_t> value{ 0 };
+    std::atomic<bool> nativeValid{ false };
+    std::atomic<uint32_t> native{ 0 };
+};
+
+size_t DevFieldCount();
+const DevFieldSpec& DevFieldSpecAt(size_t index);
+DevFieldState& DevFieldStateAt(size_t index);
+bool DevFieldsAvailable();
+void InstallDevCompositorDetour(uintptr_t compositor, uintptr_t callsite);
+void RemoveDevCompositorDetour();
+#endif

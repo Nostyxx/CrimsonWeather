@@ -24,10 +24,6 @@ void ResetAllSliders() {
     g_oThunder.clear();
     g_oSnow.clear();
     g_oDust.clear();
-    g_oSnowAccumBoundaryA.clear();
-    g_oSnowAccumBoundaryB.clear();
-    g_oSnowCoverageThreshold.clear();
-    g_snowCoverageGlobalsDirty.store(true);
     g_oCloudAmount.clear();
     g_oCloudSpdX.clear();
     g_oCloudSpdY.clear();
@@ -68,6 +64,15 @@ void ResetAllSliders() {
     g_oRayleighScatteringColor.clear();
     g_oVolumeFogScatterColor.clear();
     g_oMieScatterColor.clear();
+    g_oWaterMurkiness.clear();
+    g_oWaterRipples.clear();
+    g_oWaterChop.clear();
+    g_oWaterWaves.clear();
+    g_oWaterSwell.clear();
+    g_oUnderwaterTintStrength.clear();
+    g_oUnderwaterFog.clear();
+    g_oMurkColor.clear();
+    g_oUnderwaterTintColor.clear();
     g_forceClear.store(false);
     g_noRain.store(false);
     g_noDust.store(false);
@@ -174,8 +179,6 @@ void ResetAllSliders() {
 bool AnyCustomWeatherSliderActive() {
     return g_forceClear.load() ||
            g_oRain.active.load() || g_oSnow.active.load() || g_oDust.active.load() ||
-           g_oSnowAccumBoundaryA.active.load() || g_oSnowAccumBoundaryB.active.load() ||
-           g_oSnowCoverageThreshold.active.load() ||
            g_oCloudAmount.active.load() ||
            g_oCloudSpdX.active.load() || g_oCloudSpdY.active.load() || g_oHighClouds.active.load() ||
            g_oAtmoAlpha.active.load() || g_oCloudThk.active.load() || g_oNativeFog.active.load() ||
@@ -185,6 +188,15 @@ bool AnyCustomWeatherSliderActive() {
            g_oHeightFogBaseline.active.load() || g_oHeightFogFalloff.active.load() ||
            g_oCloudAlpha.active.load() || g_oCloudFadeRange.active.load() || g_oCloudDetailRatio.active.load() ||
            g_oCloudPhaseFront.active.load() || g_oCloudScatteringCoefficient.active.load() || g_oCloudFlow.active.load() ||
+           g_oWaterMurkiness.active.load() ||
+           g_oWaterRipples.active.load() ||
+           g_oWaterChop.active.load() ||
+           g_oWaterWaves.active.load() ||
+           g_oWaterSwell.active.load() ||
+           g_oUnderwaterTintStrength.active.load() ||
+           g_oUnderwaterFog.active.load() ||
+           g_oMurkColor.active.load() ||
+           g_oUnderwaterTintColor.active.load() ||
            g_oCloudVisibleRange.active.load() ||
            g_oRayleighHeight.active.load() || g_oOzoneRatio.active.load() ||
            g_oRayleighScatteringColor.active.load() || g_oVolumeFogScatterColor.active.load() || g_oMieScatterColor.active.load() ||

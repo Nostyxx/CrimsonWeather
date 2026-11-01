@@ -22,7 +22,6 @@ float ClampPresetRain(bool extendedSliderRange, float value) { return ClampExten
 float ClampPresetThunder(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 1.0f, 0.0f, 5.0f); }
 float ClampPresetDust(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 2.0f, 0.0f, 10.0f); }
 float ClampPresetSnow(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 1.0f, 0.0f, 5.0f); }
-float ClampPresetSnowBoundary(float value) { return ClampPresetFloat(value, -1000.0f, 1500.0f); }
 float ClampPresetCloudAmount(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 15.0f, 0.0f, 50.0f); }
 float ClampPresetCloudHeight(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, -15.0f, 15.0f, -50.0f, 50.0f); }
 float ClampPresetCloudDensity(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 10.0f, 0.0f, 50.0f); }
@@ -38,6 +37,10 @@ float ClampPresetLightIntensity(bool extendedSliderRange, float value) { return 
 float ClampPresetMieScaleHeight(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 10.0f, 20000.0f, 1.0f, 200000.0f); }
 float ClampPresetMieDensity(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 20.0f, 0.0f, 100.0f); }
 float ClampPresetMieAbsorption(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 5.0f, 0.0f, 100.0f); }
+float ClampPresetWaterMurkiness(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 1.0f, 0.0f, 5.0f); }
+float ClampPresetWaterWaveHeight(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 10.0f, 0.0f, 30.0f); }
+float ClampPresetUnderwaterTintStrength(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 1.0f, 0.0f, 5.0f); }
+float ClampPresetUnderwaterFog(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 5.0f, 0.0f, 20.0f); }
 float ClampPresetHeightFogBaseline(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, -5000.0f, 5000.0f, -50000.0f, 50000.0f); }
 float ClampPresetHeightFogFalloff(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 5.0f, 0.0f, 100.0f); }
 float ClampPresetCloudAlpha(bool extendedSliderRange, float value) { return ClampExtendedPresetFloat(extendedSliderRange, value, 0.0f, 50.0f, 0.0f, 100.0f); }
@@ -130,9 +133,6 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         FloatNearlyEqual(a.dust, b.dust) &&
         a.noSnow == b.noSnow &&
         FloatNearlyEqual(a.snow, b.snow) &&
-        EnabledFloatNearlyEqual(a.snowAccumBoundaryAEnabled, a.snowAccumBoundaryA, b.snowAccumBoundaryAEnabled, b.snowAccumBoundaryA) &&
-        EnabledFloatNearlyEqual(a.snowAccumBoundaryBEnabled, a.snowAccumBoundaryB, b.snowAccumBoundaryBEnabled, b.snowAccumBoundaryB) &&
-        EnabledFloatNearlyEqual(a.snowCoverageThresholdEnabled, a.snowCoverageThreshold, b.snowCoverageThresholdEnabled, b.snowCoverageThreshold) &&
         TimePresetNearlyEqual(a, b) &&
         EnabledFloatNearlyEqual(a.cloudAmountEnabled, a.cloudAmount, b.cloudAmountEnabled, b.cloudAmount) &&
         EnabledFloatNearlyEqual(a.cloudHeightEnabled, a.cloudHeight, b.cloudHeightEnabled, b.cloudHeight) &&
@@ -171,6 +171,15 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
         EnabledFloatNearlyEqual(a.mieScaleHeightEnabled, a.mieScaleHeight, b.mieScaleHeightEnabled, b.mieScaleHeight) &&
         EnabledFloatNearlyEqual(a.mieAerosolDensityEnabled, a.mieAerosolDensity, b.mieAerosolDensityEnabled, b.mieAerosolDensity) &&
         EnabledFloatNearlyEqual(a.mieAerosolAbsorptionEnabled, a.mieAerosolAbsorption, b.mieAerosolAbsorptionEnabled, b.mieAerosolAbsorption) &&
+        EnabledFloatNearlyEqual(a.waterMurkinessEnabled, a.waterMurkiness, b.waterMurkinessEnabled, b.waterMurkiness) &&
+        EnabledFloatNearlyEqual(a.waterRipplesEnabled, a.waterRipples, b.waterRipplesEnabled, b.waterRipples) &&
+        EnabledFloatNearlyEqual(a.waterChopEnabled, a.waterChop, b.waterChopEnabled, b.waterChop) &&
+        EnabledFloatNearlyEqual(a.waterWavesEnabled, a.waterWaves, b.waterWavesEnabled, b.waterWaves) &&
+        EnabledFloatNearlyEqual(a.waterSwellEnabled, a.waterSwell, b.waterSwellEnabled, b.waterSwell) &&
+        EnabledFloatNearlyEqual(a.underwaterTintStrengthEnabled, a.underwaterTintStrength, b.underwaterTintStrengthEnabled, b.underwaterTintStrength) &&
+        EnabledFloatNearlyEqual(a.underwaterFogEnabled, a.underwaterFog, b.underwaterFogEnabled, b.underwaterFog) &&
+        EnabledColorNearlyEqual(a.murkColorEnabled, a.murkColor, b.murkColorEnabled, b.murkColor, false) &&
+        EnabledColorNearlyEqual(a.underwaterTintColorEnabled, a.underwaterTintColor, b.underwaterTintColorEnabled, b.underwaterTintColor, false) &&
         EnabledFloatNearlyEqual(a.heightFogBaselineEnabled, a.heightFogBaseline, b.heightFogBaselineEnabled, b.heightFogBaseline) &&
         EnabledFloatNearlyEqual(a.heightFogFalloffEnabled, a.heightFogFalloff, b.heightFogFalloffEnabled, b.heightFogFalloff) &&
         a.noFog == b.noFog &&
@@ -181,7 +190,7 @@ bool PresetDataEquals(const WeatherPresetData& a, const WeatherPresetData& b) {
 
 bool PresetMaskAny(const WeatherPresetMask& mask) {
     return mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow ||
-        mask.snowAccumBoundaryA || mask.snowAccumBoundaryB || mask.snowCoverageThreshold || mask.time ||
+        mask.time ||
         mask.cloudAmount || mask.cloudHeight || mask.cloudDensity || mask.midClouds ||
         mask.highClouds || mask.cloudAlpha || mask.cloudFadeRange || mask.cloudDetailRatio ||
         mask.cloudPhaseFront || mask.cloudScatteringCoefficient || mask.cloudFlow || mask.cloudVisibleRange ||
@@ -189,6 +198,15 @@ bool PresetMaskAny(const WeatherPresetMask& mask) {
         mask.exp2C || mask.exp2D || mask.cloudVariation ||
         mask.nightSkyRotation || mask.nightSkyYaw || mask.sunSize || mask.sunLightIntensity || mask.sunYaw || mask.sunPitch ||
         mask.moonSize || mask.moonLightIntensity || mask.moonYaw || mask.moonPitch || mask.moonRoll || mask.moonTexture || mask.milkywayTexture ||
+        mask.waterMurkiness ||
+        mask.waterRipples ||
+        mask.waterChop ||
+        mask.waterWaves ||
+        mask.waterSwell ||
+        mask.underwaterTintStrength ||
+        mask.underwaterFog ||
+        mask.murkColor ||
+        mask.underwaterTintColor ||
         mask.nativeFog || mask.volumeFogScatterColor || mask.mieScatterColor || mask.mieScaleHeight || mask.mieAerosolDensity ||
         mask.mieAerosolAbsorption || mask.heightFogBaseline || mask.heightFogFalloff || mask.noFog || mask.wind ||
         mask.noWind || mask.puddleScale;
@@ -204,9 +222,6 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.dust = mask.dust;
     out.noSnow = mask.noSnow;
     out.snow = mask.snow;
-    out.snowAccumBoundaryA = mask.snowAccumBoundaryA;
-    out.snowAccumBoundaryB = mask.snowAccumBoundaryB;
-    out.snowCoverageThreshold = mask.snowCoverageThreshold;
     out.time = mask.time;
     out.cloudAmount = mask.cloudAmount;
     out.cloudHeight = mask.cloudHeight;
@@ -245,6 +260,15 @@ WeatherPresetSourceMask ToSourceMask(const WeatherPresetMask& mask) {
     out.mieScaleHeight = mask.mieScaleHeight;
     out.mieAerosolDensity = mask.mieAerosolDensity;
     out.mieAerosolAbsorption = mask.mieAerosolAbsorption;
+    out.waterMurkiness = mask.waterMurkiness;
+    out.waterRipples = mask.waterRipples;
+    out.waterChop = mask.waterChop;
+    out.waterWaves = mask.waterWaves;
+    out.waterSwell = mask.waterSwell;
+    out.underwaterTintStrength = mask.underwaterTintStrength;
+    out.underwaterFog = mask.underwaterFog;
+    out.murkColor = mask.murkColor;
+    out.underwaterTintColor = mask.underwaterTintColor;
     out.heightFogBaseline = mask.heightFogBaseline;
     out.heightFogFalloff = mask.heightFogFalloff;
     out.noFog = mask.noFog;
@@ -264,9 +288,6 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.dust = source.dust;
     mask.noSnow = source.noSnow;
     mask.snow = source.snow;
-    mask.snowAccumBoundaryA = source.snowAccumBoundaryA;
-    mask.snowAccumBoundaryB = source.snowAccumBoundaryB;
-    mask.snowCoverageThreshold = source.snowCoverageThreshold;
     mask.time = source.time;
     mask.cloudAmount = source.cloudAmount;
     mask.cloudHeight = source.cloudHeight;
@@ -305,6 +326,15 @@ WeatherPresetMask FromSourceMask(const WeatherPresetSourceMask& source) {
     mask.mieScaleHeight = source.mieScaleHeight;
     mask.mieAerosolDensity = source.mieAerosolDensity;
     mask.mieAerosolAbsorption = source.mieAerosolAbsorption;
+    mask.waterMurkiness = source.waterMurkiness;
+    mask.waterRipples = source.waterRipples;
+    mask.waterChop = source.waterChop;
+    mask.waterWaves = source.waterWaves;
+    mask.waterSwell = source.waterSwell;
+    mask.underwaterTintStrength = source.underwaterTintStrength;
+    mask.underwaterFog = source.underwaterFog;
+    mask.murkColor = source.murkColor;
+    mask.underwaterTintColor = source.underwaterTintColor;
     mask.heightFogBaseline = source.heightFogBaseline;
     mask.heightFogFalloff = source.heightFogFalloff;
     mask.noFog = source.noFog;
@@ -323,9 +353,6 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.dust == b.dust &&
         a.noSnow == b.noSnow &&
         a.snow == b.snow &&
-        a.snowAccumBoundaryA == b.snowAccumBoundaryA &&
-        a.snowAccumBoundaryB == b.snowAccumBoundaryB &&
-        a.snowCoverageThreshold == b.snowCoverageThreshold &&
         a.time == b.time &&
         a.cloudAmount == b.cloudAmount &&
         a.cloudHeight == b.cloudHeight &&
@@ -364,6 +391,15 @@ bool PresetMaskEquals(const WeatherPresetMask& a, const WeatherPresetMask& b) {
         a.mieScaleHeight == b.mieScaleHeight &&
         a.mieAerosolDensity == b.mieAerosolDensity &&
         a.mieAerosolAbsorption == b.mieAerosolAbsorption &&
+        a.waterMurkiness == b.waterMurkiness &&
+        a.waterRipples == b.waterRipples &&
+        a.waterChop == b.waterChop &&
+        a.waterWaves == b.waterWaves &&
+        a.waterSwell == b.waterSwell &&
+        a.underwaterTintStrength == b.underwaterTintStrength &&
+        a.underwaterFog == b.underwaterFog &&
+        a.murkColor == b.murkColor &&
+        a.underwaterTintColor == b.underwaterTintColor &&
         a.heightFogBaseline == b.heightFogBaseline &&
         a.heightFogFalloff == b.heightFogFalloff &&
         a.noFog == b.noFog &&
@@ -382,9 +418,6 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.dust = true;
     mask.noSnow = true;
     mask.snow = true;
-    mask.snowAccumBoundaryA = true;
-    mask.snowAccumBoundaryB = true;
-    mask.snowCoverageThreshold = true;
     mask.time = true;
     mask.cloudAmount = true;
     mask.cloudHeight = true;
@@ -423,6 +456,15 @@ WeatherPresetMask BuildFullPresetMask() {
     mask.mieScaleHeight = true;
     mask.mieAerosolDensity = true;
     mask.mieAerosolAbsorption = true;
+    mask.waterMurkiness = true;
+    mask.waterRipples = true;
+    mask.waterChop = true;
+    mask.waterWaves = true;
+    mask.waterSwell = true;
+    mask.underwaterTintStrength = true;
+    mask.underwaterFog = true;
+    mask.murkColor = true;
+    mask.underwaterTintColor = true;
     mask.heightFogBaseline = true;
     mask.heightFogFalloff = true;
     mask.noFog = true;
@@ -442,9 +484,6 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.dust = !FloatNearlyEqual(base.dust, value.dust);
     mask.noSnow = base.noSnow != value.noSnow;
     mask.snow = !FloatNearlyEqual(base.snow, value.snow);
-    mask.snowAccumBoundaryA = !EnabledFloatNearlyEqual(base.snowAccumBoundaryAEnabled, base.snowAccumBoundaryA, value.snowAccumBoundaryAEnabled, value.snowAccumBoundaryA);
-    mask.snowAccumBoundaryB = !EnabledFloatNearlyEqual(base.snowAccumBoundaryBEnabled, base.snowAccumBoundaryB, value.snowAccumBoundaryBEnabled, value.snowAccumBoundaryB);
-    mask.snowCoverageThreshold = !EnabledFloatNearlyEqual(base.snowCoverageThresholdEnabled, base.snowCoverageThreshold, value.snowCoverageThresholdEnabled, value.snowCoverageThreshold);
     mask.time = !TimePresetNearlyEqual(base, value);
     mask.cloudAmount = !EnabledFloatNearlyEqual(base.cloudAmountEnabled, base.cloudAmount, value.cloudAmountEnabled, value.cloudAmount);
     mask.cloudHeight = !EnabledFloatNearlyEqual(base.cloudHeightEnabled, base.cloudHeight, value.cloudHeightEnabled, value.cloudHeight);
@@ -483,6 +522,15 @@ WeatherPresetMask BuildOverrideMask(const WeatherPresetData& base, const Weather
     mask.mieScaleHeight = !EnabledFloatNearlyEqual(base.mieScaleHeightEnabled, base.mieScaleHeight, value.mieScaleHeightEnabled, value.mieScaleHeight);
     mask.mieAerosolDensity = !EnabledFloatNearlyEqual(base.mieAerosolDensityEnabled, base.mieAerosolDensity, value.mieAerosolDensityEnabled, value.mieAerosolDensity);
     mask.mieAerosolAbsorption = !EnabledFloatNearlyEqual(base.mieAerosolAbsorptionEnabled, base.mieAerosolAbsorption, value.mieAerosolAbsorptionEnabled, value.mieAerosolAbsorption);
+    mask.waterMurkiness = !EnabledFloatNearlyEqual(base.waterMurkinessEnabled, base.waterMurkiness, value.waterMurkinessEnabled, value.waterMurkiness);
+    mask.waterRipples = !EnabledFloatNearlyEqual(base.waterRipplesEnabled, base.waterRipples, value.waterRipplesEnabled, value.waterRipples);
+    mask.waterChop = !EnabledFloatNearlyEqual(base.waterChopEnabled, base.waterChop, value.waterChopEnabled, value.waterChop);
+    mask.waterWaves = !EnabledFloatNearlyEqual(base.waterWavesEnabled, base.waterWaves, value.waterWavesEnabled, value.waterWaves);
+    mask.waterSwell = !EnabledFloatNearlyEqual(base.waterSwellEnabled, base.waterSwell, value.waterSwellEnabled, value.waterSwell);
+    mask.underwaterTintStrength = !EnabledFloatNearlyEqual(base.underwaterTintStrengthEnabled, base.underwaterTintStrength, value.underwaterTintStrengthEnabled, value.underwaterTintStrength);
+    mask.underwaterFog = !EnabledFloatNearlyEqual(base.underwaterFogEnabled, base.underwaterFog, value.underwaterFogEnabled, value.underwaterFog);
+    mask.murkColor = !EnabledColorNearlyEqual(base.murkColorEnabled, base.murkColor, value.murkColorEnabled, value.murkColor, false);
+    mask.underwaterTintColor = !EnabledColorNearlyEqual(base.underwaterTintColorEnabled, base.underwaterTintColor, value.underwaterTintColorEnabled, value.underwaterTintColor, false);
     mask.heightFogBaseline = !EnabledFloatNearlyEqual(base.heightFogBaselineEnabled, base.heightFogBaseline, value.heightFogBaselineEnabled, value.heightFogBaseline);
     mask.heightFogFalloff = !EnabledFloatNearlyEqual(base.heightFogFalloffEnabled, base.heightFogFalloff, value.heightFogFalloffEnabled, value.heightFogFalloff);
     mask.noFog = base.noFog != value.noFog;
@@ -501,9 +549,6 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
     if (mask.dust) target.dust = source.dust;
     if (mask.noSnow) target.noSnow = source.noSnow;
     if (mask.snow) target.snow = source.snow;
-    if (mask.snowAccumBoundaryA) { target.snowAccumBoundaryAEnabled = source.snowAccumBoundaryAEnabled; target.snowAccumBoundaryA = source.snowAccumBoundaryA; }
-    if (mask.snowAccumBoundaryB) { target.snowAccumBoundaryBEnabled = source.snowAccumBoundaryBEnabled; target.snowAccumBoundaryB = source.snowAccumBoundaryB; }
-    if (mask.snowCoverageThreshold) { target.snowCoverageThresholdEnabled = source.snowCoverageThresholdEnabled; target.snowCoverageThreshold = source.snowCoverageThreshold; }
     if (mask.time) {
         target.visualTimeOverride = source.visualTimeOverride;
         target.progressVisualTime = source.visualTimeOverride && source.progressVisualTime;
@@ -659,6 +704,42 @@ void ApplyPresetMask(WeatherPresetData& target, const WeatherPresetData& source,
         target.mieAerosolAbsorptionEnabled = source.mieAerosolAbsorptionEnabled;
         target.mieAerosolAbsorption = source.mieAerosolAbsorption;
     }
+    if (mask.waterMurkiness) {
+        target.waterMurkinessEnabled = source.waterMurkinessEnabled;
+        target.waterMurkiness = source.waterMurkiness;
+    }
+    if (mask.waterRipples) {
+        target.waterRipplesEnabled = source.waterRipplesEnabled;
+        target.waterRipples = source.waterRipples;
+    }
+    if (mask.waterChop) {
+        target.waterChopEnabled = source.waterChopEnabled;
+        target.waterChop = source.waterChop;
+    }
+    if (mask.waterWaves) {
+        target.waterWavesEnabled = source.waterWavesEnabled;
+        target.waterWaves = source.waterWaves;
+    }
+    if (mask.waterSwell) {
+        target.waterSwellEnabled = source.waterSwellEnabled;
+        target.waterSwell = source.waterSwell;
+    }
+    if (mask.underwaterTintStrength) {
+        target.underwaterTintStrengthEnabled = source.underwaterTintStrengthEnabled;
+        target.underwaterTintStrength = source.underwaterTintStrength;
+    }
+    if (mask.underwaterFog) {
+        target.underwaterFogEnabled = source.underwaterFogEnabled;
+        target.underwaterFog = source.underwaterFog;
+    }
+    if (mask.murkColor) {
+        target.murkColorEnabled = source.murkColorEnabled;
+        target.murkColor = source.murkColor;
+    }
+    if (mask.underwaterTintColor) {
+        target.underwaterTintColorEnabled = source.underwaterTintColorEnabled;
+        target.underwaterTintColor = source.underwaterTintColor;
+    }
     if (mask.heightFogBaseline) {
         target.heightFogBaselineEnabled = source.heightFogBaselineEnabled;
         target.heightFogBaseline = source.heightFogBaseline;
@@ -727,12 +808,6 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.dust = LerpPresetFloat(a.dust, b.dust, t);
     out.noSnow = ChoosePresetBool(a.noSnow, b.noSnow, t);
     out.snow = LerpPresetFloat(a.snow, b.snow, t);
-    out.snowAccumBoundaryAEnabled = a.snowAccumBoundaryAEnabled || b.snowAccumBoundaryAEnabled;
-    out.snowAccumBoundaryA = LerpPresetFloat(a.snowAccumBoundaryA, b.snowAccumBoundaryA, t);
-    out.snowAccumBoundaryBEnabled = a.snowAccumBoundaryBEnabled || b.snowAccumBoundaryBEnabled;
-    out.snowAccumBoundaryB = LerpPresetFloat(a.snowAccumBoundaryB, b.snowAccumBoundaryB, t);
-    out.snowCoverageThresholdEnabled = a.snowCoverageThresholdEnabled || b.snowCoverageThresholdEnabled;
-    out.snowCoverageThreshold = LerpPresetFloat(a.snowCoverageThreshold, b.snowCoverageThreshold, t);
     out.visualTimeOverride = ChoosePresetBool(a.visualTimeOverride, b.visualTimeOverride, t);
     out.progressVisualTime = out.visualTimeOverride && ChoosePresetBool(a.progressVisualTime, b.progressVisualTime, t);
     out.progressVisualTimeMatchGameTime = out.progressVisualTime && ChoosePresetBool(a.progressVisualTimeMatchGameTime, b.progressVisualTimeMatchGameTime, t);
@@ -814,6 +889,24 @@ WeatherPresetData BlendPresetData(const WeatherPresetData& a, const WeatherPrese
     out.mieAerosolDensity = LerpPresetFloat(a.mieAerosolDensity, b.mieAerosolDensity, t);
     out.mieAerosolAbsorptionEnabled = a.mieAerosolAbsorptionEnabled || b.mieAerosolAbsorptionEnabled;
     out.mieAerosolAbsorption = LerpPresetFloat(a.mieAerosolAbsorption, b.mieAerosolAbsorption, t);
+    out.waterMurkinessEnabled = a.waterMurkinessEnabled || b.waterMurkinessEnabled;
+    out.waterMurkiness = LerpPresetFloat(a.waterMurkiness, b.waterMurkiness, t);
+    out.waterRipplesEnabled = a.waterRipplesEnabled || b.waterRipplesEnabled;
+    out.waterRipples = LerpPresetFloat(a.waterRipples, b.waterRipples, t);
+    out.waterChopEnabled = a.waterChopEnabled || b.waterChopEnabled;
+    out.waterChop = LerpPresetFloat(a.waterChop, b.waterChop, t);
+    out.waterWavesEnabled = a.waterWavesEnabled || b.waterWavesEnabled;
+    out.waterWaves = LerpPresetFloat(a.waterWaves, b.waterWaves, t);
+    out.waterSwellEnabled = a.waterSwellEnabled || b.waterSwellEnabled;
+    out.waterSwell = LerpPresetFloat(a.waterSwell, b.waterSwell, t);
+    out.underwaterTintStrengthEnabled = a.underwaterTintStrengthEnabled || b.underwaterTintStrengthEnabled;
+    out.underwaterTintStrength = LerpPresetFloat(a.underwaterTintStrength, b.underwaterTintStrength, t);
+    out.underwaterFogEnabled = a.underwaterFogEnabled || b.underwaterFogEnabled;
+    out.underwaterFog = LerpPresetFloat(a.underwaterFog, b.underwaterFog, t);
+    out.murkColorEnabled = a.murkColorEnabled || b.murkColorEnabled;
+    out.murkColor = LerpPresetColor(a.murkColor, b.murkColor, t);
+    out.underwaterTintColorEnabled = a.underwaterTintColorEnabled || b.underwaterTintColorEnabled;
+    out.underwaterTintColor = LerpPresetColor(a.underwaterTintColor, b.underwaterTintColor, t);
     out.heightFogBaselineEnabled = a.heightFogBaselineEnabled || b.heightFogBaselineEnabled;
     out.heightFogBaseline = LerpPresetFloat(a.heightFogBaseline, b.heightFogBaseline, t);
     out.heightFogFalloffEnabled = a.heightFogFalloffEnabled || b.heightFogFalloffEnabled;

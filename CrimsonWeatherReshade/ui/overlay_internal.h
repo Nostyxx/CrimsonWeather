@@ -96,6 +96,7 @@ void DrawFavoritesTab();
 void DrawWeatherTab();
 void DrawGeneralTab();
 void DrawAtmosphereTab();
+void DrawWaterTab();
 void DrawExperimentTab();
 void DrawCelestialTab();
 #if defined(CW_DEV_BUILD)

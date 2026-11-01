@@ -500,6 +500,7 @@ static std::atomic<uint64_t> g_windTableWrites{ 0 };
 static std::atomic<uint64_t> g_windTableChanges{ 0 };
 static std::atomic<int> g_windTableLastMode{ static_cast<int>(WindTableMode::Native) };
 static void ApplyAtmosphereTableOverrides(uintptr_t atmosphereNode);
+static void ApplyWaterTableOverrides(uintptr_t parent);
 
 static const char* RainTableModeName(RainTableMode mode) {
     switch (mode) {
@@ -591,6 +592,229 @@ static bool ResolveComposedWeatherFields(long long weatherState, ComposedWeather
 
 }
 
+static bool IsWritableTableField(uintptr_t address) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return false;
+    return (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+}
+
+static bool ExchangeTableField(uintptr_t address, bool write, uint32_t value, uint32_t& outPrevious) {
+    __try {
+        auto* field = reinterpret_cast<volatile uint32_t*>(address);
+        outPrevious = *field;
+        if (write) *field = value;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static bool ReadTablePointer(uintptr_t slot, uintptr_t& out) {
+    __try {
+        out = *reinterpret_cast<uintptr_t*>(slot);
+        return out != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = 0;
+        return false;
+    }
+}
+
+#if defined(CW_DEV_BUILD)
+// Offsets are for the DLC layout (1.0.0.3392+), mapped from the game's reflected setters.
+// Names and ranges are a rough draft for testing. See knowledge\systems\weather.md.
+static constexpr DevFieldSpec kDevFields[] = {
+    { "Wind", "Wind direction (_windDegree)", DevFieldTable::Weather, 0x154, DevFieldKind::Float, -360.0f, 360.0f },
+
+    { "Ground snow, ice, puddles", "Snow cover (_snowAmount)", DevFieldTable::Weather, 0x148, DevFieldKind::Float, 0.0f, 2.0f },
+    { "Ground snow, ice, puddles", "Snow build-up rate (_snowRate)", DevFieldTable::Weather, 0x14C, DevFieldKind::Float, 0.0f, 2.0f },
+    { "Ground snow, ice, puddles", "Ice (_iceRatio)", DevFieldTable::Weather, 0x150, DevFieldKind::Float, 0.0f, 2.0f },
+    { "Ground snow, ice, puddles", "Puddles (_puddleRate)", DevFieldTable::Weather, 0x13C, DevFieldKind::Float, 0.0f, 2.0f },
+
+    { "Rain droplets", "Droplet amount (_rainDropletAmount)", DevFieldTable::Weather, 0x164, DevFieldKind::Float, 0.0f, 2.0f },
+    { "Rain droplets", "Droplet rate (_rainDropletRate)", DevFieldTable::Weather, 0x168, DevFieldKind::Float, 0.0f, 2.0f },
+
+    { "Sky", "Cirrus scale (_cloudCirrusScale)", DevFieldTable::Atmosphere, 0x5C, DevFieldKind::Float, 0.0f, 10.0f },
+    { "Sky", "Patchy fog (_heightFogNoiseRange)", DevFieldTable::Atmosphere, 0xA8, DevFieldKind::Float, 0.0f, 1000.0f },
+    { "Sky", "Fog scale (_heightFogScale)", DevFieldTable::Atmosphere, 0x3C, DevFieldKind::Float, 0.0f, 10.0f },
+};
+static constexpr size_t kDevFieldCount = std::size(kDevFields);
+static DevFieldState g_devFieldStates[kDevFieldCount];
+
+size_t DevFieldCount() { return kDevFieldCount; }
+const DevFieldSpec& DevFieldSpecAt(size_t index) { return kDevFields[index]; }
+DevFieldState& DevFieldStateAt(size_t index) { return g_devFieldStates[index]; }
+bool DevFieldsAvailable() { return g_weatherTableSlotOffset == 0x20; }
+
+static void LogDevFieldWrite(const DevFieldSpec& spec, uint32_t native, uint32_t written) {
+    static const char* const kTableNames[] = { "weather", "atmosphere", "water" };
+    const char* table = kTableNames[static_cast<int>(spec.table)];
+    if (spec.kind == DevFieldKind::Color) {
+        Log("[dev-field-write] %s %s+0x%X native=%08X written=%08X\n",
+            spec.label, table, (unsigned)spec.offset, native, written);
+    } else {
+        float nativeFloat = 0.0f;
+        float writtenFloat = 0.0f;
+        memcpy(&nativeFloat, &native, sizeof(float));
+        memcpy(&writtenFloat, &written, sizeof(float));
+        Log("[dev-field-write] %s %s+0x%X native=%.3f written=%.3f\n",
+            spec.label, table, (unsigned)spec.offset, nativeFloat, writtenFloat);
+    }
+}
+
+// Runs right after the compositor. A value that differs from what we last wrote is the
+// game's own, so it becomes the native value that Reset returns to. Values are clamped
+// to the row's range.
+static void ApplyDevFieldOverrides(const ComposedWeatherFields& fields) {
+    if (!DevFieldsAvailable()) return;
+
+    struct Runtime {
+        bool applied = false;
+        uint32_t lastWritten = 0;
+        int lastLogged = INT_MIN;
+    };
+    static Runtime runtime[kDevFieldCount];
+
+    const bool modEnabled = g_modEnabled.load();
+
+    for (size_t i = 0; i < kDevFieldCount; ++i) {
+        const DevFieldSpec& spec = kDevFields[i];
+        DevFieldState& state = g_devFieldStates[i];
+        Runtime& rt = runtime[i];
+        uintptr_t table = 0;
+        switch (spec.table) {
+        case DevFieldTable::Weather: table = fields.child1; break;
+        case DevFieldTable::Atmosphere: table = fields.atmosphereNode; break;
+        }
+        if (!table) continue;
+        const uintptr_t address = table + spec.offset;
+        const bool want = modEnabled && state.active.load();
+
+        uint32_t current = 0;
+        if (!IsReadableTickPtr(address, sizeof(uint32_t)) || !ExchangeTableField(address, false, 0, current)) continue;
+
+        if (!want && !rt.applied) {
+            state.native.store(current);
+            state.nativeValid.store(true);
+            continue;
+        }
+        if (!IsWritableTableField(address)) continue;
+
+        if (want && (!rt.applied || current != rt.lastWritten)) {
+            state.native.store(current);
+            state.nativeValid.store(true);
+        }
+
+        uint32_t target = want ? state.value.load() : state.native.load();
+        float targetFloat = 0.0f;
+        memcpy(&targetFloat, &target, sizeof(float));
+        if (spec.kind == DevFieldKind::Float) {
+            if (!std::isfinite(targetFloat)) continue;
+            if (want) targetFloat = min(spec.hi, max(spec.lo, targetFloat));
+            memcpy(&target, &targetFloat, sizeof(float));
+        }
+
+        uint32_t previous = 0;
+        if (!ExchangeTableField(address, true, target, previous)) continue;
+        rt.lastWritten = target;
+        rt.applied = true;
+
+        if (!want) {
+            rt.applied = false;
+            rt.lastLogged = INT_MIN;
+            Log("[dev-field-write] %s reset to native\n", spec.label);
+            continue;
+        }
+
+        const int rounded = spec.kind == DevFieldKind::Color
+            ? static_cast<int>(target)
+            : static_cast<int>(lroundf(targetFloat * 100.0f));
+        if (rounded != rt.lastLogged) {
+            rt.lastLogged = rounded;
+            uint32_t requested = target;
+            if (spec.kind == DevFieldKind::Float) memcpy(&requested, &targetFloat, sizeof(float));
+            LogDevFieldWrite(spec, state.native.load(), requested);
+        }
+    }
+}
+
+// The game reads _windDegree and _windSpeed in the compositor's caller, right after the
+// compositor returns, and the compositor rewrites them on its next run. Our WeatherCompose
+// hook wraps that caller, so overrides written there come too late for those reads.
+// MinHook cannot decode the compositor's VEX prologue, so the one call to it is pointed
+// at a stub instead (DEV only, restored on shutdown).
+static WeatherCompose_fn g_pDevCompositor = nullptr;
+static uint8_t* g_pDevCompositorCall = nullptr;
+static int32_t g_devCompositorCallRel = 0;
+static bool g_devCompositorDetourActive = false;
+
+static long long __fastcall DevCompositorDetour(long long weatherState, float dt) {
+    const long long result = g_pDevCompositor(weatherState, dt);
+    ComposedWeatherFields fields{};
+    if (ResolveComposedWeatherFields(weatherState, fields)) ApplyDevFieldOverrides(fields);
+    return result;
+}
+
+static void* AllocateNearModule(uintptr_t near_, size_t size) {
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const uintptr_t granularity = info.dwAllocationGranularity;
+    const uintptr_t start = (near_ & ~(granularity - 1));
+    for (uintptr_t distance = granularity; distance < 0x70000000ull; distance += granularity) {
+        if (start <= distance) break;
+        void* block = VirtualAlloc(reinterpret_cast<void*>(start - distance), size,
+                                   MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (block) return block;
+    }
+    return nullptr;
+}
+
+static bool WriteCallRel(uint8_t* call, int32_t rel) {
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(call + 1, sizeof(rel), PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
+    memcpy(call + 1, &rel, sizeof(rel));
+    VirtualProtect(call + 1, sizeof(rel), oldProtect, &oldProtect);
+    FlushInstructionCache(GetCurrentProcess(), call, 5);
+    return true;
+}
+
+void InstallDevCompositorDetour(uintptr_t compositor, uintptr_t callsite) {
+    if (!compositor || !callsite || g_devCompositorDetourActive) return;
+    auto* call = reinterpret_cast<uint8_t*>(callsite);
+    if (*call != 0xE8) return;
+
+    // jmp qword ptr [rip+0]; dq DevCompositorDetour
+    auto* stub = static_cast<uint8_t*>(AllocateNearModule(callsite, 4096));
+    if (!stub) {
+        Log("[W] dev compositor stub allocation failed\n");
+        return;
+    }
+    static constexpr uint8_t kJump[] = { 0xFF, 0x25, 0, 0, 0, 0 };
+    const auto detour = reinterpret_cast<uintptr_t>(&DevCompositorDetour);
+    memcpy(stub, kJump, sizeof(kJump));
+    memcpy(stub + sizeof(kJump), &detour, sizeof(detour));
+
+    const intptr_t rel = reinterpret_cast<intptr_t>(stub) - static_cast<intptr_t>(callsite + 5);
+    if (rel < INT32_MIN || rel > INT32_MAX) {
+        Log("[W] dev compositor stub out of range\n");
+        return;
+    }
+    g_pDevCompositor = reinterpret_cast<WeatherCompose_fn>(compositor);
+    g_pDevCompositorCall = call;
+    memcpy(&g_devCompositorCallRel, call + 1, sizeof(g_devCompositorCallRel));
+    if (WriteCallRel(call, static_cast<int32_t>(rel))) {
+        g_devCompositorDetourActive = true;
+        Log("[dev] compositor call redirected at %p\n", call);
+    }
+}
+
+void RemoveDevCompositorDetour() {
+    if (!g_devCompositorDetourActive) return;
+    WriteCallRel(g_pDevCompositorCall, g_devCompositorCallRel);
+    g_devCompositorDetourActive = false;
+}
+#endif
+
 long long __fastcall Hooked_WeatherCompose(long long weatherState, float dt) {
     if (!g_pOrigWeatherCompose) return 0;
     const long long result = g_pOrigWeatherCompose(weatherState, dt);
@@ -618,6 +842,10 @@ long long __fastcall Hooked_WeatherCompose(long long weatherState, float dt) {
     }
 
     ApplyAtmosphereTableOverrides(fields.atmosphereNode);
+    ApplyWaterTableOverrides(fields.parent);
+#if defined(CW_DEV_BUILD)
+    if (!g_devCompositorDetourActive) ApplyDevFieldOverrides(fields);
+#endif
 
     float nativeRain = 0.0f;
     float nativeSnow = 0.0f;
@@ -790,6 +1018,158 @@ static unsigned int PackAtmosphereColor(float r, float g, float b, float a) {
 
 static float AtmosphereColorChannel(unsigned int color, unsigned int shift) {
     return static_cast<float>((color >> shift) & 0xFFu) / 255.0f;
+}
+
+// Water table offsets (1.0.0.3392+), confirmed at startup by g_waterTableReady.
+namespace WaterTableField {
+    constexpr ptrdiff_t CascadeSize1 = 0x88;
+    constexpr ptrdiff_t CascadeSize4 = 0x94;
+    constexpr ptrdiff_t Ripples = 0x98;
+    constexpr ptrdiff_t Chop = 0x9C;
+    constexpr ptrdiff_t Waves = 0xA0;
+    constexpr ptrdiff_t Swell = 0xA4;
+    constexpr ptrdiff_t Murkiness = 0xA8;
+    constexpr ptrdiff_t Color = 0xAC;
+    constexpr ptrdiff_t FogNear = 0xB8;
+    constexpr ptrdiff_t FogFar = 0xBC;
+    constexpr ptrdiff_t TintColor = 0xCC;
+    constexpr ptrdiff_t TintStrength = 0xD8;
+}
+
+struct WaterSlot {
+    bool applied = false;
+    uint32_t lastWritten = 0;
+    uint32_t native = 0;
+};
+
+static float BitsToFloat(uint32_t bits) {
+    float value = 0.0f;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static uint32_t FloatToBits(float value) {
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+// A value that differs from what we last wrote is the game's own. When the override goes
+// away the game's value is written back, so the water returns to native at once.
+static void ApplyWaterSlot(uintptr_t table, ptrdiff_t offset, WaterSlot& slot, bool want, uint32_t value, bool multiply = false) {
+    const uintptr_t address = table + offset;
+    uint32_t current = 0;
+    if (!ExchangeTableField(address, false, 0, current)) return;
+
+    uint32_t previous = 0;
+    if (!want) {
+        if (slot.applied) {
+            ExchangeTableField(address, true, slot.native, previous);
+            slot.applied = false;
+        } else {
+            slot.native = current;
+        }
+        return;
+    }
+
+    if (!slot.applied || current != slot.lastWritten) slot.native = current;
+    const uint32_t desired = multiply ? FloatToBits(BitsToFloat(slot.native) * BitsToFloat(value)) : value;
+    if (ExchangeTableField(address, true, desired, previous)) {
+        slot.lastWritten = desired;
+        slot.applied = true;
+    }
+}
+
+// Refuses a table whose values do not look like water, in case a game update moved fields
+// without touching the code the startup check looks at.
+static bool WaterTableLooksValid(uintptr_t table) {
+    float previousSize = 0.0f;
+    for (ptrdiff_t offset = WaterTableField::CascadeSize1; offset <= WaterTableField::CascadeSize4; offset += sizeof(float)) {
+        uint32_t bits = 0;
+        if (!ExchangeTableField(table + offset, false, 0, bits)) return false;
+        const float size = BitsToFloat(bits);
+        if (!std::isfinite(size) || size <= previousSize || size > 100000.0f) return false;
+        previousSize = size;
+    }
+    for (ptrdiff_t offset = WaterTableField::Ripples; offset <= WaterTableField::Swell; offset += sizeof(float)) {
+        uint32_t bits = 0;
+        if (!ExchangeTableField(table + offset, false, 0, bits)) return false;
+        const float height = BitsToFloat(bits);
+        if (!std::isfinite(height) || height < 0.0f || height > 1000.0f) return false;
+    }
+    return true;
+}
+
+static void ApplyWaterTableOverrides(uintptr_t parent) {
+    if (!g_waterTableReady.load()) return;
+
+    uintptr_t table = 0;
+    if (!ReadTablePointer(parent + g_atmosphereTableSlotOffset + sizeof(uintptr_t), table)) return;
+    static uintptr_t s_checkedTable = 0;
+    static bool s_tableValid = false;
+    if (table != s_checkedTable) {
+        s_checkedTable = table;
+        s_tableValid = WaterTableLooksValid(table);
+        if (!s_tableValid) Log("[W] water table values look wrong; water overrides skipped\n");
+    }
+    if (!s_tableValid) return;
+    if (!IsWritableTableField(table + WaterTableField::Ripples) ||
+        !IsWritableTableField(table + WaterTableField::TintStrength)) {
+        return;
+    }
+
+    struct FloatField {
+        SliderOverride& value;
+        ptrdiff_t offset;
+        float hi;
+        std::atomic<float>& native;
+        WaterSlot slot;
+    };
+    static FloatField floats[] = {
+        { g_oWaterMurkiness, WaterTableField::Murkiness, 5.0f, g_waterNativeMurkiness },
+        { g_oWaterRipples, WaterTableField::Ripples, 30.0f, g_waterNativeRipples },
+        { g_oWaterChop, WaterTableField::Chop, 30.0f, g_waterNativeChop },
+        { g_oWaterWaves, WaterTableField::Waves, 30.0f, g_waterNativeWaves },
+        { g_oWaterSwell, WaterTableField::Swell, 30.0f, g_waterNativeSwell },
+        { g_oUnderwaterTintStrength, WaterTableField::TintStrength, 5.0f, g_waterNativeTintStrength },
+    };
+    const bool modEnabled = g_modEnabled.load();
+    for (FloatField& field : floats) {
+        const float value = field.value.value.load();
+        const bool want = modEnabled && field.value.active.load() && std::isfinite(value);
+        ApplyWaterSlot(table, field.offset, field.slot, want, FloatToBits(min(field.hi, max(0.0f, value))));
+        field.native.store(BitsToFloat(field.slot.native));
+    }
+
+    // One control over both underwater fog distances, as a multiplier of the game's values.
+    static WaterSlot s_fogNear;
+    static WaterSlot s_fogFar;
+    const float fog = g_oUnderwaterFog.value.load();
+    const bool wantFog = modEnabled && g_oUnderwaterFog.active.load() && std::isfinite(fog);
+    const uint32_t fogBits = FloatToBits(min(20.0f, max(0.0f, fog)));
+    ApplyWaterSlot(table, WaterTableField::FogNear, s_fogNear, wantFog, fogBits, true);
+    ApplyWaterSlot(table, WaterTableField::FogFar, s_fogFar, wantFog, fogBits, true);
+
+    struct ColorField {
+        ColorOverride& value;
+        ptrdiff_t offset;
+        std::atomic<float>& nativeR;
+        std::atomic<float>& nativeG;
+        std::atomic<float>& nativeB;
+        WaterSlot slot;
+    };
+    static ColorField colors[] = {
+        { g_oMurkColor, WaterTableField::Color, g_waterNativeMurkColorR, g_waterNativeMurkColorG, g_waterNativeMurkColorB },
+        { g_oUnderwaterTintColor, WaterTableField::TintColor, g_waterNativeTintR, g_waterNativeTintG, g_waterNativeTintB },
+    };
+    for (ColorField& field : colors) {
+        const bool want = modEnabled && field.value.active.load();
+        const uint32_t packed = PackAtmosphereColor(field.value.r.load(), field.value.g.load(), field.value.b.load(), 1.0f);
+        ApplyWaterSlot(table, field.offset, field.slot, want, packed);
+        field.nativeR.store(AtmosphereColorChannel(field.slot.native, 16));
+        field.nativeG.store(AtmosphereColorChannel(field.slot.native, 8));
+        field.nativeB.store(AtmosphereColorChannel(field.slot.native, 0));
+    }
 }
 
 // Diagnostic for the DLC port: one line per distinct written value (rounded), so a
@@ -2477,80 +2857,17 @@ static bool WeatherTickTimeWorkNeeded() {
         g_timeSetHoldTicks.load() > 0;
 }
 
-struct SnowCoverageGlobal {
-    SliderOverride* overrideValue;
-    uintptr_t rva;
-    float defaultValue;
-};
-
-static SnowCoverageGlobal* SnowCoverageGlobals(size_t& count) {
-    static SnowCoverageGlobal kGlobals[] = {
-        { &g_oSnowAccumBoundaryA, 0x5F23698, -5.0f },
-        { &g_oSnowAccumBoundaryB, 0x5F236E8, -20.0f },
-        { &g_oSnowCoverageThreshold, 0x5F23738, -20.0f },
-    };
-    count = std::size(kGlobals);
-    return kGlobals;
-}
-
-static bool SnowCoverageOverrideActive() {
-    size_t count = 0;
-    SnowCoverageGlobal* globals = SnowCoverageGlobals(count);
-    for (size_t i = 0; i < count; ++i) {
-        if (globals[i].overrideValue && globals[i].overrideValue->active.load()) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool WriteGameFloatRva(uintptr_t rva, float value) {
-    if (!rva || !std::isfinite(value)) {
-        return false;
-    }
-    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    if (!base) {
-        return false;
-    }
-    __try {
-        *reinterpret_cast<float*>(base + rva) = value;
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static void ApplySnowCoverageGlobalOverrides(bool modEnabled) {
-    const bool active = modEnabled && SnowCoverageOverrideActive();
-    const bool dirty = g_snowCoverageGlobalsDirty.exchange(false);
-    if (!active && !dirty) {
-        return;
-    }
-
-    size_t count = 0;
-    SnowCoverageGlobal* globals = SnowCoverageGlobals(count);
-    for (size_t i = 0; i < count; ++i) {
-        const auto& desc = globals[i];
-        const bool useOverride = modEnabled && desc.overrideValue && desc.overrideValue->active.load();
-        const float value = useOverride ? desc.overrideValue->value.load() : desc.defaultValue;
-        WriteGameFloatRva(desc.rva, value);
-    }
-}
-
 static bool WeatherTickRuntimeWorkNeeded(bool resetStopNow, bool modSuspendNow, bool modEnabled, bool presetNeedsTick) {
     if (resetStopNow || modSuspendNow || presetNeedsTick) {
         return true;
     }
     if (!modEnabled) {
-        return g_timeFreezeApplied.load() || g_timeSetHoldTicks.load() > 0 || g_snowCoverageGlobalsDirty.load();
+        return g_timeFreezeApplied.load() || g_timeSetHoldTicks.load() > 0;
     }
     if (WeatherTickTimeWorkNeeded()) {
         return true;
     }
     if (WeatherTickRegionWorkNeeded()) {
-        return true;
-    }
-    if (g_snowCoverageGlobalsDirty.load() || SnowCoverageOverrideActive()) {
         return true;
     }
     if (g_forceClear.load() ||
@@ -2620,7 +2937,6 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
 
     if (!modEnabled) {
         g_pOriginalTick(self, dt);
-        ApplySnowCoverageGlobalOverrides(false);
         if (modSuspendNow || resetStopNow) {
             StopAllWeatherEffects(self);
             g_activeWeather = -1;
@@ -2631,7 +2947,6 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
 
     if (g_forceClear.load()) {
         g_pOriginalTick(self, dt);
-        ApplySnowCoverageGlobalOverrides(modEnabled);
         StopWeatherEffectsByMask(self, 0x1CCu);
         TickSnowEffectCleanup(self);
         if (resetStopNow) {
@@ -2649,7 +2964,6 @@ void __fastcall Hooked_WeatherTick(long long self, float dt) {
     }
 
     g_pOriginalTick(self, dt);
-    ApplySnowCoverageGlobalOverrides(modEnabled);
     if (g_activeWeather == kCustomWeather) {
         TickWeatherState(self, serviceDt);
     }

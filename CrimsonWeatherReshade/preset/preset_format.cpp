@@ -12,7 +12,10 @@
 
 namespace preset_internal {
 
-constexpr int kPresetFormatVersion = 6;
+constexpr int kPresetFormatVersion = 7;
+// Presets without water settings stay on the previous format, so they keep loading in
+// older add-ons and pass the community backend's scanner, which rejects newer formats.
+constexpr int kPresetFormatVersionWithoutWater = 6;
 bool TryParseBool(const std::string& text, bool& outValue) {
     std::string trimmed = TrimCopy(text);
     if (trimmed.empty()) return false;
@@ -56,9 +59,6 @@ struct PresetParseState {
     bool cloudScatteringCoefficientEnabledSeen = false;
     bool cloudFlowEnabledSeen = false;
     bool cloudVisibleRangeEnabledSeen = false;
-    bool snowAccumBoundaryAEnabledSeen = false;
-    bool snowAccumBoundaryBEnabledSeen = false;
-    bool snowCoverageThresholdEnabledSeen = false;
     bool rayleighHeightEnabledSeen = false;
     bool ozoneRatioEnabledSeen = false;
     bool rayleighScatteringColorEnabledSeen = false;
@@ -103,9 +103,6 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "Dust")) mask.dust = true;
     else if (KeyEquals(key, "NoSnow")) mask.noSnow = true;
     else if (KeyEquals(key, "Snow")) mask.snow = true;
-    else if (KeyEquals(key, "SnowAccumBoundaryAEnabled") || KeyEquals(key, "SnowAccumBoundaryA")) mask.snowAccumBoundaryA = true;
-    else if (KeyEquals(key, "SnowAccumBoundaryBEnabled") || KeyEquals(key, "SnowAccumBoundaryB")) mask.snowAccumBoundaryB = true;
-    else if (KeyEquals(key, "SnowCoverageThresholdEnabled") || KeyEquals(key, "SnowCoverageThreshold")) mask.snowCoverageThreshold = true;
     else if (KeyEquals(key, "VisualTimeOverride") || KeyEquals(key, "ProgressVisualTime") || KeyEquals(key, "ProgressVisualTimeMatchGameTime") || KeyEquals(key, "ProgressVisualTimeIntervalMs") || KeyEquals(key, "TimeHour")) mask.time = true;
     else if (KeyEquals(key, "CloudAmountEnabled") || KeyEquals(key, "CloudAmount")) mask.cloudAmount = true;
     else if (KeyEquals(key, "CloudHeightEnabled") || KeyEquals(key, "CloudHeight")) mask.cloudHeight = true;
@@ -159,6 +156,15 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "MieScaleHeightEnabled") || KeyEquals(key, "MieScaleHeight")) mask.mieScaleHeight = true;
     else if (KeyEquals(key, "MieAerosolDensityEnabled") || KeyEquals(key, "MieAerosolDensity")) mask.mieAerosolDensity = true;
     else if (KeyEquals(key, "MieAerosolAbsorptionEnabled") || KeyEquals(key, "MieAerosolAbsorption")) mask.mieAerosolAbsorption = true;
+    else if (KeyEquals(key, "WaterMurkinessEnabled") || KeyEquals(key, "WaterMurkiness")) mask.waterMurkiness = true;
+    else if (KeyEquals(key, "WaterRipplesEnabled") || KeyEquals(key, "WaterRipples")) mask.waterRipples = true;
+    else if (KeyEquals(key, "WaterChopEnabled") || KeyEquals(key, "WaterChop")) mask.waterChop = true;
+    else if (KeyEquals(key, "WaterWavesEnabled") || KeyEquals(key, "WaterWaves")) mask.waterWaves = true;
+    else if (KeyEquals(key, "WaterSwellEnabled") || KeyEquals(key, "WaterSwell")) mask.waterSwell = true;
+    else if (KeyEquals(key, "UnderwaterTintStrengthEnabled") || KeyEquals(key, "UnderwaterTintStrength")) mask.underwaterTintStrength = true;
+    else if (KeyEquals(key, "UnderwaterFogEnabled") || KeyEquals(key, "UnderwaterFog")) mask.underwaterFog = true;
+    else if (KeyEquals(key, "MurkColorEnabled") || KeyEquals(key, "MurkColorR") || KeyEquals(key, "MurkColorG") || KeyEquals(key, "MurkColorB")) mask.murkColor = true;
+    else if (KeyEquals(key, "UnderwaterTintColorEnabled") || KeyEquals(key, "UnderwaterTintColorR") || KeyEquals(key, "UnderwaterTintColorG") || KeyEquals(key, "UnderwaterTintColorB")) mask.underwaterTintColor = true;
     else if (KeyEquals(key, "HeightFogBaselineEnabled") || KeyEquals(key, "HeightFogBaseline")) mask.heightFogBaseline = true;
     else if (KeyEquals(key, "HeightFogFalloffEnabled") || KeyEquals(key, "HeightFogFalloff")) mask.heightFogFalloff = true;
     else if (KeyEquals(key, "NoFog")) mask.noFog = true;
@@ -167,45 +173,58 @@ void MarkPresetMaskForKey(const std::string& key, WeatherPresetMask& mask) {
     else if (KeyEquals(key, "PuddleScaleEnabled") || KeyEquals(key, "PuddleScale")) mask.puddleScale = true;
 }
 
-bool ParseSnowPresetKeyValue(const std::string& key, const std::string& value, PresetParseState& state) {
+bool ParseWaterPresetKeyValue(const std::string& key, const std::string& value, PresetParseState& state) {
+    WeatherPresetData& data = state.data;
     bool boolValue = false;
     float floatValue = 0.0f;
-    WeatherPresetData& data = state.data;
-
-    if (KeyEquals(key, "SnowAccumBoundaryAEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.snowAccumBoundaryAEnabled = boolValue;
-            state.snowAccumBoundaryAEnabledSeen = true;
-        }
-        return true;
+    if (KeyEquals(key, "WaterMurkinessEnabled")) {
+        if (TryParseBool(value, boolValue)) data.waterMurkinessEnabled = boolValue;
+    } else if (KeyEquals(key, "WaterMurkiness")) {
+        if (TryParseFloat(value, floatValue)) data.waterMurkiness = floatValue;
+    } else if (KeyEquals(key, "WaterRipplesEnabled")) {
+        if (TryParseBool(value, boolValue)) data.waterRipplesEnabled = boolValue;
+    } else if (KeyEquals(key, "WaterRipples")) {
+        if (TryParseFloat(value, floatValue)) data.waterRipples = floatValue;
+    } else if (KeyEquals(key, "WaterChopEnabled")) {
+        if (TryParseBool(value, boolValue)) data.waterChopEnabled = boolValue;
+    } else if (KeyEquals(key, "WaterChop")) {
+        if (TryParseFloat(value, floatValue)) data.waterChop = floatValue;
+    } else if (KeyEquals(key, "WaterWavesEnabled")) {
+        if (TryParseBool(value, boolValue)) data.waterWavesEnabled = boolValue;
+    } else if (KeyEquals(key, "WaterWaves")) {
+        if (TryParseFloat(value, floatValue)) data.waterWaves = floatValue;
+    } else if (KeyEquals(key, "WaterSwellEnabled")) {
+        if (TryParseBool(value, boolValue)) data.waterSwellEnabled = boolValue;
+    } else if (KeyEquals(key, "WaterSwell")) {
+        if (TryParseFloat(value, floatValue)) data.waterSwell = floatValue;
+    } else if (KeyEquals(key, "UnderwaterTintStrengthEnabled")) {
+        if (TryParseBool(value, boolValue)) data.underwaterTintStrengthEnabled = boolValue;
+    } else if (KeyEquals(key, "UnderwaterTintStrength")) {
+        if (TryParseFloat(value, floatValue)) data.underwaterTintStrength = floatValue;
+    } else if (KeyEquals(key, "UnderwaterFogEnabled")) {
+        if (TryParseBool(value, boolValue)) data.underwaterFogEnabled = boolValue;
+    } else if (KeyEquals(key, "UnderwaterFog")) {
+        if (TryParseFloat(value, floatValue)) data.underwaterFog = floatValue;
+    } else if (KeyEquals(key, "MurkColorEnabled")) {
+        if (TryParseBool(value, boolValue)) data.murkColorEnabled = boolValue;
+    } else if (KeyEquals(key, "MurkColorR")) {
+        if (TryParseFloat(value, floatValue)) data.murkColor.r = floatValue;
+    } else if (KeyEquals(key, "MurkColorG")) {
+        if (TryParseFloat(value, floatValue)) data.murkColor.g = floatValue;
+    } else if (KeyEquals(key, "MurkColorB")) {
+        if (TryParseFloat(value, floatValue)) data.murkColor.b = floatValue;
+    } else if (KeyEquals(key, "UnderwaterTintColorEnabled")) {
+        if (TryParseBool(value, boolValue)) data.underwaterTintColorEnabled = boolValue;
+    } else if (KeyEquals(key, "UnderwaterTintColorR")) {
+        if (TryParseFloat(value, floatValue)) data.underwaterTintColor.r = floatValue;
+    } else if (KeyEquals(key, "UnderwaterTintColorG")) {
+        if (TryParseFloat(value, floatValue)) data.underwaterTintColor.g = floatValue;
+    } else if (KeyEquals(key, "UnderwaterTintColorB")) {
+        if (TryParseFloat(value, floatValue)) data.underwaterTintColor.b = floatValue;
+    } else {
+        return false;
     }
-    if (KeyEquals(key, "SnowAccumBoundaryA")) {
-        if (TryParseFloat(value, floatValue)) data.snowAccumBoundaryA = floatValue;
-        return true;
-    }
-    if (KeyEquals(key, "SnowAccumBoundaryBEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.snowAccumBoundaryBEnabled = boolValue;
-            state.snowAccumBoundaryBEnabledSeen = true;
-        }
-        return true;
-    }
-    if (KeyEquals(key, "SnowAccumBoundaryB")) {
-        if (TryParseFloat(value, floatValue)) data.snowAccumBoundaryB = floatValue;
-        return true;
-    }
-    if (KeyEquals(key, "SnowCoverageThresholdEnabled")) {
-        if (TryParseBool(value, boolValue)) {
-            data.snowCoverageThresholdEnabled = boolValue;
-            state.snowCoverageThresholdEnabledSeen = true;
-        }
-        return true;
-    }
-    if (KeyEquals(key, "SnowCoverageThreshold")) {
-        if (TryParseFloat(value, floatValue)) data.snowCoverageThreshold = floatValue;
-        return true;
-    }
-    return false;
+    return true;
 }
 
 void ParsePresetKeyValue(const std::string& key, const std::string& value, PresetParseState& state) {
@@ -230,7 +249,6 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         if (TryParseBool(value, boolValue)) data.noSnow = boolValue;
     } else if (KeyEquals(key, "Snow")) {
         if (TryParseFloat(value, floatValue)) data.snow = floatValue;
-    } else if (ParseSnowPresetKeyValue(key, value, state)) {
     } else if (KeyEquals(key, "VisualTimeOverride")) {
         if (TryParseBool(value, boolValue)) data.visualTimeOverride = boolValue;
     } else if (KeyEquals(key, "ProgressVisualTime")) {
@@ -519,6 +537,7 @@ void ParsePresetKeyValue(const std::string& key, const std::string& value, Prese
         }
     } else if (KeyEquals(key, "MieAerosolDensity")) {
         if (TryParseFloat(value, floatValue)) data.mieAerosolDensity = floatValue;
+    } else if (ParseWaterPresetKeyValue(key, value, state)) {
     } else if (KeyEquals(key, "MieAerosolAbsorptionEnabled")) {
         if (TryParseBool(value, boolValue)) {
             data.mieAerosolAbsorptionEnabled = boolValue;
@@ -617,12 +636,6 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path, bool exten
     data.thunder = ClampPresetThunder(extendedSliderRange, data.thunder);
     data.dust = ClampPresetDust(extendedSliderRange, data.dust);
     data.snow = ClampPresetSnow(extendedSliderRange, data.snow);
-    if (!state.snowAccumBoundaryAEnabledSeen) data.snowAccumBoundaryAEnabled = false;
-    if (!state.snowAccumBoundaryBEnabledSeen) data.snowAccumBoundaryBEnabled = false;
-    if (!state.snowCoverageThresholdEnabledSeen) data.snowCoverageThresholdEnabled = false;
-    data.snowAccumBoundaryA = ClampPresetSnowBoundary(data.snowAccumBoundaryA);
-    data.snowAccumBoundaryB = ClampPresetSnowBoundary(data.snowAccumBoundaryB);
-    data.snowCoverageThreshold = ClampPresetSnowBoundary(data.snowCoverageThreshold);
     data.progressVisualTime = data.visualTimeOverride && data.progressVisualTime;
     data.progressVisualTimeMatchGameTime = data.progressVisualTime && data.progressVisualTimeMatchGameTime;
     data.progressVisualTimeIntervalMs = ClampPresetFloat(data.progressVisualTimeIntervalMs, 0.0f, 5000.0f);
@@ -646,6 +659,15 @@ void NormalizeLoadedPreset(PresetParseState& state, const char* path, bool exten
     data.mieScaleHeight = ClampPresetMieScaleHeight(extendedSliderRange, data.mieScaleHeight);
     data.mieAerosolDensity = ClampPresetMieDensity(extendedSliderRange, data.mieAerosolDensity);
     data.mieAerosolAbsorption = ClampPresetMieAbsorption(extendedSliderRange, data.mieAerosolAbsorption);
+    data.waterMurkiness = ClampPresetWaterMurkiness(extendedSliderRange, data.waterMurkiness);
+    data.waterRipples = ClampPresetWaterWaveHeight(extendedSliderRange, data.waterRipples);
+    data.waterChop = ClampPresetWaterWaveHeight(extendedSliderRange, data.waterChop);
+    data.waterWaves = ClampPresetWaterWaveHeight(extendedSliderRange, data.waterWaves);
+    data.waterSwell = ClampPresetWaterWaveHeight(extendedSliderRange, data.waterSwell);
+    data.underwaterTintStrength = ClampPresetUnderwaterTintStrength(extendedSliderRange, data.underwaterTintStrength);
+    data.underwaterFog = ClampPresetUnderwaterFog(extendedSliderRange, data.underwaterFog);
+    data.murkColor = ClampPresetColor(data.murkColor, false);
+    data.underwaterTintColor = ClampPresetColor(data.underwaterTintColor, false);
     data.heightFogBaseline = ClampPresetHeightFogBaseline(extendedSliderRange, data.heightFogBaseline);
     data.heightFogFalloff = ClampPresetHeightFogFalloff(extendedSliderRange, data.heightFogFalloff);
     data.exp2C = ClampPresetCloudWide(extendedSliderRange, data.exp2C);
@@ -711,13 +733,27 @@ void AppendPresetKeyValue(std::string& out, const char* key, const std::string& 
     out += '\n';
 }
 
-std::string SerializeCanonicalPreset(const WeatherPresetData& data, bool extendedSliderRange) {
+bool PresetDataUsesWater(const WeatherPresetData& data) {
+    return data.waterMurkinessEnabled || data.waterRipplesEnabled || data.waterChopEnabled ||
+        data.underwaterTintStrengthEnabled || data.underwaterFogEnabled ||
+        data.murkColorEnabled || data.underwaterTintColorEnabled;
+}
+
+bool PresetMaskUsesWater(const WeatherPresetMask& mask) {
+    return mask.waterMurkiness || mask.waterRipples || mask.waterChop || mask.waterWaves ||
+        mask.waterSwell || mask.underwaterTintStrength || mask.underwaterFog ||
+        mask.murkColor || mask.underwaterTintColor;
+}
+
+std::string SerializeCanonicalPreset(const WeatherPresetData& data, bool extendedSliderRange, bool regionsUseWater) {
+    const bool usesWater = PresetDataUsesWater(data);
     std::string out;
     out.reserve(768);
 
     AppendPresetLine(out, kPresetHeader);
     AppendPresetLine(out, "[Meta]");
-    AppendPresetKeyValue(out, "FormatVersion", std::to_string(kPresetFormatVersion));
+    AppendPresetKeyValue(out, "FormatVersion", std::to_string(
+        usesWater || regionsUseWater ? kPresetFormatVersion : kPresetFormatVersionWithoutWater));
     out += '\n';
 
     AppendPresetLine(out, "[Weather]");
@@ -729,12 +765,6 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data, bool extende
     AppendPresetKeyValue(out, "Dust", FormatPresetFloat(ClampPresetDust(extendedSliderRange, data.dust)));
     AppendPresetKeyValue(out, "NoSnow", FormatPresetBool(data.noSnow));
     AppendPresetKeyValue(out, "Snow", FormatPresetFloat(ClampPresetSnow(extendedSliderRange, data.snow)));
-    AppendPresetKeyValue(out, "SnowAccumBoundaryAEnabled", FormatPresetBool(data.snowAccumBoundaryAEnabled));
-    AppendPresetKeyValue(out, "SnowAccumBoundaryA", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryA)));
-    AppendPresetKeyValue(out, "SnowAccumBoundaryBEnabled", FormatPresetBool(data.snowAccumBoundaryBEnabled));
-    AppendPresetKeyValue(out, "SnowAccumBoundaryB", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryB)));
-    AppendPresetKeyValue(out, "SnowCoverageThresholdEnabled", FormatPresetBool(data.snowCoverageThresholdEnabled));
-    AppendPresetKeyValue(out, "SnowCoverageThreshold", FormatPresetFloat(ClampPresetSnowBoundary(data.snowCoverageThreshold)));
     out += '\n';
 
     AppendPresetLine(out, "[Time]");
@@ -849,6 +879,34 @@ std::string SerializeCanonicalPreset(const WeatherPresetData& data, bool extende
     AppendPresetKeyValue(out, "NoFog", FormatPresetBool(data.noFog));
     AppendPresetKeyValue(out, "Wind", FormatPresetFloat(ClampPresetWind(extendedSliderRange, data.wind)));
     AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
+    if (!usesWater) return out;
+
+    out += '\n';
+    AppendPresetLine(out, "[Water]");
+    AppendPresetKeyValue(out, "WaterMurkinessEnabled", FormatPresetBool(data.waterMurkinessEnabled));
+    AppendPresetKeyValue(out, "WaterMurkiness", FormatPresetFloat(ClampPresetWaterMurkiness(extendedSliderRange, data.waterMurkiness)));
+    AppendPresetKeyValue(out, "WaterRipplesEnabled", FormatPresetBool(data.waterRipplesEnabled));
+    AppendPresetKeyValue(out, "WaterRipples", FormatPresetFloat(ClampPresetWaterWaveHeight(extendedSliderRange, data.waterRipples)));
+    AppendPresetKeyValue(out, "WaterChopEnabled", FormatPresetBool(data.waterChopEnabled));
+    AppendPresetKeyValue(out, "WaterChop", FormatPresetFloat(ClampPresetWaterWaveHeight(extendedSliderRange, data.waterChop)));
+    AppendPresetKeyValue(out, "WaterWavesEnabled", FormatPresetBool(data.waterWavesEnabled));
+    AppendPresetKeyValue(out, "WaterWaves", FormatPresetFloat(ClampPresetWaterWaveHeight(extendedSliderRange, data.waterWaves)));
+    AppendPresetKeyValue(out, "WaterSwellEnabled", FormatPresetBool(data.waterSwellEnabled));
+    AppendPresetKeyValue(out, "WaterSwell", FormatPresetFloat(ClampPresetWaterWaveHeight(extendedSliderRange, data.waterSwell)));
+    AppendPresetKeyValue(out, "UnderwaterTintStrengthEnabled", FormatPresetBool(data.underwaterTintStrengthEnabled));
+    AppendPresetKeyValue(out, "UnderwaterTintStrength", FormatPresetFloat(ClampPresetUnderwaterTintStrength(extendedSliderRange, data.underwaterTintStrength)));
+    AppendPresetKeyValue(out, "UnderwaterFogEnabled", FormatPresetBool(data.underwaterFogEnabled));
+    AppendPresetKeyValue(out, "UnderwaterFog", FormatPresetFloat(ClampPresetUnderwaterFog(extendedSliderRange, data.underwaterFog)));
+    AppendPresetKeyValue(out, "MurkColorEnabled", FormatPresetBool(data.murkColorEnabled));
+    const WeatherPresetColor murkColorValue = ClampPresetColor(data.murkColor, false);
+    AppendPresetKeyValue(out, "MurkColorR", FormatPresetFloat(murkColorValue.r));
+    AppendPresetKeyValue(out, "MurkColorG", FormatPresetFloat(murkColorValue.g));
+    AppendPresetKeyValue(out, "MurkColorB", FormatPresetFloat(murkColorValue.b));
+    AppendPresetKeyValue(out, "UnderwaterTintColorEnabled", FormatPresetBool(data.underwaterTintColorEnabled));
+    const WeatherPresetColor underwaterTintColorValue = ClampPresetColor(data.underwaterTintColor, false);
+    AppendPresetKeyValue(out, "UnderwaterTintColorR", FormatPresetFloat(underwaterTintColorValue.r));
+    AppendPresetKeyValue(out, "UnderwaterTintColorG", FormatPresetFloat(underwaterTintColorValue.g));
+    AppendPresetKeyValue(out, "UnderwaterTintColorB", FormatPresetFloat(underwaterTintColorValue.b));
     return out;
 }
 
@@ -861,8 +919,7 @@ void AppendRegionSectionHeader(std::string& out, int regionId, const char* secti
 }
 
 void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherPresetData& data, const WeatherPresetMask& mask, bool extendedSliderRange) {
-    if (mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow ||
-        mask.snowAccumBoundaryA || mask.snowAccumBoundaryB || mask.snowCoverageThreshold) {
+    if (mask.forceClearSky || mask.noRain || mask.rain || mask.thunder || mask.noDust || mask.dust || mask.noSnow || mask.snow) {
         AppendRegionSectionHeader(out, regionId, "Weather");
         if (mask.forceClearSky) AppendPresetKeyValue(out, "ForceClearSky", FormatPresetBool(data.forceClearSky));
         if (mask.noRain) AppendPresetKeyValue(out, "NoRain", FormatPresetBool(data.noRain));
@@ -872,18 +929,6 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         if (mask.dust) AppendPresetKeyValue(out, "Dust", FormatPresetFloat(ClampPresetDust(extendedSliderRange, data.dust)));
         if (mask.noSnow) AppendPresetKeyValue(out, "NoSnow", FormatPresetBool(data.noSnow));
         if (mask.snow) AppendPresetKeyValue(out, "Snow", FormatPresetFloat(ClampPresetSnow(extendedSliderRange, data.snow)));
-        if (mask.snowAccumBoundaryA) {
-            AppendPresetKeyValue(out, "SnowAccumBoundaryAEnabled", FormatPresetBool(data.snowAccumBoundaryAEnabled));
-            AppendPresetKeyValue(out, "SnowAccumBoundaryA", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryA)));
-        }
-        if (mask.snowAccumBoundaryB) {
-            AppendPresetKeyValue(out, "SnowAccumBoundaryBEnabled", FormatPresetBool(data.snowAccumBoundaryBEnabled));
-            AppendPresetKeyValue(out, "SnowAccumBoundaryB", FormatPresetFloat(ClampPresetSnowBoundary(data.snowAccumBoundaryB)));
-        }
-        if (mask.snowCoverageThreshold) {
-            AppendPresetKeyValue(out, "SnowCoverageThresholdEnabled", FormatPresetBool(data.snowCoverageThresholdEnabled));
-            AppendPresetKeyValue(out, "SnowCoverageThreshold", FormatPresetFloat(ClampPresetSnowBoundary(data.snowCoverageThreshold)));
-        }
         out += '\n';
     }
 
@@ -1095,10 +1140,62 @@ void AppendMaskedRegionPresetData(std::string& out, int regionId, const WeatherP
         if (mask.noWind) AppendPresetKeyValue(out, "NoWind", FormatPresetBool(data.noWind));
         out += '\n';
     }
+
+    if (mask.waterMurkiness || mask.waterRipples || mask.waterChop || mask.waterWaves || mask.waterSwell || mask.underwaterTintStrength || mask.underwaterFog || mask.murkColor || mask.underwaterTintColor) {
+        AppendRegionSectionHeader(out, regionId, "Water");
+        if (mask.waterMurkiness) {
+            AppendPresetKeyValue(out, "WaterMurkinessEnabled", FormatPresetBool(data.waterMurkinessEnabled));
+            AppendPresetKeyValue(out, "WaterMurkiness", FormatPresetFloat(ClampPresetWaterMurkiness(extendedSliderRange, data.waterMurkiness)));
+        }
+        if (mask.waterRipples) {
+            AppendPresetKeyValue(out, "WaterRipplesEnabled", FormatPresetBool(data.waterRipplesEnabled));
+            AppendPresetKeyValue(out, "WaterRipples", FormatPresetFloat(ClampPresetWaterWaveHeight(extendedSliderRange, data.waterRipples)));
+        }
+        if (mask.waterChop) {
+            AppendPresetKeyValue(out, "WaterChopEnabled", FormatPresetBool(data.waterChopEnabled));
+            AppendPresetKeyValue(out, "WaterChop", FormatPresetFloat(ClampPresetWaterWaveHeight(extendedSliderRange, data.waterChop)));
+        }
+        if (mask.waterWaves) {
+            AppendPresetKeyValue(out, "WaterWavesEnabled", FormatPresetBool(data.waterWavesEnabled));
+            AppendPresetKeyValue(out, "WaterWaves", FormatPresetFloat(ClampPresetWaterWaveHeight(extendedSliderRange, data.waterWaves)));
+        }
+        if (mask.waterSwell) {
+            AppendPresetKeyValue(out, "WaterSwellEnabled", FormatPresetBool(data.waterSwellEnabled));
+            AppendPresetKeyValue(out, "WaterSwell", FormatPresetFloat(ClampPresetWaterWaveHeight(extendedSliderRange, data.waterSwell)));
+        }
+        if (mask.underwaterTintStrength) {
+            AppendPresetKeyValue(out, "UnderwaterTintStrengthEnabled", FormatPresetBool(data.underwaterTintStrengthEnabled));
+            AppendPresetKeyValue(out, "UnderwaterTintStrength", FormatPresetFloat(ClampPresetUnderwaterTintStrength(extendedSliderRange, data.underwaterTintStrength)));
+        }
+        if (mask.underwaterFog) {
+            AppendPresetKeyValue(out, "UnderwaterFogEnabled", FormatPresetBool(data.underwaterFogEnabled));
+            AppendPresetKeyValue(out, "UnderwaterFog", FormatPresetFloat(ClampPresetUnderwaterFog(extendedSliderRange, data.underwaterFog)));
+        }
+        if (mask.murkColor) {
+            AppendPresetKeyValue(out, "MurkColorEnabled", FormatPresetBool(data.murkColorEnabled));
+            const WeatherPresetColor murkColorValue = ClampPresetColor(data.murkColor, false);
+            AppendPresetKeyValue(out, "MurkColorR", FormatPresetFloat(murkColorValue.r));
+            AppendPresetKeyValue(out, "MurkColorG", FormatPresetFloat(murkColorValue.g));
+            AppendPresetKeyValue(out, "MurkColorB", FormatPresetFloat(murkColorValue.b));
+        }
+        if (mask.underwaterTintColor) {
+            AppendPresetKeyValue(out, "UnderwaterTintColorEnabled", FormatPresetBool(data.underwaterTintColorEnabled));
+            const WeatherPresetColor underwaterTintColorValue = ClampPresetColor(data.underwaterTintColor, false);
+            AppendPresetKeyValue(out, "UnderwaterTintColorR", FormatPresetFloat(underwaterTintColorValue.r));
+            AppendPresetKeyValue(out, "UnderwaterTintColorG", FormatPresetFloat(underwaterTintColorValue.g));
+            AppendPresetKeyValue(out, "UnderwaterTintColorB", FormatPresetFloat(underwaterTintColorValue.b));
+        }
+        out += '\n';
+    }
 }
 
 std::string SerializePresetPackage(const WeatherPresetPackage& package, const PresetFormatOptions& options) {
-    std::string out = SerializeCanonicalPreset(package.global, options.extendedSliderRange);
+    bool regionsUseWater = false;
+    for (int regionId = 1; regionId < kPresetRegionCount; ++regionId) {
+        regionsUseWater = regionsUseWater ||
+            (package.regionEnabled[regionId] && PresetMaskUsesWater(package.regionMask[regionId]));
+    }
+    std::string out = SerializeCanonicalPreset(package.global, options.extendedSliderRange, regionsUseWater);
     for (int regionId = 1; regionId < kPresetRegionCount; ++regionId) {
         if (!package.regionEnabled[regionId]) continue;
         out += "\n[Region.";

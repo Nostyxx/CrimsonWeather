@@ -166,7 +166,7 @@
       "details": {
         "ok": false,
         "errors": [
-          "FormatVersion 99 is newer than supported 6."
+          "FormatVersion 99 is newer than supported 7."
         ],
         "warnings": [],
         "formatVersion": 99

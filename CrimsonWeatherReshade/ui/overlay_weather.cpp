@@ -80,14 +80,6 @@ void DrawWeatherTab() {
         }
     }
 
-    const bool advancedSnowEnabled = !forceClear && !noSnow && WeatherTickReady();
-    DrawSliderById("snow_accum_boundary_a", &editData, &overrideMask, &editChanged);
-    DrawSliderById("snow_accum_boundary_b", &editData, &overrideMask, &editChanged);
-    DrawSliderById("snow_coverage_threshold", &editData, &overrideMask, &editChanged);
-    if (!advancedSnowEnabled && !forceClear && !noSnow) {
-        DrawHookUnavailable(RuntimeHookId::WeatherTick);
-    }
-
     ImGui::Spacing();
     ImGui::SeparatorText("Thunder");
     const bool thunderEnabled = !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::ThunderControls) && WeatherTickReady();

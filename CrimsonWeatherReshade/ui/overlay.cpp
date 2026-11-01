@@ -387,6 +387,10 @@ void DrawOverlay(reshade::api::effect_runtime*) {
             DrawAtmosphereTab();
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Water")) {
+            DrawWaterTab();
+            ImGui::EndTabItem();
+        }
         if (ImGui::BeginTabItem("Celestial")) {
             DrawCelestialTab();
             ImGui::EndTabItem();

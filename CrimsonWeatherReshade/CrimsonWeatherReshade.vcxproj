@@ -179,6 +179,7 @@
     <ClCompile Include="preset\preset_service.cpp" />
     <ClCompile Include="ui\community_ui.cpp" />
     <ClCompile Include="ui\overlay_atmosphere.cpp" />
+    <ClCompile Include="ui\overlay_water.cpp" />
     <ClCompile Include="ui\overlay_celestial.cpp" />
     <ClCompile Include="ui\overlay_dev.cpp" Condition="'$(CWBuildFlavor)'=='Dev'" />
     <ClCompile Include="ui\overlay_experiment.cpp" />

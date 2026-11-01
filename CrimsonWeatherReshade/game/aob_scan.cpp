@@ -406,6 +406,11 @@ static bool LooksLikeWeatherComposeCaller(uintptr_t caller, uintptr_t compositor
     return false;
 }
 
+#if defined(CW_DEV_BUILD)
+static uintptr_t g_devCompositor = 0;
+static uintptr_t g_devCompositorCallsite = 0;
+#endif
+
 static uintptr_t ResolveWeatherCompose() {
     size_t matches = 0;
     uintptr_t address = ScanModuleUnique(
@@ -434,6 +439,10 @@ static uintptr_t ResolveWeatherCompose() {
         Log("[W] WeatherCompose expected one native caller, found %zu\n", callsiteCount);
         return 0;
     }
+#if defined(CW_DEV_BUILD)
+    g_devCompositor = address;
+    g_devCompositorCallsite = callsites[0];
+#endif
     const uintptr_t caller = FindFunctionStartViaUnwind(callsites[0]);
     if (caller && g_seasonsOfPywelDetected.load()) WaitForSeasonsOfPywelHook(caller);
     if (!caller || !LooksLikeWeatherComposeCaller(caller, address)) {
@@ -1917,6 +1926,9 @@ static bool InstallWeatherTickVtableHook(uintptr_t target) {
 }
 
 void RestoreRuntimePatches() {
+#if defined(CW_DEV_BUILD)
+    RemoveDevCompositorDetour();
+#endif
     if (g_pWeatherTickVtableSlot && g_pOriginalTick) {
         PatchPointerSlot(g_pWeatherTickVtableSlot, reinterpret_cast<void*>(g_pOriginalTick));
         auto& weatherTick = g_runtimeHookControls[static_cast<size_t>(RuntimeHookId::WeatherTick)];
@@ -2621,7 +2633,24 @@ bool RunAOBScan(){
         if (addrWeatherCompose) {
             InstallHook((void*)addrWeatherCompose, (void*)&Hooked_WeatherCompose,
                         (void**)&g_pOrigWeatherCompose, "WeatherCompose", false);
+#if defined(CW_DEV_BUILD)
+            InstallDevCompositorDetour(g_devCompositor, g_devCompositorCallsite);
+#endif
         }
+#if !defined(CW_WIND_ONLY)
+        // The water table is only touched when this reader of it still has the known shape:
+        // container slot +0x30, _cascadeSize1 at +0x88 (null fallback 0xB0).
+        g_waterTableReady.store(false);
+        if (g_pOrigWeatherCompose && g_weatherTableSlotOffset == 0x20) {
+            size_t matches = 0;
+            const uintptr_t waterSite = ScanModuleUnique(
+                "48 8B 41 60 48 8D 48 30 41 B8 58 00 00 00 48 85 C0 49 0F 44 C8 "
+                "48 8B 01 48 8D 88 88 00 00 00 BA B0 00 00 00",
+                matches);
+            g_waterTableReady.store(waterSite != 0);
+            if (!waterSite) Log("[W] water table layout not confirmed (matches=%zu); Water tab disabled\n", matches);
+        }
+#endif
 #endif
         if(addrGetDust)
             InstallHook((void*)addrGetDust,(void*)&Hooked_GetDustIntensity,

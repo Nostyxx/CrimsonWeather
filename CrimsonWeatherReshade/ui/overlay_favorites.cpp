@@ -25,9 +25,6 @@ constexpr int kMaxFavoriteControlsPerSection = 64;
 enum class FavoriteNativeSource {
     Zero,
     One,
-    SnowBoundaryA,
-    SnowBoundaryB,
-    SnowCoverageThreshold,
     RayleighHeight,
     OzoneRatio,
     CloudAlpha,
@@ -51,7 +48,13 @@ enum class FavoriteNativeSource {
     MoonSize,
     MoonYaw,
     MoonPitch,
-    MoonRotation
+    MoonRotation,
+    WaterMurkiness,
+    WaterRipples,
+    WaterChop,
+    WaterWaves,
+    WaterSwell,
+    UnderwaterTintStrength
 };
 
 enum class FavoritePresetMode {
@@ -70,7 +73,6 @@ enum class FavoriteGate {
     Rain,
     Dust,
     Snow,
-    SnowAdvanced,
     Thunder,
     Wind,
     WindPack,
@@ -79,7 +81,8 @@ enum class FavoriteGate {
     CelestialWind,
     CelestialScene,
     Experiment,
-    Detail
+    Detail,
+    Water
 };
 
 enum class FavoriteExtraKind {
@@ -92,6 +95,8 @@ enum class FavoriteExtraKind {
     RayleighColor,
     VolumeFogColor,
     MieColor,
+    MurkColor,
+    UnderwaterTintColor,
     MilkywayTexture,
     MoonTexture,
     TimeControls
@@ -144,9 +149,6 @@ const FavoriteSliderSpec kSliderSpecs[] = {
     { "rain", "Weather", "Rain", 0.0f, 1.0f, 0.0f, 5.0f, "%.3f", &WeatherPresetData::rain, nullptr, &WeatherPresetSourceMask::rain, &g_oRain, FavoriteNativeSource::Zero, FavoritePresetMode::ValueOnly, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Rain },
     { "dust", "Weather", "Dust", 0.0f, 2.0f, 0.0f, 10.0f, "%.3f", &WeatherPresetData::dust, nullptr, &WeatherPresetSourceMask::dust, &g_oDust, FavoriteNativeSource::Zero, FavoritePresetMode::ValueOnly, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Dust },
     { "snow", "Weather", "Snow", 0.0f, 1.0f, 0.0f, 5.0f, "%.3f", &WeatherPresetData::snow, nullptr, &WeatherPresetSourceMask::snow, &g_oSnow, FavoriteNativeSource::Zero, FavoritePresetMode::ValueOnly, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Snow },
-    { "snow_accum_boundary_a", "Weather", "Accumulation Boundary A", -1000.0f, 1500.0f, -1000.0f, 1500.0f, "%.1f", &WeatherPresetData::snowAccumBoundaryA, &WeatherPresetData::snowAccumBoundaryAEnabled, &WeatherPresetSourceMask::snowAccumBoundaryA, &g_oSnowAccumBoundaryA, FavoriteNativeSource::SnowBoundaryA, FavoritePresetMode::EnabledAlways, FavoriteRuntimeMode::OverrideAlways, FavoriteGate::SnowAdvanced },
-    { "snow_accum_boundary_b", "Weather", "Accumulation Boundary B", -1000.0f, 1500.0f, -1000.0f, 1500.0f, "%.1f", &WeatherPresetData::snowAccumBoundaryB, &WeatherPresetData::snowAccumBoundaryBEnabled, &WeatherPresetSourceMask::snowAccumBoundaryB, &g_oSnowAccumBoundaryB, FavoriteNativeSource::SnowBoundaryB, FavoritePresetMode::EnabledAlways, FavoriteRuntimeMode::OverrideAlways, FavoriteGate::SnowAdvanced },
-    { "snow_coverage_threshold", "Weather", "Coverage Threshold", -1000.0f, 1500.0f, -1000.0f, 1500.0f, "%.1f", &WeatherPresetData::snowCoverageThreshold, &WeatherPresetData::snowCoverageThresholdEnabled, &WeatherPresetSourceMask::snowCoverageThreshold, &g_oSnowCoverageThreshold, FavoriteNativeSource::SnowCoverageThreshold, FavoritePresetMode::EnabledAlways, FavoriteRuntimeMode::OverrideAlways, FavoriteGate::SnowAdvanced },
     { "thunder", "Weather", "Thunder", 0.0f, 1.0f, 0.0f, 5.0f, "%.3f", &WeatherPresetData::thunder, nullptr, &WeatherPresetSourceMask::thunder, &g_oThunder, FavoriteNativeSource::Zero, FavoritePresetMode::ValueOnly, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Thunder },
     { "wind_general", "General", "Wind", 0.0f, 15.0f, 0.0f, 50.0f, "x%.2f", &WeatherPresetData::wind, nullptr, &WeatherPresetSourceMask::wind, nullptr, FavoriteNativeSource::One, FavoritePresetMode::ValueOnly, FavoriteRuntimeMode::WindMultiplier, FavoriteGate::Wind },
     { "rayleigh_height", "Atmosphere", "Rayleigh Height", 10.0f, 20000.0f, 1.0f, 200000.0f, "%.1f", &WeatherPresetData::rayleighHeight, &WeatherPresetData::rayleighHeightEnabled, &WeatherPresetSourceMask::rayleighHeight, &g_oRayleighHeight, FavoriteNativeSource::RayleighHeight, FavoritePresetMode::EnabledAlways, FavoriteRuntimeMode::OverrideAlways, FavoriteGate::WindPack },
@@ -169,6 +171,13 @@ const FavoriteSliderSpec kSliderSpecs[] = {
     { "mie_aerosol_absorption", "Atmosphere", "Aerosol Absorption", 0.0f, 5.0f, 0.0f, 100.0f, "%.4f", &WeatherPresetData::mieAerosolAbsorption, &WeatherPresetData::mieAerosolAbsorptionEnabled, &WeatherPresetSourceMask::mieAerosolAbsorption, &g_oMieAerosolAbsorption, FavoriteNativeSource::AerosolAbsorption, FavoritePresetMode::EnabledAlways, FavoriteRuntimeMode::OverrideAlways, FavoriteGate::FogFromWind },
     { "height_fog_baseline", "Atmosphere", "Fog Height Baseline", -5000.0f, 5000.0f, -50000.0f, 50000.0f, "%.1f", &WeatherPresetData::heightFogBaseline, &WeatherPresetData::heightFogBaselineEnabled, &WeatherPresetSourceMask::heightFogBaseline, &g_oHeightFogBaseline, FavoriteNativeSource::FogBaseline, FavoritePresetMode::EnabledAlways, FavoriteRuntimeMode::OverrideAlways, FavoriteGate::FogFromWind },
     { "height_fog_falloff", "Atmosphere", "Fog Height Falloff", 0.0f, 5.0f, 0.0f, 100.0f, "%.4f", &WeatherPresetData::heightFogFalloff, &WeatherPresetData::heightFogFalloffEnabled, &WeatherPresetSourceMask::heightFogFalloff, &g_oHeightFogFalloff, FavoriteNativeSource::FogFalloff, FavoritePresetMode::EnabledAlways, FavoriteRuntimeMode::OverrideAlways, FavoriteGate::FogFromWind },
+    { "water_murkiness", "Water", "Murkiness", 0.0f, 1.0f, 0.0f, 5.0f, "%.3f", &WeatherPresetData::waterMurkiness, &WeatherPresetData::waterMurkinessEnabled, &WeatherPresetSourceMask::waterMurkiness, &g_oWaterMurkiness, FavoriteNativeSource::WaterMurkiness, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Water },
+    { "water_ripples", "Water", "Ripples", 0.0f, 10.0f, 0.0f, 30.0f, "%.2f", &WeatherPresetData::waterRipples, &WeatherPresetData::waterRipplesEnabled, &WeatherPresetSourceMask::waterRipples, &g_oWaterRipples, FavoriteNativeSource::WaterRipples, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Water },
+    { "water_chop", "Water", "Chop", 0.0f, 10.0f, 0.0f, 30.0f, "%.2f", &WeatherPresetData::waterChop, &WeatherPresetData::waterChopEnabled, &WeatherPresetSourceMask::waterChop, &g_oWaterChop, FavoriteNativeSource::WaterChop, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Water },
+    { "water_waves", "Water", "Waves", 0.0f, 10.0f, 0.0f, 30.0f, "%.2f", &WeatherPresetData::waterWaves, &WeatherPresetData::waterWavesEnabled, &WeatherPresetSourceMask::waterWaves, &g_oWaterWaves, FavoriteNativeSource::WaterWaves, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Water },
+    { "water_swell", "Water", "Swell", 0.0f, 10.0f, 0.0f, 30.0f, "%.2f", &WeatherPresetData::waterSwell, &WeatherPresetData::waterSwellEnabled, &WeatherPresetSourceMask::waterSwell, &g_oWaterSwell, FavoriteNativeSource::WaterSwell, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Water },
+    { "underwater_tint_strength", "Water", "Tint Strength", 0.0f, 1.0f, 0.0f, 5.0f, "%.3f", &WeatherPresetData::underwaterTintStrength, &WeatherPresetData::underwaterTintStrengthEnabled, &WeatherPresetSourceMask::underwaterTintStrength, &g_oUnderwaterTintStrength, FavoriteNativeSource::UnderwaterTintStrength, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Water },
+    { "underwater_fog", "Water", "Underwater Fog", 0.0f, 5.0f, 0.0f, 20.0f, "x%.2f", &WeatherPresetData::underwaterFog, &WeatherPresetData::underwaterFogEnabled, &WeatherPresetSourceMask::underwaterFog, &g_oUnderwaterFog, FavoriteNativeSource::One, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::Water },
     { "night_sky_tilt", "Celestial", "Night Sky Tilt", -89.0f, 89.0f, -180.0f, 180.0f, "%.2f", &WeatherPresetData::nightSkyRotation, &WeatherPresetData::nightSkyRotationEnabled, &WeatherPresetSourceMask::nightSkyRotation, &g_oExpNightSkyRot, FavoriteNativeSource::NightSkyTilt, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::CelestialWind },
     { "night_sky_phase", "Celestial", "Night Sky Phase", -180.0f, 180.0f, -360.0f, 360.0f, "%.2f", &WeatherPresetData::nightSkyYaw, &WeatherPresetData::nightSkyYawEnabled, &WeatherPresetSourceMask::nightSkyYaw, &g_oNightSkyYaw, FavoriteNativeSource::NightSkyPhase, FavoritePresetMode::EnabledAwayFromNative, FavoriteRuntimeMode::OverrideClearAtNative, FavoriteGate::CelestialScene },
     { "sun_light_intensity", "Celestial", "Sun Light Intensity", 0.0f, 20.0f, 0.0f, 100.0f, "%.3f", &WeatherPresetData::sunLightIntensity, &WeatherPresetData::sunLightIntensityEnabled, &WeatherPresetSourceMask::sunLightIntensity, &g_oSunLightIntensity, FavoriteNativeSource::SunLightIntensity, FavoritePresetMode::EnabledAlways, FavoriteRuntimeMode::OverrideAlways, FavoriteGate::CelestialWind },
@@ -197,6 +206,8 @@ const FavoriteExtraSpec kExtraSpecs[] = {
     { "no_fog", "Atmosphere", "No Fog", FavoriteExtraKind::NoFog },
     { "volume_fog_scatter_color", "Atmosphere", "Volume Fog Scatter Color", FavoriteExtraKind::VolumeFogColor },
     { "mie_scatter_color", "Atmosphere", "Mie Scatter Color", FavoriteExtraKind::MieColor },
+    { "murk_color", "Water", "Murk Colour", FavoriteExtraKind::MurkColor },
+    { "underwater_tint_color", "Water", "Tint Colour", FavoriteExtraKind::UnderwaterTintColor },
     { "milkyway_texture", "Celestial", "Milky Way Texture", FavoriteExtraKind::MilkywayTexture },
     { "moon_texture", "Celestial", "Moon Texture", FavoriteExtraKind::MoonTexture },
 };
@@ -254,9 +265,6 @@ float NativeValue(FavoriteNativeSource source) {
     switch (source) {
     case FavoriteNativeSource::Zero: return 0.0f;
     case FavoriteNativeSource::One: return 1.0f;
-    case FavoriteNativeSource::SnowBoundaryA: return -5.0f;
-    case FavoriteNativeSource::SnowBoundaryB: return -20.0f;
-    case FavoriteNativeSource::SnowCoverageThreshold: return -20.0f;
     case FavoriteNativeSource::RayleighHeight: return g_windPackBase0E.load();
     case FavoriteNativeSource::OzoneRatio: return g_windPackBase14.load();
     case FavoriteNativeSource::CloudAlpha: return g_windPackBase1E.load();
@@ -270,6 +278,12 @@ float NativeValue(FavoriteNativeSource source) {
     case FavoriteNativeSource::AerosolAbsorption: return g_windPackBase12.load();
     case FavoriteNativeSource::FogBaseline: return g_windPackBase18.load();
     case FavoriteNativeSource::FogFalloff: return g_windPackBase19.load();
+    case FavoriteNativeSource::WaterMurkiness: return g_waterNativeMurkiness.load();
+    case FavoriteNativeSource::WaterRipples: return g_waterNativeRipples.load();
+    case FavoriteNativeSource::WaterChop: return g_waterNativeChop.load();
+    case FavoriteNativeSource::WaterWaves: return g_waterNativeWaves.load();
+    case FavoriteNativeSource::WaterSwell: return g_waterNativeSwell.load();
+    case FavoriteNativeSource::UnderwaterTintStrength: return g_waterNativeTintStrength.load();
     case FavoriteNativeSource::NightSkyTilt:
         return (g_windPackBase0AValid.load() && g_windPackBase0BValid.load())
             ? min(89.0f, max(-89.0f, g_windPackBase0A.load() + 90.0f - g_windPackBase0B.load()))
@@ -296,14 +310,14 @@ bool IsGateEnabled(FavoriteGate gate, const WeatherPresetData& data, bool detach
     const bool noWind = detachedEdit ? data.noWind : g_noWind.load();
     const bool noFog = detachedEdit ? data.noFog : g_noFog.load();
     switch (gate) {
+    case FavoriteGate::Water:
+        return g_waterTableReady.load();
     case FavoriteGate::Rain:
         return !forceClear && !noRain && RuntimeFeatureAvailable(RuntimeFeatureId::Rain) && RainHookReady();
     case FavoriteGate::Dust:
         return !forceClear && !noDust && RuntimeFeatureAvailable(RuntimeFeatureId::Dust) && DustHookReady();
     case FavoriteGate::Snow:
         return !forceClear && !noSnow && RuntimeFeatureAvailable(RuntimeFeatureId::Snow) && SnowHookReady();
-    case FavoriteGate::SnowAdvanced:
-        return !forceClear && !noSnow && WeatherTickReady();
     case FavoriteGate::Thunder:
         return !forceClear && RuntimeFeatureAvailable(RuntimeFeatureId::ThunderControls) && WeatherTickReady();
     case FavoriteGate::Wind:
@@ -481,9 +495,6 @@ void DrawFavoriteSlider(
             g_windMul.store(nativeValue);
         } else {
             spec.runtimeValue->clear();
-            if (spec.gate == FavoriteGate::SnowAdvanced) {
-                g_snowCoverageGlobalsDirty.store(true);
-            }
         }
     } else if (enabled && valueChanged) {
         value = ClampSliderValue(value, range);
@@ -504,9 +515,6 @@ void DrawFavoriteSlider(
             spec.runtimeValue->clear();
         } else {
             spec.runtimeValue->set(value);
-            if (spec.gate == FavoriteGate::SnowAdvanced) {
-                g_snowCoverageGlobalsDirty.store(true);
-            }
         }
     }
     if (detachedEdit && !providedEditData && editChanged) {
@@ -681,6 +689,24 @@ void DrawFavoriteColor(
         runtimeValue = &g_oMieScatterColor;
         enabled = !(detachedEdit ? (editData.forceClearSky || editData.noFog) : (g_forceClear.load() || g_noFog.load())) &&
             RuntimeFeatureAvailable(RuntimeFeatureId::WindControls) && WindPackReady();
+    } else if (kind == FavoriteExtraKind::MurkColor) {
+        label = "Murk Colour"; id = "murk_color";
+        native = { g_waterNativeMurkColorR.load(), g_waterNativeMurkColorG.load(), g_waterNativeMurkColorB.load(), 1.0f };
+        valueField = &WeatherPresetData::murkColor;
+        enabledField = &WeatherPresetData::murkColorEnabled;
+        maskField = &WeatherPresetSourceMask::murkColor;
+        runtimeValue = &g_oMurkColor;
+        includeAlpha = false;
+        enabled = g_waterTableReady.load();
+    } else if (kind == FavoriteExtraKind::UnderwaterTintColor) {
+        label = "Tint Colour"; id = "underwater_tint_color";
+        native = { g_waterNativeTintR.load(), g_waterNativeTintG.load(), g_waterNativeTintB.load(), 1.0f };
+        valueField = &WeatherPresetData::underwaterTintColor;
+        enabledField = &WeatherPresetData::underwaterTintColorEnabled;
+        maskField = &WeatherPresetSourceMask::underwaterTintColor;
+        runtimeValue = &g_oUnderwaterTintColor;
+        includeAlpha = false;
+        enabled = g_waterTableReady.load();
     } else {
         return;
     }
@@ -1205,6 +1231,8 @@ void DrawControlById(
     case FavoriteExtraKind::RayleighColor:
     case FavoriteExtraKind::VolumeFogColor:
     case FavoriteExtraKind::MieColor:
+    case FavoriteExtraKind::MurkColor:
+    case FavoriteExtraKind::UnderwaterTintColor:
         DrawFavoriteColor(extra->kind, editData, overrideMask, editChanged);
         break;
     case FavoriteExtraKind::MilkywayTexture:

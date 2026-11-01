@@ -113,6 +113,9 @@
     <ClCompile Include="ui\overlay_atmosphere.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ui\overlay_water.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ui\overlay_celestial.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

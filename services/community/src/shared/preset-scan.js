@@ -6,14 +6,20 @@
 // Extend them when a new addon version adds preset keys.
 
 export const PRESET_HEADER = "[CrimsonWeatherPreset]";
-export const CURRENT_FORMAT_VERSION = 6;
+export const CURRENT_FORMAT_VERSION = 7;
 
 const ALLOWED_SECTIONS = new Set([
   "Meta", "Weather", "Time", "Cloud",
-  "Experiment", "Celestial", "Atmosphere", "RenoDX",
+  "Experiment", "Celestial", "Atmosphere", "Water", "RenoDX",
 ]);
 
 const ALLOWED_KEYS = new Set([
+  "WaterMurkinessEnabled", "WaterMurkiness", "WaterRipplesEnabled", "WaterRipples",
+  "WaterChopEnabled", "WaterChop", "WaterWavesEnabled", "WaterWaves",
+  "WaterSwellEnabled", "WaterSwell", "UnderwaterTintStrengthEnabled", "UnderwaterTintStrength",
+  "UnderwaterFogEnabled", "UnderwaterFog", "MurkColorEnabled", "MurkColorR",
+  "MurkColorG", "MurkColorB", "UnderwaterTintColorEnabled", "UnderwaterTintColorR",
+  "UnderwaterTintColorG", "UnderwaterTintColorB",
   "FormatVersion", "Enabled", "ForceClearSky", "NoRain",
   "Rain", "Thunder", "NoDust", "Dust",
   "NoSnow", "Snow", "SnowAccumBoundaryAEnabled", "SnowAccumBoundaryA",

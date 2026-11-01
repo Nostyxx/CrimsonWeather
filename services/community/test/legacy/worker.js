@@ -3,7 +3,7 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 
 // src/index.js
 var PRESET_HEADER = "[CrimsonWeatherPreset]";
-var CURRENT_FORMAT_VERSION = 6;
+var CURRENT_FORMAT_VERSION = 7;
 var CATALOG_KEY = "catalog/catalog.v1.json";
 var UPDATE_DOWNLOAD_PAGE_URL = "https://www.nexusmods.com/crimsondesert/mods/632?tab=files";
 var UPDATE_CHANNEL = "stable";

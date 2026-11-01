@@ -66,9 +66,6 @@ const std::vector<SliderSpec>& SliderSpecs() {
         { "thunder", "weather", &g_oThunder, 0.20f, 0.60f, 1.0f },
         { "snow", "weather", &g_oSnow, 0.25f, 1.0f, 2.0f },
         { "dust", "weather", &g_oDust, 0.25f, 1.0f, 2.0f },
-        { "snow_accum_boundary_a", "weather", &g_oSnowAccumBoundaryA, -5.0f, -20.0f, -100.0f },
-        { "snow_accum_boundary_b", "weather", &g_oSnowAccumBoundaryB, -20.0f, -100.0f, -500.0f },
-        { "snow_coverage_threshold", "weather", &g_oSnowCoverageThreshold, -20.0f, -100.0f, -500.0f },
 
         { "cloud_amount", "atmosphere", &g_oCloudAmount, 0.50f, 2.0f, 8.0f },
         { "cloud_height", "atmosphere", &g_oCloudSpdX, -5.0f, 2.0f, 10.0f },
@@ -410,7 +407,6 @@ void SetAllInactive() {
     }
     g_oWind.clear();
     g_oWindActual.clear();
-    g_snowCoverageGlobalsDirty.store(true);
     g_windMul.store(1.0f);
     g_modEnabled.store(true);
     g_timeCtrlActive.store(false);
@@ -461,7 +457,6 @@ void RestoreRuntimeSnapshot() {
     else g_oWind.clear();
     if (g_snapshot.actualWind.active) g_oWindActual.set(g_snapshot.actualWind.value);
     else g_oWindActual.clear();
-    g_snowCoverageGlobalsDirty.store(true);
     g_timeCtrlActive.store(g_snapshot.timeCtrlActive);
     g_timeFreeze.store(g_snapshot.timeFreeze);
     g_timeProgressVisualTime.store(g_snapshot.timeProgress);
@@ -506,10 +501,6 @@ void SetSliderValue(SliderOverride* slot, float value) {
         return;
     }
     slot->set(value);
-    if (slot == &g_oSnowAccumBoundaryA || slot == &g_oSnowAccumBoundaryB ||
-        slot == &g_oSnowCoverageThreshold) {
-        g_snowCoverageGlobalsDirty.store(true);
-    }
 }
 
 void AddBaseline(const std::string& suffix) {
